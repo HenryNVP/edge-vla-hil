@@ -1,0 +1,30 @@
+# ROS2 / colcon
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Models / artifacts
+*.onnx
+*.engine
+*.plan
+*.ckpt
+*.pth
+checkpoints/
+data/
+outputs/
+
+# Benchmark results
+results/*.csv
+results/*.png
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

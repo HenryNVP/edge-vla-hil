@@ -1,0 +1,19 @@
+# x86 host: ROS2 Humble + robosuite/MuJoCo + PyTorch (CPU/GPU) for the plant and the
+# PyTorch-fallback controller. Used during development and for the no-network baseline.
+FROM osrf/ros:humble-desktop
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3-pip libgl1 libosmesa6-dev libglfw3 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /ws
+COPY requirements-host.txt /ws/
+RUN pip install --no-cache-dir -r requirements-host.txt
+
+COPY ros2_ws /ws/ros2_ws
+RUN . /opt/ros/humble/setup.sh && cd /ws/ros2_ws && colcon build --symlink-install
+
+# entrypoint sources both overlays
+RUN echo 'source /opt/ros/humble/setup.bash && source /ws/ros2_ws/install/setup.bash' >> /root/.bashrc
+CMD ["bash"]

@@ -1,0 +1,37 @@
+# Central config for the EdgeVLA-HiL testbed. Load with: --params-file <this>.
+# Values mirror the node parameter defaults; override per experiment.
+
+/evh_plant:
+  ros__parameters:
+    env_name: "Lift"        # robosuite task (single task, fully characterized)
+    robot: "Panda"
+    control_hz: 20.0        # observation publish rate (cognitive-relevant)
+    action_hz: 200.0        # physics / action apply rate
+    camera: "agentview"
+    image_size: 224
+    seed: 0
+
+/evh_controller:
+  ros__parameters:
+    backend: "pytorch"      # pytorch (fallback, build first) | tensorrt (Jetson fast path)
+    weights_path: ""        # ACT checkpoint dir or .engine
+    infer_hz: 10.0          # honest cognitive-layer rate on Orin Nano
+    temporal_ensemble: false
+    prompt: "pick up the block"
+
+/evh_reactive:
+  ros__parameters:
+    rate_hz: 250.0
+    kp: [600.0, 600.0, 600.0, 30.0, 30.0, 30.0]
+    kd: [40.0, 40.0, 40.0, 5.0, 5.0, 5.0]
+    passthrough: false      # true -> monolithic baseline (no reactive layer)
+
+# Latency relays are parameterized per-instance in the launch files; these are the sweep defaults.
+/latency_defaults:
+  ros__parameters:
+    latency_ms: 0.0
+    jitter_ms: 0.0
+    jitter_model: "gaussian"
+    drop_prob: 0.0
+    reorder: false
+    seed: 0
