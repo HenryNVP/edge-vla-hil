@@ -1,125 +1,162 @@
-# EdgeVLA-HiL: Closing the Observation–Action Delay Loop for Edge-Deployed VLA Policies
+# EdgeVLA-HiL: Benchmarking Latency-Robust Action Chunking over a Real Edge-Network Boundary
 
 GitHub Repository Name: edge-vla-hil
 Project Name: EdgeVLA-HiL (Edge Vision-Language-Action Hardware-in-the-Loop)
 
 ## 1. Executive Summary
 
-Vision-Language-Action (VLA) foundation models reason and generalize impressively, but they
-are slow. When a VLA is deployed onto resource-constrained edge hardware and asked to control a
-robot over a network boundary, inference latency and network jitter open an **observation–action
-delay loop**: the policy acts on stale state, deviations compound, and the control loop
-destabilizes.
+Action-chunking policies (ACT, Diffusion Policy) and VLAs are slow to run, so a growing body of
+work makes their *execution* robust to inference latency — Temporal Ensembling, Bidirectional
+Decoding (BID), and most recently **Real-Time Chunking (RTC, NeurIPS 2025)**. But essentially all
+of this work models latency as a **known, deterministic delay** and assumes a **reliable
+communication channel**: RTC, for example, explicitly states it does not model sub-timestep
+delays, stochastic jitter, packet loss, or out-of-order delivery. Real edge deployments — a policy
+on a Jetson talking to a robot over a network — violate every one of those assumptions.
 
-This project builds a **Hardware-in-the-Loop (HiL)** testbed that physically decouples the
-physics simulation (Plant, on an x86 host) from the AI inference engine (Controller, on an NVIDIA
-Jetson Orin Nano) across a real Gigabit Ethernet / ROS2 boundary. Using this testbed, the project
-**quantifies how edge-induced delay degrades VLA control** and demonstrates that a lightweight
-**high-rate local reactive layer** recovers task success and stability under injected latency and
-jitter — without modifying the VLA itself.
+This project builds a **Hardware-in-the-Loop (HiL)** testbed that physically decouples the physics
+simulation (Plant, x86 host) from the policy inference engine (Controller, NVIDIA Jetson Orin
+Nano) across a real ROS2 / Ethernet boundary, with a programmable harness that injects
+**latency, jitter, packet loss, and reordering** at the DDS layer. On this testbed we deliver:
 
-The contribution is a systems + empirical one: a reproducible characterization of VLA degradation
-under realistic edge conditions, and a hierarchical async control scheme that mitigates it.
+1. **The first edge-network benchmark** of SOTA latency-robust chunking strategies
+   (synchronous, naive-async, Temporal Ensembling, BID, **RTC**) under *physically realistic*
+   network degradation — not just a deterministic delay constant.
+2. **A high-rate local reactive layer** (operational-space impedance controller) that recovers
+   task success the inference-time methods lose when delay becomes stochastic, and that composes
+   with them rather than replacing them.
+
+The contribution is a systems + empirical one, and it positions RTC/BID as **baselines we
+reproduce and characterize**, not competitors. (A natural algorithmic extension — *network-aware
+chunking* — is scoped as follow-on work in Section 7.)
 
 ## 2. Motivation & Relevance
 
-Foundation-model policies are increasingly deployed to physical robots, but the gap between
-"works in a notebook" and "stable on edge hardware over a network" is large and under-measured.
+The latency-robust-execution subfield grew quickly in 2024–2026, but it is almost entirely
+evaluated in sim or with the policy co-located on the robot, where "delay" is a deterministic
+number of timesteps. The gap between that and a real edge deployment is exactly:
+
+- **Stochastic, heavy-tailed delay** (jitter) instead of a fixed `d`.
+- **Packet loss and out-of-order delivery** over DDS/UDP, which no chunking method models.
+- **A separate compute node** (Jetson) with its own honest inference rate and a real wire.
+
 This project targets that gap directly:
 
-- **Edge AI deployment:** Compile and run a pretrained VLA policy natively on a Jetson Orin Nano
-  via ONNX → TensorRT, and report the *honest* achievable inference rate.
-- **Hardware-in-the-Loop validation:** Prove (or break) closed-loop stability across a physical
-  network boundary, with reproducible, programmatically injected latency and jitter.
-- **Async hierarchical control:** Show that splitting a slow cognitive layer from a fast reactive
-  layer recovers performance the monolithic loop loses.
+- **Edge AI deployment:** compile and run a small diffusion/flow policy natively on a Jetson Orin
+  Nano (ONNX → TensorRT) and report the honest achievable inference rate.
+- **HiL validation:** reproduce latency-robust chunking strategies and measure where each breaks
+  under injected jitter/loss/reorder — reproducibly, with a seeded harness.
+- **Async hierarchical control:** show a fast local reactive layer recovers performance the
+  cognitive loop loses, and complements RTC-style execution.
 
-## 3. System Architecture
+## 3. Policy Backbone
 
-A strict separation of concerns communicating asynchronously via ROS2 DDS over physical Gigabit
-Ethernet.
+**A small diffusion / flow-matching policy** (e.g., Diffusion Policy on RoboMimic, or a compact
+flow policy; few-step / consistency sampling for the Jetson). This choice is deliberate:
 
-### A. The Simulation Plant (PC Host)
-- **Engine:** robosuite (MuJoCo) on x86 Ubuntu.
-- **Role:** Simulates physics and contact dynamics, renders camera observations.
-- **ROS2 interface:** A wrapper node that steps the sim at a fixed control frequency, publishes
-  `sensor_msgs/Image` and `sensor_msgs/JointState`, and subscribes to task-space waypoint
-  commands. A **latency-injection harness** programmatically delays/jitters/drops messages at the
-  DDS boundary to emulate edge network conditions.
+- **RTC and BID require a diffusion/flow policy** — their "inpainting" / guided resampling does not
+  apply to deterministic transformers. Using a flow policy makes them first-class baselines.
+- **Diffusion inference is genuinely slow** (iterative denoising, hundreds of ms), which makes the
+  latency motivation realistic rather than contrived. We use a few-step sampler to keep the Orin
+  Nano honest while preserving the effect under study.
+- **Action space:** end-effector (Cartesian) pose deltas via RoboMimic's `OSC_POSE` controller, so
+  the cognitive layer emits task-space targets and the reactive layer tracks them with Cartesian
+  impedance (Jacobian-transpose, no IK).
 
-### B. The Edge AI Controller (NVIDIA Jetson Orin Nano)
-- **Hardware:** Jetson Orin Nano (ARM Cortex-A78AE, Ampere GPU) — already in hand.
-- **Brain:** A pretrained **ACT (Action Chunking with Transformers)** policy from LeRobot. ACT is
-  chosen over a heavier VLA (e.g. OpenVLA) because it deploys cleanly on the 8 GB Orin Nano and
-  converts to TensorRT with far less friction, while still exhibiting the observation–action delay
-  loop this project studies. Training from scratch is out of scope; the contribution is
-  deployment + control, not the model. (Language conditioning is light in ACT; the prompt selects
-  the task/checkpoint rather than driving a language encoder — sufficient for the delay-loop study.)
-- **Optimization:** Exported to ONNX and compiled via TensorRT (FP16) for maximum real-time
-  factor. Expected honest inference rate is ~10 Hz on the Orin Nano, not >30 Hz.
-- **Role:** Subscribes to the simulated topics, computes task-space waypoints from the language
-  prompt + image, and publishes them back to the Plant.
+**ACT + Temporal Ensembling** is retained as a deterministic baseline. **AWE** (sparse waypoints)
+is an *optional sparsity ablation*, not the centerpiece.
 
-### C. The Reactive Local Layer
-A lightweight, high-rate (target ~200–500 Hz) **operational-space / impedance controller** runs
-local to the actuators. It receives the delayed waypoints from the VLA and tracks them using
-zero-delay local state, smoothing and stabilizing execution between (and through the latency of)
-cognitive updates. Gains are **fixed** in this work — learned, language-conditioned gains are
-deferred to future work (Section 6).
+## 4. System Architecture
 
-> Note: This is an operational-space impedance controller, deliberately *not* a receding-horizon
-> QP-MPC. A true high-rate MPC is a separate project and is not required for the contribution.
+Asynchronous ROS2 DDS over physical Ethernet, strict separation of concerns.
 
-## 4. Implementation Phases (≈12 weeks, solo, full-time)
+### A. Simulation Plant (PC Host)
+robosuite/MuJoCo (RoboMimic task) wrapped as a ROS2 node: steps physics, publishes
+`sensor_msgs/Image` + `JointState`, applies low-level actions, reports task success.
 
-**Phase 1 — HiL Testbed & Latency Harness (Weeks 1–2).**
-Build the robosuite ROS2 wrapper and the programmatic latency/jitter/drop injection at the DDS
-boundary. Getting this experimental instrument right early is the priority.
+### B. Edge Controller (Jetson Orin Nano)
+The diffusion/flow policy + a **pluggable chunk-execution strategy**. The strategy is the heart of
+the experiment and the extensibility seam: `{synchronous, naive_async, temporal_ensemble, bid,
+rtc}` for Wedge A, with `network_aware` reserved for Wedge B (Section 7). The policy backend is
+swappable PyTorch ↔ TensorRT so a TRT stall never blocks the science.
 
-**Phase 2 — Baseline Policy In-Loop on PC (Weeks 3–5).**
-Stand up the pretrained policy and validate baseline task success *before* the network boundary,
-on a single well-chosen task (e.g., pick-and-place of a target block). Establish the
-no-latency reference success rate.
+### C. Reactive Local Layer
+High-rate (~200–500 Hz) operational-space impedance controller, co-located with the plant
+(zero-delay local state). Tracks the (delayed) task-space targets between cognitive updates. Fixed
+gains in this work. A `passthrough` mode reproduces the monolithic (no-reactive-layer) baseline.
 
-**Phase 3 — Jetson Deployment (Weeks 5–8).**
-ONNX → TensorRT on the Orin Nano; reach a stable, honest inference rate. **Risk-managed:** a
-PyTorch GPU fallback is built first so a TensorRT stall never blocks downstream phases. The
-project succeeds even if TRT underperforms — we simply report the rate achieved.
+### D. Latency Harness (the instrument)
+Per-link relay at the DDS boundary injecting seeded **latency + jitter + drop + reorder**. This is
+what lets us test the regime RTC explicitly excludes. Software injection works whether or not the
+Jetson is physically attached, and stacks on top of the real wire when it is.
 
-**Phase 4 — Reactive Local Layer (Weeks 8–10).**
-Add the high-rate operational-space impedance controller that tracks the delayed VLA waypoints
-using local state.
+```
+[plant] --img,state--> [latency harness] --> [controller: policy + chunk strategy] --target-->
+   ^                                                                                     |
+   +------------------- [reactive layer @ high rate] <----------------------------------+
+```
 
-**Phase 5 — Benchmark Sweep & Writeup (Weeks 10–12).**
-The money plot: **Task Success Rate, Control Loop Frequency, and Inference Latency vs. injected
-latency/jitter**, measured *with vs. without* the reactive layer. Polish README, plots, and a
-demo video.
+## 5. Experimental Design (Wedge A)
 
-## 5. Evaluation
+**Independent variables:** injected latency, jitter (std), packet-loss prob, chunk strategy
+(5 levels), reactive layer on/off.
 
-Single task, fully characterized, beats many half-tasks. Core metrics:
+**Baselines reproduced** (chunk-execution strategies): synchronous (pause between chunks),
+naive-async, Temporal Ensembling, BID, RTC.
 
-- **Task Success Rate (%)** as a function of injected one-way latency and jitter.
-- **Control Loop Frequency (Hz)** and end-to-end **Inference Latency (ms)** on the Orin Nano.
-- **Stability margin:** the latency at which the monolithic loop fails vs. the hierarchical loop.
+**Metrics:** Task Success Rate (%), task throughput (progress/time), achieved control-loop Hz,
+end-to-end inference latency (ms), and the **stability margin** — the latency/jitter at which each
+strategy fails, with vs. without the reactive layer.
 
-The headline result is the gap between the two curves: how much edge-induced delay the reactive
-layer buys back.
+**Headline result:** success-rate curves for each strategy vs. injected jitter and packet loss,
+showing (a) where deterministic-delay methods (esp. RTC) degrade once delay is stochastic/lossy,
+and (b) how much the reactive layer buys back.
 
-## 6. Future Work: Language-Conditioned Impedance Tuning
+## 6. Implementation Phases (≈12 weeks, solo, full-time)
 
-A natural extension is to make the reactive layer's stiffness matrix ($K_p, K_d$) a function of
-semantic intent — "wipe the table" → low Z-axis stiffness (compliant); "insert the peg firmly" →
-high stiffness (rigid disturbance rejection). This is deferred because it requires demonstration
-data labeled with impedance/contact-wrench targets paired with language, which standard datasets
-(Robomimic, etc.) do not provide; generating that dataset is a project in its own right. The
-architecture here is built to accept such gains directly, making this a clean follow-on.
+**Phase 1 — HiL testbed & latency/jitter/loss/reorder harness (Weeks 1–2).** Built first; it is
+the experimental instrument.
+
+**Phase 2 — Diffusion/flow policy in-loop on PC (Weeks 3–5).** Train/adopt a small diffusion
+policy on one RoboMimic task (start with `Lift` or `Can`), validate baseline success before the
+network boundary. Implement the chunk-execution strategy interface with the simple strategies
+(synchronous, naive-async, TE).
+
+**Phase 3 — RTC + BID baselines (Weeks 5–7).** Implement RTC (freeze-`d` + soft-masked guided
+inpainting) and BID against the flow policy. Validate they match published behavior at
+deterministic delay before adding network effects.
+
+**Phase 4 — Jetson deployment (Weeks 6–8, overlaps).** ONNX → TensorRT; honest inference rate.
+PyTorch fallback built first as insurance.
+
+**Phase 5 — Reactive layer + benchmark sweep (Weeks 8–12).** Add the impedance layer; run the full
+sweep over latency/jitter/loss × strategy × reactive on/off; produce the headline plots; writeup,
+README, demo video.
+
+## 7. Future Work
+
+**Wedge B — Network-aware chunking (the algorithmic extension).** RTC forecasts the delay `d`
+conservatively as the max of a buffer of past delays, assuming a reliable channel. Under
+heavy-tailed jitter and loss this is exactly where it should break. The extension: drive the
+freeze horizon and execution horizon from a *measured RTT/jitter distribution* (e.g., a quantile
+or loss-aware estimate) rather than a single forecast `d`. This is a genuine, scoped algorithmic
+contribution that drops into RTC's inference loop and is provable only on a testbed like this one.
+The codebase reserves a `network_aware` strategy slot for it.
+
+**Language-conditioned impedance.** Making the reactive layer's stiffness a function of semantic
+intent (compliant "wipe" vs. rigid "insert"), gated on collecting impedance-labeled data.
 
 ## References
 
-[1] Zhao, T. Z., et al. (2023). "Learning Fine-Grained Bimanual Manipulation with Low-Cost
-Hardware." Robotics: Science and Systems (RSS).
-[2] Jiang, et al. (2026). "Adaptive Action Chunking at Inference-time for Vision-Language-Action
-Models." arXiv:2604.04161.
-[3] Zhou, et al. (2026). "Terrain-Reactive Locomotion Policies from Vision-Language-Action Priors:
-Bridging Semantic Commands and Whole-Body Control."
+[1] Black, K., Galliker, M. Y., Levine, S. (2025). "Real-Time Execution of Action Chunking Flow
+Policies." NeurIPS 2025. arXiv:2506.07339.
+[2] Liu, Y., et al. (2024). "Bidirectional Decoding: Improving Action Chunking via Guided
+Test-Time Sampling." arXiv:2408.17355.
+[3] "FASTER: Rethinking Real-Time Flow VLAs." (2026). arXiv:2603.19199.
+[4] Chi, C., et al. (2023). "Diffusion Policy: Visuomotor Policy Learning via Action Diffusion."
+Robotics: Science and Systems (RSS).
+[5] Zhao, T. Z., et al. (2023). "Learning Fine-Grained Bimanual Manipulation with Low-Cost
+Hardware" (ACT). RSS.
+[6] Shi, L. X., Sharma, A., Zhao, T. Z., Finn, C. (2023). "Waypoint-Based Imitation Learning for
+Robotic Manipulation" (AWE). CoRL. arXiv:2307.14326.
+[7] "Leave No Observation Behind: Real-Time Correction for VLA Action Chunks." (2025).
+arXiv:2509.23224.

@@ -17,12 +17,14 @@ from launch_ros.actions import Node
 def generate_launch_description() -> LaunchDescription:
     backend = LaunchConfiguration('backend')
     weights = LaunchConfiguration('weights')
+    strategy = LaunchConfiguration('strategy')
 
     return LaunchDescription([
         DeclareLaunchArgument('backend', default_value='tensorrt'),
         DeclareLaunchArgument('weights', default_value=''),
+        DeclareLaunchArgument('strategy', default_value='rtc'),
         Node(
             package='evh_controller', executable='controller_node', name='evh_controller',
             output='screen',
-            parameters=[{'backend': backend, 'weights_path': weights}]),
+            parameters=[{'backend': backend, 'weights_path': weights, 'strategy': strategy}]),
     ])

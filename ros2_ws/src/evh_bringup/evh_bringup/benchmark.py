@@ -94,38 +94,46 @@ def _append_csv(path: str, args, s: dict) -> None:
     with open(path, 'a', newline='') as f:
         w = csv.writer(f)
         if new:
-            w.writerow(['condition', 'latency_ms', 'jitter_ms', 'reactive', 'trials',
+            w.writerow(['condition', 'strategy', 'latency_ms', 'jitter_ms', 'reactive', 'trials',
                         'success_rate', 'infer_ms_mean', 'infer_ms_p95', 'loop_hz'])
-        w.writerow([args.label, args.latency_ms, args.jitter_ms, args.reactive, s['trials'],
-                    s['success_rate'], s['infer_ms_mean'], s['infer_ms_p95'], s['loop_hz']])
+        w.writerow([args.label, getattr(args, 'strategy', ''), args.latency_ms, args.jitter_ms,
+                    args.reactive, s['trials'], s['success_rate'], s['infer_ms_mean'],
+                    s['infer_ms_p95'], s['loop_hz']])
 
 
 # ---------------------------------------------------------------------- sweep
 def run_sweep(args) -> None:
-    """Launch the stack once per latency value, for reactive ON and OFF, and record each."""
+    """Wedge-A sweep: launch the stack once per (strategy x latency x reactive) cell and record.
+
+    Yields the headline curves — success rate vs injected latency/jitter for each chunk-execution
+    strategy, with and without the reactive layer.
+    """
     values = [float(v) for v in args.values.split(',')]
-    for reactive in (True, False):
-        for lat in values:
-            passthrough = 'false' if reactive else 'true'
-            label = f'reactive={reactive}_lat={lat}'
-            print(f'[sweep] launching {label} ...')
-            proc = subprocess.Popen(
-                ['ros2', 'launch', 'evh_bringup', 'hil.launch.py',
-                 f'latency_ms:={lat}', f'jitter_ms:={args.jitter_ms}',
-                 f'backend:={args.backend}', f'weights:={args.weights}',
-                 f'passthrough:={passthrough}'],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                preexec_fn=os.setsid)
-            try:
-                time.sleep(args.warmup)   # let the graph come up
-                rec_args = argparse.Namespace(
-                    out=args.out, duration=args.duration, label=label,
-                    latency_ms=lat, jitter_ms=args.jitter_ms, reactive=reactive)
-                run_record(rec_args)
-            finally:
-                os.killpg(os.getpgid(proc.pid), signal.SIGINT)
-                proc.wait(timeout=15)
-            time.sleep(2.0)
+    strategies = [s.strip() for s in args.strategies.split(',')]
+    for strategy in strategies:
+        for reactive in (True, False):
+            for lat in values:
+                passthrough = 'false' if reactive else 'true'
+                label = f'strat={strategy}_reactive={reactive}_lat={lat}'
+                print(f'[sweep] launching {label} ...')
+                proc = subprocess.Popen(
+                    ['ros2', 'launch', 'evh_bringup', 'hil.launch.py',
+                     f'latency_ms:={lat}', f'jitter_ms:={args.jitter_ms}',
+                     f'backend:={args.backend}', f'weights:={args.weights}',
+                     f'strategy:={strategy}', f'passthrough:={passthrough}'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    preexec_fn=os.setsid)
+                try:
+                    time.sleep(args.warmup)   # let the graph come up
+                    rec_args = argparse.Namespace(
+                        out=args.out, duration=args.duration, label=label,
+                        latency_ms=lat, jitter_ms=args.jitter_ms, reactive=reactive,
+                        strategy=strategy)
+                    run_record(rec_args)
+                finally:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+                    proc.wait(timeout=15)
+                time.sleep(2.0)
     print(f'[sweep] done -> {args.out}')
 
 
@@ -135,6 +143,8 @@ def main(argv=None) -> None:
     p = argparse.ArgumentParser(description='EdgeVLA-HiL benchmark')
     p.add_argument('--sweep', choices=['latency'], help='run the orchestrated sweep')
     p.add_argument('--values', default='0,25,50,100,200', help='comma-separated latency_ms values')
+    p.add_argument('--strategies', default='synchronous,temporal_ensemble,rtc',
+                   help='comma-separated chunk-execution strategies to sweep (Wedge A)')
     p.add_argument('--duration', type=float, default=60.0, help='record window seconds')
     p.add_argument('--warmup', type=float, default=8.0, help='seconds to wait after launch')
     p.add_argument('--out', default='results/sweep.csv')
@@ -145,6 +155,7 @@ def main(argv=None) -> None:
     p.add_argument('--label', default='manual')
     p.add_argument('--latency_ms', type=float, default=0.0)
     p.add_argument('--reactive', type=lambda s: s.lower() == 'true', default=True)
+    p.add_argument('--strategy', default='', help='strategy tag for a manual record row')
     args = p.parse_args(argv)
 
     if args.sweep:

@@ -24,6 +24,7 @@ def generate_launch_description() -> LaunchDescription:
     drop_prob = LaunchConfiguration('drop_prob')
     backend = LaunchConfiguration('backend')
     weights = LaunchConfiguration('weights')
+    strategy = LaunchConfiguration('strategy')
     passthrough = LaunchConfiguration('passthrough')
 
     args = [
@@ -32,6 +33,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('drop_prob', default_value='0.0'),
         DeclareLaunchArgument('backend', default_value='pytorch'),
         DeclareLaunchArgument('weights', default_value=''),
+        DeclareLaunchArgument('strategy', default_value='synchronous'),
         DeclareLaunchArgument('passthrough', default_value='false'),
     ]
 
@@ -58,7 +60,7 @@ def generate_launch_description() -> LaunchDescription:
     controller = Node(
         package='evh_controller', executable='controller_node', name='evh_controller',
         output='screen',
-        parameters=[{'backend': backend, 'weights_path': weights}],
+        parameters=[{'backend': backend, 'weights_path': weights, 'strategy': strategy}],
         remappings=[
             ('/obs/image', '/obs/image/delayed'),
             ('/obs/joint_state', '/obs/joint_state/delayed'),

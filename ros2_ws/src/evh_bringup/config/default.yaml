@@ -14,9 +14,9 @@
 /evh_controller:
   ros__parameters:
     backend: "pytorch"      # pytorch (fallback, build first) | tensorrt (Jetson fast path)
-    weights_path: ""        # ACT checkpoint dir or .engine
-    infer_hz: 10.0          # honest cognitive-layer rate on Orin Nano
-    temporal_ensemble: false
+    weights_path: ""        # diffusion/flow checkpoint dir or .engine
+    strategy: "synchronous" # synchronous | naive_async | temporal_ensemble | bid | rtc | network_aware
+    control_hz: 50.0        # action stream rate (executor invokes policy internally)
     prompt: "pick up the block"
 
 /evh_reactive:
