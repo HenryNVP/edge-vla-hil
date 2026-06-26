@@ -68,11 +68,19 @@ LeRobot churns fast and **0.4.0 (Oct 2025) moved normalization out of the policy
 is therefore locked to the last release where `DiffusionPolicy.from_pretrained(...)` +
 `select_action()` work like the canonical example:
 
-| package | pin | why |
+Install via the **`pusht` extra**, which resolves a mutually-consistent env stack — don't hand-pin
+gymnasium:
+
+```bash
+pip install "lerobot[pusht]==0.3.3" matplotlib
+```
+
+| package | resolved | why |
 |---|---|---|
-| `lerobot` | `==0.3.3` | last with built-in normalization; namespace is `lerobot.policies.*` (no `common`) |
-| `gym-pusht` | `==0.1.6` | no upper bound on gymnasium, so it co-resolves with lerobot's `gymnasium>=1.1.1,<2.0` |
-| `gymnasium` | `>=1.1.1,<2.0` | required range from lerobot 0.3.3 |
+| `lerobot` | `==0.3.3` | last with built-in normalization; namespace `lerobot.policies.*` (no `common`) |
+| `gymnasium` | `>=0.29.1,<1.0` | lerobot 0.3.3's own pin (the `pusht` extra respects it) |
+| `gym-pusht`, `pymunk` | from extra | `gym-pusht>=0.1.5`, `pymunk>=6.6,<7` |
+| `torch` | `>=2.2.1,<2.8.0` | lerobot 0.3.3's pin — watch for a Colab downgrade across CUDA versions |
 
 `load_policy()` extracts a chunk through the **public** API only (`reset()` + `select_action()` ×
 `n_action_steps`), so it doesn't depend on internal helpers. If you bump lerobot past 0.3.3, expect

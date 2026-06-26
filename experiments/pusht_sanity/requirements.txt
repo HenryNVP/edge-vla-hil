@@ -2,18 +2,17 @@
 #
 # LOCKED to a self-consistent, known-good baseline. Rationale:
 #   * lerobot 0.4.0 (Oct 2025) moved normalization OUT of the policy into a separate
-#     PolicyProcessorPipeline, which changes how a pretrained checkpoint is loaded AND run.
+#     PolicyProcessorPipeline, changing how a pretrained checkpoint is loaded AND run.
 #   * lerobot 0.3.3 (Aug 2025) is the last release where DiffusionPolicy carries built-in
-#     normalization, so `DiffusionPolicy.from_pretrained("lerobot/diffusion_pusht")` +
-#     `select_action()` work exactly like the canonical example. That's our anchor.
-# If you bump lerobot past 0.3.3, expect to rewrite load_policy() for the processor pipeline.
-lerobot==0.3.3
-gym-pusht==0.1.6
-gymnasium>=1.1.1,<2.0        # range required by lerobot 0.3.3; gym-pusht 0.1.6 accepts it
-numpy>=1.24,<2.0
+#     normalization, so from_pretrained + select_action work like the canonical example.
+#
+# Install the PushT *extra* — it pulls a mutually-consistent gym-pusht + pymunk + gymnasium
+# (lerobot 0.3.3 itself pins gymnasium>=0.29.1,<1.0.0, so do NOT hand-pin gymnasium).
+lerobot[pusht]==0.3.3
 matplotlib>=3.7
 pytest>=7
-# torch comes via lerobot (needs >=2.7,<2.11). On Colab the preinstalled CUDA torch usually
-# satisfies this; if pip tries to swap it, install a matching CUDA wheel first.
-
-# The pure-numpy core (latency_chunking.py) needs only numpy + pytest; the rest is for run_pusht.py.
+# numpy comes transitively via lerobot; for the pure-numpy core alone, `pip install numpy pytest`.
+#
+# torch: lerobot 0.3.3 requires torch>=2.2.1,<2.8.0. On Colab the preinstalled CUDA torch is
+# usually in range; if pip tries to downgrade it across CUDA versions and GPU breaks, restart the
+# runtime, then `pip install "torch==2.7.*"` from the Colab CUDA index before installing lerobot.
