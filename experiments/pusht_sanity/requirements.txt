@@ -1,0 +1,9 @@
+# PushT sanity rig (throwaway, non-ROS). Install into a separate venv from the ROS workspace.
+# torch is pulled by lerobot; install the CUDA build matching your machine if you have a GPU.
+lerobot>=0.1
+gym-pusht>=0.1
+gymnasium>=0.29
+numpy>=1.24,<2.0
+matplotlib>=3.7
+# The pure-numpy core (latency_chunking.py) needs only numpy + pytest; the rest is for run_pusht.py.
+pytest>=7
