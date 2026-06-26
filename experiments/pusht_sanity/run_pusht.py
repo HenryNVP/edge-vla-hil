@@ -56,13 +56,37 @@ class GymPushTEnv:
 
 
 # ------------------------------------------------------------ policy adapter
+def _load_diffusion_policy(device: str):
+    """Load pretrained diffusion_pusht across LeRobot's shifting package layouts.
+
+    The namespace moved between releases: newer `lerobot.policies.*`, older
+    `lerobot.common.policies.*`. We try both and raise a diagnostic if neither works.
+    """
+    import importlib
+    tried = []
+    for modpath in ('lerobot.policies.diffusion.modeling_diffusion',          ### new layout
+                    'lerobot.common.policies.diffusion.modeling_diffusion'):  ### old layout
+        try:
+            cls = importlib.import_module(modpath).DiffusionPolicy
+            return cls.from_pretrained('lerobot/diffusion_pusht').to(device).eval()
+        except Exception as e:           # ModuleNotFoundError or internal import mismatch
+            tried.append(f'  {modpath}: {type(e).__name__}: {e}')
+    raise ImportError(
+        "Could not load LeRobot DiffusionPolicy from any known layout. Tried:\n"
+        + '\n'.join(tried)
+        + "\n\nYour installed `lerobot` is likely incompatible/transitional. Diagnose with:\n"
+          "  import lerobot, pkgutil; "
+          "print(getattr(lerobot,'__version__','?'), "
+          "[m.name for m in pkgutil.iter_modules(lerobot.__path__)])\n"
+          "Then reinstall a coherent version (e.g. `pip install -U lerobot`, or pin a release).")
+
+
 def load_policy(device: str = 'cuda'):
     """Return (policy_fn, action_dim, horizon) for the pretrained diffusion_pusht checkpoint."""
     import torch
     import torch.nn.functional as F
-    from lerobot.common.policies.diffusion.modeling_diffusion import DiffusionPolicy  ### import
 
-    policy = DiffusionPolicy.from_pretrained('lerobot/diffusion_pusht').to(device).eval()
+    policy = _load_diffusion_policy(device)
     horizon = getattr(policy.config, 'horizon', 16)
     action_dim = 2
 
