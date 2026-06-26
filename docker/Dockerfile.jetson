@@ -1,7 +1,8 @@
 # Jetson Orin Nano (arm64): ROS2 + TensorRT controller node only.
 # Base image bundles CUDA, cuDNN, TensorRT, and the L4T PyTorch wheels for JetPack.
-# Pin the tag to the JetPack version flashed on the device.
-FROM dustynv/ros:humble-pytorch-l4t-r35.4.1
+# Tag: humble-desktop-pytorch-l4t-r35.4.1 (NOT humble-pytorch — that tag is not published).
+# Compatible with L4T R35.x including 35.6.4 / JetPack 5.1.6.
+FROM dustynv/ros:humble-desktop-pytorch-l4t-r35.4.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /ws
@@ -15,5 +16,7 @@ RUN . /opt/ros/humble/setup.sh && cd /ws/ros2_ws && \
     colcon build --symlink-install \
         --packages-up-to evh_controller evh_bringup
 
-RUN echo 'source /opt/ros/humble/setup.bash && source /ws/ros2_ws/install/setup.bash' >> /root/.bashrc
+COPY docker/entrypoint-jetson.sh /entrypoint-jetson.sh
+RUN chmod +x /entrypoint-jetson.sh
+ENTRYPOINT ["/entrypoint-jetson.sh"]
 CMD ["bash"]

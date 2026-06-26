@@ -100,11 +100,21 @@ entrypoint runs `colcon build` automatically when `install/setup.bash` is missin
 ## Jetson deployment
 
 ```bash
+# On the Jetson (L4T R35.x / JetPack 5.1.x). Pull base image first to verify connectivity:
+docker pull dustynv/ros:humble-desktop-pytorch-l4t-r35.4.1
+
 docker build -f docker/Dockerfile.jetson -t edge-vla-hil:jetson .
-# build the TRT engine from an exported ONNX policy (see scripts/build_trt_engine.py)
-# then run only the controller node on the Jetson, plant + reactive on the host
-ros2 launch evh_bringup controller.launch.py backend:=tensorrt
+
+# Controller only (pair with host.launch.py on the desktop; same ROS_DOMAIN_ID)
+docker run -it --rm --network host --runtime nvidia \
+  -e ROS_DOMAIN_ID=42 \
+  -v ~/edge-vla-hil:/ws \
+  edge-vla-hil:jetson \
+  ros2 launch evh_bringup controller.launch.py backend:=pytorch strategy:=rtc
 ```
+
+Build the TRT engine on-device from ONNX (`scripts/build_trt_engine.py`), then pass
+`backend:=tensorrt weights:=/ws/checkpoints/policy.engine`.
 
 ## Benchmark sweep (Wedge A)
 
