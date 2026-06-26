@@ -1,10 +1,12 @@
-# PC host (x86) — simulation plant + ACT policy in PyTorch fallback mode.
+# PC host (x86) — simulation plant + diffusion policy in PyTorch fallback mode.
 # ROS2 Humble itself is installed via apt, not pip.
 numpy>=1.24,<2.0
 robosuite>=1.4
 mujoco>=3.1
-torch>=2.2
-lerobot @ git+https://github.com/huggingface/lerobot.git
+# lerobot: pin PyPI release — git main fails pip metadata ("unknown" project name);
+# 0.4+ moved normalization out of the policy (breaks from_pretrained for diffusion checkpoints).
+torch>=2.2.1,<2.8.0
+lerobot==0.3.3
 opencv-python>=4.8
 onnx>=1.15
 onnxruntime>=1.17

@@ -29,3 +29,5 @@ results/*.png
 .idea/
 .DS_Store
 .claude/
+
+experiments/pusht_sanity/results/

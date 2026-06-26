@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements-host.txt
 COPY ros2_ws /ws/ros2_ws
 RUN . /opt/ros/humble/setup.sh && cd /ws/ros2_ws && colcon build --symlink-install
 
-# entrypoint sources both overlays
-RUN echo 'source /opt/ros/humble/setup.bash && source /ws/ros2_ws/install/setup.bash' >> /root/.bashrc
+COPY docker/entrypoint-host.sh /entrypoint-host.sh
+RUN chmod +x /entrypoint-host.sh
+ENTRYPOINT ["/entrypoint-host.sh"]
 CMD ["bash"]

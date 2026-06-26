@@ -42,7 +42,7 @@ class ControllerNode(Node):
         self.control_hz = self.get_parameter('control_hz').value
 
         self.policy = make_policy(backend, weights)
-        self.executor = make_executor(strategy)
+        self.chunk_executor = make_executor(strategy)
         self.get_logger().info(
             f'evh_controller: backend={backend} strategy={strategy} ctrl={self.control_hz}Hz')
 
@@ -73,7 +73,7 @@ class ControllerNode(Node):
             return  # wait for first observations
 
         t0 = time.perf_counter()
-        action = self.executor.select_action((self._image, self._joint), self.policy, self._t)
+        action = self.chunk_executor.select_action((self._image, self._joint), self.policy, self._t)
         compute_ms = (time.perf_counter() - t0) * 1e3
         # nonzero only on ticks where the strategy actually invoked the policy
         self.pub_latency.publish(Float32(data=float(compute_ms)))

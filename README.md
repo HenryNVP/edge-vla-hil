@@ -71,6 +71,32 @@ source install/setup.bash
 ros2 launch evh_bringup hil.launch.py latency_ms:=0.0 jitter_ms:=0.0
 ```
 
+## Docker (host)
+
+```bash
+docker build -f docker/Dockerfile.host -t edge-vla-hil:host .
+
+# Interactive shell (no volume — uses pre-built workspace inside the image)
+docker run -it --rm --network host -e ROS_DOMAIN_ID=42 edge-vla-hil:host
+
+# Dev mode: mount the repo (overrides /ws; entrypoint rebuilds ros2_ws/install/ once)
+docker run -it --rm --network host -e ROS_DOMAIN_ID=42 \
+  -v ~/edge-vla-hil:/ws edge-vla-hil:host
+
+# Full local HiL loop inside the container
+docker run -it --rm --network host -e ROS_DOMAIN_ID=42 \
+  -v ~/edge-vla-hil:/ws edge-vla-hil:host \
+  ros2 launch evh_bringup hil.launch.py latency_ms:=0.0 jitter_ms:=0.0
+
+# Host-only (pair with controller.launch.py on the Jetson)
+docker run -it --rm --network host -e ROS_DOMAIN_ID=42 \
+  -v ~/edge-vla-hil:/ws edge-vla-hil:host \
+  ros2 launch evh_bringup host.launch.py latency_ms:=0.0
+```
+
+If you mount the repo to `/ws`, the image's baked-in `ros2_ws/install/` is hidden — the
+entrypoint runs `colcon build` automatically when `install/setup.bash` is missing.
+
 ## Jetson deployment
 
 ```bash
