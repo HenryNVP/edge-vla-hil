@@ -1,9 +1,19 @@
 # PushT sanity rig (throwaway, non-ROS). Install into a separate venv from the ROS workspace.
-# torch is pulled by lerobot; install the CUDA build matching your machine if you have a GPU.
-lerobot>=0.1
-gym-pusht>=0.1
-gymnasium>=0.29
+#
+# LOCKED to a self-consistent, known-good baseline. Rationale:
+#   * lerobot 0.4.0 (Oct 2025) moved normalization OUT of the policy into a separate
+#     PolicyProcessorPipeline, which changes how a pretrained checkpoint is loaded AND run.
+#   * lerobot 0.3.3 (Aug 2025) is the last release where DiffusionPolicy carries built-in
+#     normalization, so `DiffusionPolicy.from_pretrained("lerobot/diffusion_pusht")` +
+#     `select_action()` work exactly like the canonical example. That's our anchor.
+# If you bump lerobot past 0.3.3, expect to rewrite load_policy() for the processor pipeline.
+lerobot==0.3.3
+gym-pusht==0.1.6
+gymnasium>=1.1.1,<2.0        # range required by lerobot 0.3.3; gym-pusht 0.1.6 accepts it
 numpy>=1.24,<2.0
 matplotlib>=3.7
-# The pure-numpy core (latency_chunking.py) needs only numpy + pytest; the rest is for run_pusht.py.
 pytest>=7
+# torch comes via lerobot (needs >=2.7,<2.11). On Colab the preinstalled CUDA torch usually
+# satisfies this; if pip tries to swap it, install a matching CUDA wheel first.
+
+# The pure-numpy core (latency_chunking.py) needs only numpy + pytest; the rest is for run_pusht.py.

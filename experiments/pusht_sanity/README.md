@@ -61,12 +61,23 @@ As injected latency grows you should see, qualitatively matching RTC:
 The pure-numpy core already reproduces exactly this ranking on the toy task (run the snippet in the
 project root chat log, or `pytest` then inspect). The PushT run confirms it on a real policy.
 
-## Version notes
+## Version lock (important)
 
-`run_pusht.py` marks the 3 version-sensitive lines with `###`: the LeRobot policy import, the
-action-chunk call (`predict_action_chunk` vs. older `diffusion.generate_actions`), and the
-observation batch (keys `observation.image`/`observation.state`, 96×96 image). Check these against
-your installed `lerobot` / `gym_pusht` versions — the rest is stable.
+LeRobot churns fast and **0.4.0 (Oct 2025) moved normalization out of the policy** into a separate
+`PolicyProcessorPipeline`, which changes how a pretrained checkpoint is loaded *and* run. The rig
+is therefore locked to the last release where `DiffusionPolicy.from_pretrained(...)` +
+`select_action()` work like the canonical example:
+
+| package | pin | why |
+|---|---|---|
+| `lerobot` | `==0.3.3` | last with built-in normalization; namespace is `lerobot.policies.*` (no `common`) |
+| `gym-pusht` | `==0.1.6` | no upper bound on gymnasium, so it co-resolves with lerobot's `gymnasium>=1.1.1,<2.0` |
+| `gymnasium` | `>=1.1.1,<2.0` | required range from lerobot 0.3.3 |
+
+`load_policy()` extracts a chunk through the **public** API only (`reset()` + `select_action()` ×
+`n_action_steps`), so it doesn't depend on internal helpers. If you bump lerobot past 0.3.3, expect
+to rewrite `load_policy()` for the processor pipeline. The image size (96×96) is the one other
+checkpoint-specific value, marked `###` in `run_pusht.py`.
 
 ## Caveats
 

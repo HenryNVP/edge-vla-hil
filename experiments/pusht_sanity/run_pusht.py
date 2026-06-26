@@ -82,32 +82,39 @@ def _load_diffusion_policy(device: str):
 
 
 def load_policy(device: str = 'cuda'):
-    """Return (policy_fn, action_dim, horizon) for the pretrained diffusion_pusht checkpoint."""
+    """Return (policy_fn, action_dim, chunk_len) for the pretrained diffusion_pusht checkpoint.
+
+    Pinned to lerobot==0.3.3 (see requirements.txt): DiffusionPolicy still carries built-in
+    normalization, so from_pretrained + select_action "just work". We extract a chunk through the
+    PUBLIC api only — reset(), select_action(), config.n_action_steps — to stay robust to internal
+    refactors. select_action generates one chunk when its action queue is empty and then doles out
+    n_action_steps actions from it; calling it n_action_steps times after a reset yields exactly
+    that chunk (all conditioned on the same observation = the open-loop chunk we want to splice).
+    """
     import torch
     import torch.nn.functional as F
 
     policy = _load_diffusion_policy(device)
-    horizon = getattr(policy.config, 'horizon', 16)
     action_dim = 2
+    chunk_len = int(getattr(policy.config, 'n_action_steps', 8))
 
     def _batch(obs: dict):
         img = torch.from_numpy(np.asarray(obs['pixels'])).permute(2, 0, 1).float() / 255.0
         img = F.interpolate(img.unsqueeze(0), size=(96, 96), mode='bilinear',
-                            align_corners=False)              ### checkpoint expects 96x96
+                            align_corners=False)              ### diffusion_pusht expects 96x96
         state = torch.from_numpy(np.asarray(obs['agent_pos'], np.float32)).unsqueeze(0)
         return {'observation.image': img.to(device),
                 'observation.state': state.to(device)}
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def policy_fn(obs: dict) -> np.ndarray:
         batch = _batch(obs)
-        if hasattr(policy, 'predict_action_chunk'):
-            chunk = policy.predict_action_chunk(batch)        ### preferred (returns [B,H,A])
-        else:                                                  # older LeRobot fallback
-            chunk = policy.diffusion.generate_actions(batch)
-        return chunk[0].detach().cpu().numpy()
+        policy.reset()                                    # clear queues -> fresh chunk from obs
+        chunk = [policy.select_action({k: v.clone() for k, v in batch.items()})[0].cpu().numpy()
+                 for _ in range(chunk_len)]
+        return np.asarray(chunk, dtype=np.float64)        # [chunk_len, action_dim]
 
-    return policy_fn, action_dim, horizon
+    return policy_fn, action_dim, chunk_len
 
 
 # -------------------------------------------------------------------- sweep
