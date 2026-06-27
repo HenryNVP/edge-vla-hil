@@ -7,14 +7,16 @@ FROM dustynv/ros:humble-desktop-pytorch-l4t-r35.4.1
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /ws
 
+COPY docker/ros_source.sh /ros_source.sh
+RUN chmod +x /ros_source.sh
+
 COPY requirements-jetson.txt /ws/
 RUN pip3 install --no-cache-dir -r requirements-jetson.txt
 
 # Only the controller package (and its deps) need to build on the device.
 COPY ros2_ws /ws/ros2_ws
-RUN . /opt/ros/humble/setup.sh && cd /ws/ros2_ws && \
-    colcon build --symlink-install \
-        --packages-up-to evh_controller evh_bringup
+RUN bash -c "source /ros_source.sh && cd /ws/ros2_ws && \
+    colcon build --symlink-install --packages-up-to evh_controller evh_bringup"
 
 COPY docker/entrypoint-jetson.sh /entrypoint-jetson.sh
 RUN chmod +x /entrypoint-jetson.sh

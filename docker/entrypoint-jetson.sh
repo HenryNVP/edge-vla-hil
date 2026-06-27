@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Source ROS + build controller packages when install/ is missing (volume mount).
 set -e
-source /opt/ros/humble/setup.bash
+source /ros_source.sh
 cd /ws/ros2_ws
 if [[ ! -f install/setup.bash ]]; then
   echo "[entrypoint-jetson] install/ missing — running colcon build..."

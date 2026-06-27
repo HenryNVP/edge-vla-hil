@@ -1,8 +1,7 @@
 # Jetson Orin Nano (arm64) — controller node only.
 # torch + torchvision come from the NVIDIA Jetson wheels / L4T container, NOT pip; do not install
-# them from here. TensorRT ships with JetPack. This file lists the remaining pure-python deps.
+# them from here. TensorRT ships with JetPack. PyYAML comes with the dustynv ROS base image.
 numpy>=1.24,<2.0
 opencv-python>=4.8
 pycuda>=2024.1
 onnx>=1.15
-pyyaml>=6.0
