@@ -2,7 +2,7 @@
 # ROS2 Humble itself is installed via apt, not pip.
 numpy>=1.24,<2.0
 robosuite>=1.4
-mujoco>=3.1
+mujoco>=3.1,<3.10  # 3.10 breaks robosuite (mj_fullM signature change; see robosuite#814)
 # lerobot: pin PyPI release — git main fails pip metadata ("unknown" project name);
 # 0.4+ moved normalization out of the policy (breaks from_pretrained for diffusion checkpoints).
 torch>=2.2.1,<2.8.0
@@ -11,3 +11,4 @@ opencv-python>=4.8
 onnx>=1.15
 onnxruntime>=1.17
 pyyaml>=6.0
+imageio[ffmpeg]>=2.31  # mp4 export in scripts/run_sim_standalone.py --video

@@ -31,3 +31,4 @@ results/*.png
 .claude/
 
 experiments/pusht_sanity/results/
+*.mp4
