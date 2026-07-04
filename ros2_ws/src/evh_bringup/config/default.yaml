@@ -10,6 +10,8 @@
     camera: "agentview"
     image_size: 224
     seed: 0
+    video_path: ""          # e.g. /ws/outputs/hil.mp4 for headless mp4 recording
+    video_duration: 0.0     # seconds; 0 = record until shutdown
 
 /evh_controller:
   ros__parameters:

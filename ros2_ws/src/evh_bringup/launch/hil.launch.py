@@ -11,6 +11,8 @@ Launch args:
   backend     : pytorch | tensorrt   (controller inference path)
   weights     : ACT checkpoint dir or .engine path
   passthrough : true -> disable reactive layer (monolithic baseline ablation)
+  video       : headless mp4 path on the plant (empty = off); e.g. /ws/outputs/hil.mp4
+  video_duration : seconds to record (0 = until shutdown)
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -26,6 +28,8 @@ def generate_launch_description() -> LaunchDescription:
     weights = LaunchConfiguration('weights')
     strategy = LaunchConfiguration('strategy')
     passthrough = LaunchConfiguration('passthrough')
+    video = LaunchConfiguration('video')
+    video_duration = LaunchConfiguration('video_duration')
 
     args = [
         DeclareLaunchArgument('latency_ms', default_value='0.0'),
@@ -35,10 +39,13 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('weights', default_value=''),
         DeclareLaunchArgument('strategy', default_value='synchronous'),
         DeclareLaunchArgument('passthrough', default_value='false'),
+        DeclareLaunchArgument('video', default_value=''),
+        DeclareLaunchArgument('video_duration', default_value='0.0'),
     ]
 
     plant = Node(
-        package='evh_plant', executable='plant_node', name='evh_plant', output='screen')
+        package='evh_plant', executable='plant_node', name='evh_plant', output='screen',
+        parameters=[{'video_path': video, 'video_duration': video_duration}])
 
     # one relay per observation topic
     relay_img = Node(

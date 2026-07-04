@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /ws
 COPY requirements-host.txt /ws/
-RUN pip install --no-cache-dir -r requirements-host.txt
+RUN pip install --no-cache-dir torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128 \
+    && pip install --no-cache-dir -r requirements-host.txt
 
 COPY ros2_ws /ws/ros2_ws
 RUN . /opt/ros/humble/setup.sh && cd /ws/ros2_ws && colcon build --symlink-install

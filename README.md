@@ -84,9 +84,15 @@ docker run -it --rm --network host -e ROS_DOMAIN_ID=42 \
   -v ~/edge-vla-hil:/ws edge-vla-hil:host
 
 # Full local HiL loop inside the container
-docker run -it --rm --network host -e ROS_DOMAIN_ID=42 \
+docker run -it --rm --gpus all --network host -e ROS_DOMAIN_ID=42 \
   -v ~/edge-vla-hil:/ws edge-vla-hil:host \
   ros2 launch evh_bringup hil.launch.py latency_ms:=0.0 jitter_ms:=0.0
+
+# Record headless mp4 (agentview @ 20 Hz, no display needed)
+docker run -it --rm --gpus all --network host -e ROS_DOMAIN_ID=42 \
+  -v ~/edge-vla-hil:/ws edge-vla-hil:host \
+  ros2 launch evh_bringup hil.launch.py \
+    weights:=lerobot/diffusion_pusht video:=/ws/outputs/hil.mp4 video_duration:=30.0
 
 # Host-only (pair with controller.launch.py on the Jetson)
 docker run -it --rm --network host -e ROS_DOMAIN_ID=42 \

@@ -15,16 +15,21 @@ def generate_launch_description() -> LaunchDescription:
     jitter_ms = LaunchConfiguration('jitter_ms')
     drop_prob = LaunchConfiguration('drop_prob')
     passthrough = LaunchConfiguration('passthrough')
+    video = LaunchConfiguration('video')
+    video_duration = LaunchConfiguration('video_duration')
 
     args = [
         DeclareLaunchArgument('latency_ms', default_value='0.0'),
         DeclareLaunchArgument('jitter_ms', default_value='0.0'),
         DeclareLaunchArgument('drop_prob', default_value='0.0'),
         DeclareLaunchArgument('passthrough', default_value='false'),
+        DeclareLaunchArgument('video', default_value=''),
+        DeclareLaunchArgument('video_duration', default_value='0.0'),
     ]
 
     plant = Node(
-        package='evh_plant', executable='plant_node', name='evh_plant', output='screen')
+        package='evh_plant', executable='plant_node', name='evh_plant', output='screen',
+        parameters=[{'video_path': video, 'video_duration': video_duration}])
     relay_img = Node(
         package='evh_latency', executable='latency_node', name='latency_image', output='screen',
         parameters=[{
