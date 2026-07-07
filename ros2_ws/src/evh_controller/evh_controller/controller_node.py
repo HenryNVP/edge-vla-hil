@@ -9,15 +9,19 @@ executed under inference latency is delegated to a ChunkExecutor strategy
 (synchronous | naive_async | temporal_ensemble | bid | rtc | network_aware), which is the seam for
 the Wedge-A baseline comparison and the Wedge-B extension.
 
+Inference is ASYNCHRONOUS: the policy runs on a background InferenceWorker, the tick only
+streams actions from the strategy (which may return None = hold, e.g. the synchronous strategy's
+pause). The delay a chunk experiences — request to arrival, in control steps — is measured
+honestly and published, and is what feeds RTC's delay forecast.
+
 Resets the executor (chunk buffers, timestep counter) on /episode/reset from the plant so chunks
 never bleed across episode boundaries.
 
-Publishes per-tick compute time on /metrics/inference_ms for the benchmark recorder. (When the
-real async-generation hook lands, this becomes the true inference delay `d`.)
+Metrics (published on the tick a chunk arrives):
+  /metrics/inference_ms   true wall-clock inference time of that chunk
+  /metrics/delay_steps    request->arrival delay in control steps (what the strategies fight)
 """
 from __future__ import annotations
-
-import time
 
 import numpy as np
 import rclpy
@@ -28,6 +32,7 @@ from std_msgs.msg import Empty, Float32
 
 from evh_controller.policy import make_policy
 from evh_controller.chunk_executor import make_executor
+from evh_controller.inference_worker import InferenceWorker
 
 
 class ControllerNode(Node):
@@ -46,7 +51,8 @@ class ControllerNode(Node):
         self.control_hz = self.get_parameter('control_hz').value
 
         self.policy = make_policy(backend, weights)
-        self.chunk_executor = make_executor(strategy)
+        self.worker = InferenceWorker(self.policy)
+        self.chunk_executor = make_executor(strategy, self.worker, self.policy)
         self.get_logger().info(
             f'evh_controller: backend={backend} strategy={strategy} ctrl={self.control_hz}Hz')
 
@@ -63,6 +69,7 @@ class ControllerNode(Node):
 
         self.pub_waypoint = self.create_publisher(JointState, '/cmd/waypoint', 10)
         self.pub_latency = self.create_publisher(Float32, '/metrics/inference_ms', 10)
+        self.pub_delay = self.create_publisher(Float32, '/metrics/delay_steps', 10)
 
         self.create_timer(1.0 / self.control_hz, self._tick)
 
@@ -82,14 +89,17 @@ class ControllerNode(Node):
         if self._image is None or self._joint is None:
             return  # wait for first observations
 
-        t0 = time.perf_counter()
-        action = self.chunk_executor.select_action((self._image, self._joint), self.policy, self._t)
-        compute_ms = (time.perf_counter() - t0) * 1e3
-        # nonzero only on ticks where the strategy actually invoked the policy
-        self.pub_latency.publish(Float32(data=float(compute_ms)))
-
-        self.pub_waypoint.publish(self._to_waypoint(action))
+        action = self.chunk_executor.step((self._image, self._joint), self._t)
         self._t += 1
+
+        metrics = self.chunk_executor.take_arrival_metrics()
+        if metrics is not None:
+            compute_ms, delay_steps = metrics
+            self.pub_latency.publish(Float32(data=float(compute_ms)))
+            self.pub_delay.publish(Float32(data=float(delay_steps)))
+
+        if action is not None:   # None = hold: no new waypoint, the reactive layer keeps tracking
+            self.pub_waypoint.publish(self._to_waypoint(action))
 
     # --------------------------------------------------------------- helpers
     def _to_waypoint(self, action: np.ndarray) -> JointState:
@@ -105,6 +115,10 @@ class ControllerNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.position = [float(v) for v in a[:7]]
         return msg
+
+    def destroy_node(self) -> None:
+        self.worker.shutdown()
+        super().destroy_node()
 
 
 def main(args=None) -> None:

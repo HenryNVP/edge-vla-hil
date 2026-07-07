@@ -137,5 +137,11 @@ ros2 run evh_bringup benchmark --sweep latency \
 
 ## Status
 
-Phase 1 skeleton. Nodes are runnable stubs with the ROS2 plumbing in place and `TODO` markers for
-the physics, inference, and control logic. See per-package docstrings.
+Phase 2 in progress. In place: the HiL plumbing, the latency harness, the episode/metrics plane
+(success AND timeout recorded, `/episode/reset` boundary signal), the full-action contract
+(gripper included; reactive layer tracks absolute targets from zero-delay local EE state), and
+**asynchronous chunk execution** — policy inference on a background worker, arrival-based
+strategies, honestly measured request→arrival delay feeding RTC's forecast
+(`/metrics/inference_ms`, `/metrics/delay_steps`). Still to come: a trained policy for the
+robosuite task (Phase 2 gate), true guided inpainting for RTC + real BID (Phase 3), TensorRT
+backend (Phase 4). See per-package docstrings.
