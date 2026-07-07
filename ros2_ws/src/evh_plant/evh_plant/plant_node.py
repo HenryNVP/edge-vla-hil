@@ -3,11 +3,15 @@
 Responsibilities (HiL "Plant" side):
   * step the physics at a fixed control frequency (wall-clock throttled),
   * publish observations  -> /obs/image (sensor_msgs/Image), /obs/joint_state (JointState),
+                             /obs/ee_pose (PoseStamped; the reactive layer's zero-delay anchor),
   * apply incoming low-level actions <- /cmd/action (JointState) from the reactive layer,
-  * report task success on /eval/success (std_msgs/Bool) for the benchmark recorder.
+  * manage episodes: on task success OR horizon timeout, publish the outcome on /eval/success
+    (std_msgs/Bool, True/False — the recorder needs BOTH for an honest success rate), reset the
+    env, and announce the boundary on /episode/reset so downstream nodes clear their state.
 
 The node is deliberately unaware of the network boundary; latency is injected downstream by
-evh_latency via topic remapping.
+evh_latency via topic remapping. If robosuite is unavailable it degrades to synthetic
+observations (no physics, no episodes) so the graph and tests still run.
 """
 from __future__ import annotations
 
@@ -17,8 +21,8 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
-from geometry_msgs.msg import PoseStamped  # noqa: F401  (reserved: direct-waypoint debug mode)
-from std_msgs.msg import Bool
+from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Bool, Empty
 
 
 def _make_controller_config():
@@ -47,6 +51,7 @@ class PlantNode(Node):
         self.declare_parameter('camera', 'agentview')
         self.declare_parameter('image_size', 224)
         self.declare_parameter('seed', 0)
+        self.declare_parameter('max_episode_s', 20.0)  # episode horizon; timeout counts as failure
         self.declare_parameter('video_path', '')       # headless mp4; empty disables recording
         self.declare_parameter('video_duration', 0.0)  # seconds; 0 = record until shutdown
 
@@ -64,7 +69,9 @@ class PlantNode(Node):
         # --- publishers ---
         self.pub_image = self.create_publisher(Image, '/obs/image', 10)
         self.pub_joint = self.create_publisher(JointState, '/obs/joint_state', 10)
+        self.pub_ee_pose = self.create_publisher(PoseStamped, '/obs/ee_pose', 10)
         self.pub_success = self.create_publisher(Bool, '/eval/success', 10)
+        self.pub_reset = self.create_publisher(Empty, '/episode/reset', 10)
 
         # --- subscribers ---
         self.sub_action = self.create_subscription(
@@ -74,7 +81,12 @@ class PlantNode(Node):
         self._obs: dict | None = None
         self._last_action: np.ndarray | None = None
         self._action_dim = 7
-        self._build_env()
+        try:
+            self._build_env()
+        except Exception as exc:
+            self.get_logger().warn(
+                f'robosuite unavailable ({type(exc).__name__}: {exc}); '
+                'publishing synthetic observations (no physics, no episodes)')
 
         self.create_timer(1.0 / self.control_hz, self._publish_observation)
         self.create_timer(1.0 / self.action_hz, self._step_physics)
@@ -101,6 +113,8 @@ class PlantNode(Node):
             camera_heights=self.img_size,
             camera_widths=self.img_size,
             control_freq=self.action_hz,
+            # horizon is in control steps; hitting it = episode timeout = recorded failure
+            horizon=int(float(self.get_parameter('max_episode_s').value) * self.action_hz),
             seed=seed,
         )
         controller = _make_controller_config()
@@ -162,18 +176,23 @@ class PlantNode(Node):
         return action[:self._action_dim].astype(np.float32)
 
     def _step_physics(self) -> None:
-        """Advance the simulator by one action step using the cached action."""
+        """Advance the simulator one action step; close the episode on success or timeout."""
         if self._env is None:
             return
 
         self._obs, _reward, done, _info = self._env.step(self._current_action())
 
-        if hasattr(self._env, '_check_success') and self._env._check_success():
-            self.pub_success.publish(Bool(data=True))
-            self._obs = self._env.reset()
+        success = (bool(self._env._check_success())
+                   if hasattr(self._env, '_check_success') else False)
+        if success or done:
+            self.pub_success.publish(Bool(data=success))
+            self._reset_episode()
 
-        if done:
-            self._obs = self._env.reset()
+    def _reset_episode(self) -> None:
+        """Reset the env and tell downstream nodes to drop episode-scoped state."""
+        self._obs = self._env.reset()
+        self._last_action = None   # don't carry the last command into the new episode
+        self.pub_reset.publish(Empty())
 
     def _publish_observation(self) -> None:
         now = self.get_clock().now().to_msg()
@@ -183,6 +202,8 @@ class PlantNode(Node):
             frame = np.random.randint(0, 255, (self.img_size, self.img_size, 3), np.uint8)
             joint_pos = np.zeros(7, dtype=float)
             joint_vel = np.zeros(7, dtype=float)
+            ee_pos = np.zeros(3, dtype=float)
+            ee_quat = np.array([0.0, 0.0, 0.0, 1.0])
         else:
             frame = self._obs.get(camera_key)
             if frame is None:
@@ -191,6 +212,9 @@ class PlantNode(Node):
             frame = np.flipud(np.asarray(frame)).astype(np.uint8)
             joint_pos = np.asarray(self._obs.get('robot0_joint_pos', np.zeros(7)), dtype=float)
             joint_vel = np.asarray(self._obs.get('robot0_joint_vel', np.zeros(7)), dtype=float)
+            ee_pos = np.asarray(self._obs.get('robot0_eef_pos', np.zeros(3)), dtype=float)
+            ee_quat = np.asarray(   # robosuite convention: [x, y, z, w]
+                self._obs.get('robot0_eef_quat', [0.0, 0.0, 0.0, 1.0]), dtype=float)
 
         self.pub_image.publish(self._to_image_msg(frame, now))
         self._maybe_record_frame(frame)
@@ -200,6 +224,14 @@ class PlantNode(Node):
         js.position = list(joint_pos)
         js.velocity = list(joint_vel)
         self.pub_joint.publish(js)
+
+        ee = PoseStamped()
+        ee.header.stamp = now
+        ee.header.frame_id = 'base'
+        ee.pose.position.x, ee.pose.position.y, ee.pose.position.z = map(float, ee_pos)
+        (ee.pose.orientation.x, ee.pose.orientation.y,
+         ee.pose.orientation.z, ee.pose.orientation.w) = map(float, ee_quat)
+        self.pub_ee_pose.publish(ee)
 
     # -------------------------------------------------------------- helpers
     def _to_image_msg(self, frame: np.ndarray, stamp) -> Image:

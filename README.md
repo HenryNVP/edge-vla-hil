@@ -34,7 +34,7 @@ forecast) without touching the ROS2 node.
 ```
   [evh_plant]  --/obs/image, /obs/joint_state-->  [evh_latency]  -->  [evh_controller: policy + strategy]
        ^                                                                      |
-       |                                                          /cmd/waypoint (EE target, control rate)
+       |                                              /cmd/waypoint (OSC delta + gripper, policy rate)
        |                                                                      v
        +-----------/cmd/action (~200-500 Hz)------------------------  [evh_reactive]
 ```
@@ -49,8 +49,11 @@ the delayed waypoints using zero-delay local state.
 |----------------------|-------------------------------|------------------------|------------|
 | `/obs/image`         | `sensor_msgs/Image`           | plant → controller     | sim rate   |
 | `/obs/joint_state`   | `sensor_msgs/JointState`      | plant → controller     | sim rate   |
-| `/cmd/waypoint`      | `geometry_msgs/PoseStamped`   | controller → reactive  | ~10 Hz     |
+| `/obs/ee_pose`       | `geometry_msgs/PoseStamped`   | plant → reactive (local, zero-delay) | sim rate |
+| `/cmd/waypoint`      | `sensor_msgs/JointState` — `position` = 7-dim OSC_POSE action `[dpos, drot(axis-angle), gripper]` | controller → reactive | ~20 Hz |
 | `/cmd/action`        | `sensor_msgs/JointState`      | reactive → plant       | ~200-500 Hz|
+| `/eval/success`      | `std_msgs/Bool` (True/False)  | plant → benchmark      | episode end|
+| `/episode/reset`     | `std_msgs/Empty`              | plant → controller, reactive | episode end|
 
 Topics are remapped through `evh_latency` (e.g. `/obs/image` → `/obs/image/delayed`) via launch
 arguments; nodes themselves are unaware of the injected delay.

@@ -34,12 +34,16 @@ def test_relay_forwards_messages(ros):
     from rclpy.executors import SingleThreadedExecutor
     from std_msgs.msg import String
 
+    from rclpy.qos import qos_profile_sensor_data
+
     relay = _relay(rclpy, input_topic='/in', output_topic='/out',
                    msg_type='std_msgs/msg/String', latency_ms=0.0)
     helper = rclpy.create_node('test_helper')
     pub = helper.create_publisher(String, '/in', 10)
     received: list[str] = []
-    helper.create_subscription(String, '/out', lambda m: received.append(m.data), 10)
+    # the relay publishes best-effort (sensor-data QoS); the probe must match or DDS won't pair
+    helper.create_subscription(
+        String, '/out', lambda m: received.append(m.data), qos_profile_sensor_data)
 
     ex = SingleThreadedExecutor()
     ex.add_node(relay)
@@ -61,12 +65,15 @@ def test_drop_prob_one_drops_all(ros):
     from rclpy.executors import SingleThreadedExecutor
     from std_msgs.msg import String
 
+    from rclpy.qos import qos_profile_sensor_data
+
     relay = _relay(rclpy, input_topic='/in2', output_topic='/out2',
                    msg_type='std_msgs/msg/String', latency_ms=0.0, drop_prob=1.0)
     helper = rclpy.create_node('test_helper2')
     pub = helper.create_publisher(String, '/in2', 10)
     received: list[str] = []
-    helper.create_subscription(String, '/out2', lambda m: received.append(m.data), 10)
+    helper.create_subscription(
+        String, '/out2', lambda m: received.append(m.data), qos_profile_sensor_data)
 
     ex = SingleThreadedExecutor()
     ex.add_node(relay)
