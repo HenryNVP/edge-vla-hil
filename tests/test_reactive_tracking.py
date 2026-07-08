@@ -56,11 +56,18 @@ def _publish_waypoint(node, action):
     return pub, msg
 
 
+def _delta_node(ros, **extra):
+    """ReactiveNode in delta-waypoint mode (the non-default legacy contract)."""
+    from rclpy.parameter import Parameter
+    from evh_reactive.reactive_node import ReactiveNode
+    params = [Parameter('absolute_waypoints', value=False)]
+    params += [Parameter(k, value=v) for k, v in extra.items()]
+    return ReactiveNode(parameter_overrides=params)
+
+
 @requires_ros2
 def test_tracking_emits_action_toward_target(ros):
-    from evh_reactive.reactive_node import ReactiveNode
-
-    node = ReactiveNode()
+    node = _delta_node(ros)
     actions = []
     probe = _make_probe(ros, actions)
     ee_pub, ee_msg = _publish_ee_pose(probe)
@@ -85,9 +92,7 @@ def test_tracking_emits_action_toward_target(ros):
 @requires_ros2
 def test_tracking_holds_at_target(ros):
     """Once the local EE pose reaches the latched target, the emitted action goes to ~zero."""
-    from evh_reactive.reactive_node import ReactiveNode
-
-    node = ReactiveNode()
+    node = _delta_node(ros)
     actions = []
     probe = _make_probe(ros, actions)
     ee_pub, ee_msg = _publish_ee_pose(probe)
@@ -113,9 +118,8 @@ def test_tracking_holds_at_target(ros):
 @requires_ros2
 def test_episode_reset_clears_target(ros):
     from std_msgs.msg import Empty
-    from evh_reactive.reactive_node import ReactiveNode
 
-    node = ReactiveNode()
+    node = _delta_node(ros)
     actions = []
     probe = _make_probe(ros, actions)
     ee_pub, ee_msg = _publish_ee_pose(probe)
@@ -138,14 +142,66 @@ def test_episode_reset_clears_target(ros):
 
 
 @requires_ros2
-def test_passthrough_scales_delta_not_gripper(ros):
+def test_absolute_tracking_rate_limits_toward_target(ros):
+    """Absolute mode: the emitted setpoint steps toward the target, capped at max_step_pos."""
     from rclpy.parameter import Parameter
     from evh_reactive.reactive_node import ReactiveNode
 
     node = ReactiveNode(parameter_overrides=[
-        Parameter('passthrough', value=True),
-        Parameter('passthrough_scale', value=0.1),
+        Parameter('absolute_waypoints', value=True),
+        Parameter('max_step_pos', value=0.004),
     ])
+    actions = []
+    probe = _make_probe(ros, actions)
+    ee_pub, ee_msg = _publish_ee_pose(probe)                    # EE at origin
+    # target 0.5 m away in +x, gripper closing
+    wp_pub, wp_msg = _publish_waypoint(probe, [0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+
+    ee_pub.publish(ee_msg)
+    _spin_all([node, probe], 0.2)
+    wp_pub.publish(wp_msg)
+    _spin_all([node, probe], 0.3)
+
+    assert len(actions) >= 3, 'absolute tracking emitted no /cmd/action stream'
+    xs = np.array([a[0] for a in actions])
+    # the setpoint MARCHES toward the target from the arm's start pose...
+    assert xs[0] == pytest.approx(0.004, abs=1e-6)     # first step from x=0
+    assert np.all(np.diff(xs) >= -1e-9), 'setpoint must advance monotonically'
+    assert np.all(np.diff(xs) <= 0.004 + 1e-9), 'per-tick step must respect max_step_pos'
+    assert xs[-1] > xs[0], 'setpoint never progressed — crawl bug is back'
+    assert xs[-1] <= 0.5 + 1e-9, 'setpoint must not overshoot the target'
+    a = actions[-1]
+    assert abs(a[1]) < 1e-9 and abs(a[2]) < 1e-9
+    assert a[6] == 1.0
+
+
+@requires_ros2
+def test_absolute_passthrough_forwards_target_unscaled(ros):
+    from rclpy.parameter import Parameter
+    from evh_reactive.reactive_node import ReactiveNode
+
+    node = ReactiveNode(parameter_overrides=[
+        Parameter('absolute_waypoints', value=True),
+        Parameter('passthrough', value=True),
+    ])
+    actions = []
+    probe = _make_probe(ros, actions)
+    wp_pub, wp_msg = _publish_waypoint(probe, [0.3, -0.2, 1.1, 3.1, 0.0, 0.0, -1.0])
+
+    wp_pub.publish(wp_msg)
+    _spin_all([node, probe], 0.3)
+
+    assert actions
+    assert np.allclose(actions[-1], [0.3, -0.2, 1.1, 3.1, 0.0, 0.0, -1.0], atol=1e-9)
+    node.destroy_node()
+    probe.destroy_node()
+
+
+@requires_ros2
+def test_passthrough_scales_delta_not_gripper(ros):
+    from rclpy.parameter import Parameter
+
+    node = _delta_node(ros, passthrough=True, passthrough_scale=0.1)
     actions = []
     probe = _make_probe(ros, actions)
     wp_pub, wp_msg = _publish_waypoint(probe, [1.0, -1.0, 0.5, 0.2, 0.0, 0.0, 1.0])

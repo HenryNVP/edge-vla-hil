@@ -64,8 +64,8 @@ class ChunkExecutor(ABC):
         ...
 
     @abstractmethod
-    def step(self, obs: tuple, t: int) -> np.ndarray | None:
-        """Action to emit at control tick `t`, or None to hold. obs = (image, state)."""
+    def step(self, obs: dict, t: int) -> np.ndarray | None:
+        """Action to emit at control tick `t`, or None to hold. obs: see policy.py contract."""
         ...
 
     def take_arrival_metrics(self) -> tuple[float, int] | None:
@@ -74,11 +74,11 @@ class ChunkExecutor(ABC):
         return m
 
     # ----------------------------------------------------------- worker plumbing
-    def _issue(self, obs: tuple, t: int,
+    def _issue(self, obs: dict, t: int,
                prefix: np.ndarray | None = None, weights: np.ndarray | None = None) -> bool:
         if self._pending_t is not None:
             return False
-        if self.worker.try_request(obs[0], obs[1], t, self._epoch, prefix, weights):
+        if self.worker.try_request(obs, t, self._epoch, prefix, weights):
             self._pending_t = t
             return True
         return False

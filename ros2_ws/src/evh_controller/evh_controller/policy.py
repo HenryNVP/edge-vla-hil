@@ -4,21 +4,28 @@ We use a small diffusion/flow policy (not deterministic ACT) so that RTC and BID
 guided denoising / resampling — apply as first-class baselines. ACT+Temporal-Ensembling remains a
 deterministic baseline elsewhere.
 
-Two interchangeable inference paths behind one interface so the rest of the system never changes:
+Interchangeable inference paths behind one interface so the rest of the system never changes:
 
-  * PyTorchBackend  -- diffusion/flow checkpoint, runs anywhere (dev + Jetson fallback). Built
-                       FIRST so a TensorRT stall never blocks downstream phases.
+  * PyTorchBackend  -- LeRobot diffusion checkpoint, runs anywhere (dev + Jetson fallback).
+  * DiffusionPolicyRepoBackend (dp_repo_policy.py) -- real-stanford/diffusion_policy robomimic
+                       image checkpoints (the project's actual Lift policy).
   * TensorRTBackend -- serialized .engine built from an exported ONNX policy (Jetson fast path).
+
+Observation contract: a dict whose values may carry a history axis (stacked over the last
+`n_obs_steps` control ticks, oldest first — the controller maintains the history):
+
+  obs['agentview']  uint8 [To, H, W, 3] or [H, W, 3]
+  obs['wrist']      uint8 [To, H, W, 3]           (optional; backends declare needs_wrist)
+  obs['proprio']    float [To, D] or [D]          ([eef_pos(3), eef_quat(4), gripper_qpos(2)])
 
 The interface exposes BOTH plain chunk prediction and *inpainting* prediction:
 
-  predict(image, state)                       -> action chunk [H, A]
-  predict_inpaint(image, state, prefix, w)    -> action chunk [H, A], guided so the first len(w)
-                                                 entries stay close to `prefix` with weights `w`
+  predict(obs)                      -> action chunk [H, A]
+  predict_inpaint(obs, prefix, w)   -> action chunk [H, A], guided so the first len(prefix)
+                                       entries stay close to `prefix` with weights `w`
 
-`predict_inpaint` is what the RTC strategy needs (freeze-d + soft-masked guidance). The plain
-backends return zeros today (stub), but the contract is fixed so executors can be written against
-it now. Actions are end-effector (Cartesian) pose deltas (OSC_POSE convention).
+`predict_inpaint` is what the RTC strategy needs (freeze-d + soft-masked guidance).
+Actions are end-effector (Cartesian) pose deltas (OSC_POSE convention).
 """
 from __future__ import annotations
 
@@ -59,28 +66,44 @@ def _resolve_device(requested: str) -> str:
 
 
 class ChunkPolicy(ABC):
-    """obs (image HWC uint8 + state vector) -> action chunk [chunk_size, action_dim]."""
+    """obs dict (see module docstring) -> action chunk [chunk_size, action_dim]."""
 
     action_dim: int
     chunk_size: int
     denoise_steps: int
+    n_obs_steps: int = 1            # history depth the controller must maintain
+    needs_wrist: bool = False       # whether obs['wrist'] is required
+    absolute_actions: bool = False  # actions are absolute EE pose targets, not deltas
 
     @abstractmethod
-    def predict(self, image: np.ndarray, state: np.ndarray) -> np.ndarray:
+    def predict(self, obs: dict) -> np.ndarray:
         ...
 
-    def predict_inpaint(self, image: np.ndarray, state: np.ndarray,
-                        prefix: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    def predict_inpaint(self, obs: dict, prefix: np.ndarray,
+                        weights: np.ndarray) -> np.ndarray:
         """Guided generation with a soft-masked prefix (for RTC).
 
-        Default: plain predict then hard-overwrite the frozen prefix. A real flow backend should
-        instead inject `prefix`/`weights` into the denoising guidance (see RTCExecutor and the RTC
-        paper's W_i masking). Override per backend.
+        Default: plain predict then soft-blend the frozen prefix. A real diffusion backend
+        should instead inject `prefix`/`weights` into the denoising guidance (see RTCExecutor
+        and the RTC paper's W_i masking). Override per backend.
         """
-        chunk = self.predict(image, state)
-        k = min(len(prefix), chunk.shape[0])
-        chunk[:k] = prefix[:k]   # crude freeze; TODO real guided inpainting
+        chunk = self.predict(obs)
+        if prefix is None or len(prefix) == 0:
+            return chunk
+        k = min(len(prefix), len(weights), chunk.shape[0])
+        for i in range(k):
+            w = float(weights[i])
+            if w >= 1.0:
+                chunk[i] = prefix[i]
+            elif w > 0.0:
+                chunk[i] = w * prefix[i] + (1.0 - w) * chunk[i]
         return chunk
+
+
+def newest(obs_value: np.ndarray) -> np.ndarray:
+    """Latest entry of a possibly history-stacked observation value."""
+    arr = np.asarray(obs_value)
+    return arr[-1] if arr.ndim in (2, 4) else arr
 
 
 class PyTorchBackend(ChunkPolicy):
@@ -157,12 +180,13 @@ class PyTorchBackend(ChunkPolicy):
             self._image_keys or ['<none>'],
         )
 
-    def _obs_to_batch(self, image: np.ndarray, state: np.ndarray) -> dict:
-        """Map plant observations (HWC uint8 image + state vector) to a LeRobot inference batch."""
+    def _obs_to_batch(self, obs: dict) -> dict:
+        """Map the newest observation (see module contract) to a LeRobot inference batch."""
         import torch
         import torch.nn.functional as F
 
-        image = np.asarray(image, dtype=np.uint8)
+        image = np.asarray(newest(obs['agentview']), dtype=np.uint8)
+        state = newest(obs['proprio'])
         if image.ndim != 3 or image.shape[2] != 3:
             raise ValueError(f'expected HWC uint8 image, got shape {image.shape}')
 
@@ -191,13 +215,13 @@ class PyTorchBackend(ChunkPolicy):
         )
         return batch
 
-    def predict(self, image: np.ndarray, state: np.ndarray) -> np.ndarray:
+    def predict(self, obs: dict) -> np.ndarray:
         if self._model is None:
             return np.zeros((self.chunk_size, self.action_dim), dtype=np.float32)
 
         import torch
 
-        batch = self._obs_to_batch(image, state)
+        batch = self._obs_to_batch(obs)
         self._model.reset()
         chunk: list[np.ndarray] = []
         with torch.inference_mode():
@@ -205,25 +229,6 @@ class PyTorchBackend(ChunkPolicy):
                 action = self._model.select_action({k: v.clone() for k, v in batch.items()})
                 chunk.append(action[0].detach().cpu().numpy())
         return np.asarray(chunk, dtype=np.float32)
-
-    def predict_inpaint(self, image: np.ndarray, state: np.ndarray,
-                        prefix: np.ndarray, weights: np.ndarray) -> np.ndarray:
-        """RTC hook: blend a soft-masked prefix into a freshly predicted chunk.
-
-        A full implementation would inject prefix/weights into the denoising loop; until the
-        denoiser exposes that hook we use post-hoc soft blending on the executed chunk.
-        """
-        chunk = self.predict(image, state)
-        if prefix is None or len(prefix) == 0:
-            return chunk
-        k = min(len(prefix), len(weights), chunk.shape[0])
-        for i in range(k):
-            w = float(weights[i])
-            if w >= 1.0:
-                chunk[i] = prefix[i]
-            elif w > 0.0:
-                chunk[i] = w * prefix[i] + (1.0 - w) * chunk[i]
-        return chunk
 
 
 class TensorRTBackend(ChunkPolicy):
@@ -239,16 +244,19 @@ class TensorRTBackend(ChunkPolicy):
         """TODO: deserialize TRT engine + allocate bindings (see scripts/build_trt_engine.py)."""
         self._engine = None  # STUB
 
-    def predict(self, image: np.ndarray, state: np.ndarray) -> np.ndarray:
+    def predict(self, obs: dict) -> np.ndarray:
         if self._engine is None:
             return np.zeros((self.chunk_size, self.action_dim), dtype=np.float32)  # STUB
         raise NotImplementedError
 
 
-def make_policy(backend: str, weights_path: str) -> ChunkPolicy:
+def make_policy(backend: str, weights_path: str, denoise_steps: int = 16) -> ChunkPolicy:
     backend = backend.lower()
     if backend in ('pytorch', 'torch', 'fallback'):
         return PyTorchBackend(weights_path)
+    if backend in ('dp', 'diffusion_policy'):
+        from evh_controller.dp_repo_policy import DiffusionPolicyRepoBackend
+        return DiffusionPolicyRepoBackend(weights_path, denoise_steps=denoise_steps)
     if backend in ('tensorrt', 'trt'):
         return TensorRTBackend(weights_path)
     raise ValueError(f'unknown backend: {backend!r}')

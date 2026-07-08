@@ -1,0 +1,11 @@
+# keep the build context small — these are runtime-mounted or generated
+checkpoints/
+outputs/
+external/
+data/
+results/
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+.git/
+**/__pycache__/

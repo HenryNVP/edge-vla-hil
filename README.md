@@ -47,13 +47,16 @@ the delayed waypoints using zero-delay local state.
 
 | Topic                | Type                          | From → To              | Rate       |
 |----------------------|-------------------------------|------------------------|------------|
-| `/obs/image`         | `sensor_msgs/Image`           | plant → controller     | sim rate   |
-| `/obs/joint_state`   | `sensor_msgs/JointState`      | plant → controller     | sim rate   |
+| `/obs/image`         | `sensor_msgs/Image` (agentview) | plant → controller   | sim rate   |
+| `/obs/image_wrist`   | `sensor_msgs/Image` (eye-in-hand) | plant → controller | sim rate   |
+| `/obs/proprio`       | `sensor_msgs/JointState` — `position` = `[eef_pos(3), eef_quat(4, xyzw), gripper_qpos(2)]` | plant → controller | sim rate |
+| `/obs/joint_state`   | `sensor_msgs/JointState`      | plant → (debug)        | sim rate   |
 | `/obs/ee_pose`       | `geometry_msgs/PoseStamped`   | plant → reactive (local, zero-delay) | sim rate |
-| `/cmd/waypoint`      | `sensor_msgs/JointState` — `position` = 7-dim OSC_POSE action `[dpos, drot(axis-angle), gripper]` | controller → reactive | ~20 Hz |
+| `/cmd/waypoint`      | `sensor_msgs/JointState` — `position` = 7-dim action `[pos(3), axis-angle(3), gripper]`; absolute EE target with the DP policy (`absolute:=true`), OSC delta otherwise | controller → reactive | ~20 Hz |
 | `/cmd/action`        | `sensor_msgs/JointState`      | reactive → plant       | ~200-500 Hz|
 | `/eval/success`      | `std_msgs/Bool` (True/False)  | plant → benchmark      | episode end|
 | `/episode/reset`     | `std_msgs/Empty`              | plant → controller, reactive | episode end|
+| `/metrics/inference_ms`, `/metrics/delay_steps` | `std_msgs/Float32` | controller → benchmark | per chunk |
 
 Topics are remapped through `evh_latency` (e.g. `/obs/image` → `/obs/image/delayed`) via launch
 arguments; nodes themselves are unaware of the injected delay.

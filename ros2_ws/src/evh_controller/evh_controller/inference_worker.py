@@ -40,8 +40,7 @@ class Arrival:
 
 @dataclass
 class _Job:
-    image: np.ndarray
-    state: np.ndarray
+    obs: dict                    # snapshot of the observation dict (see policy.py contract)
     t_issue: int
     epoch: int
     prefix: np.ndarray | None    # RTC: actions that will execute during inference
@@ -63,7 +62,7 @@ class InferenceWorker:
     def busy(self) -> bool:
         return self._busy
 
-    def try_request(self, image: np.ndarray, state: np.ndarray, t_issue: int, epoch: int,
+    def try_request(self, obs: dict, t_issue: int, epoch: int,
                     prefix: np.ndarray | None = None,
                     weights: np.ndarray | None = None) -> bool:
         """Start computing a chunk from `obs`; False if a request is already in flight."""
@@ -71,8 +70,8 @@ class InferenceWorker:
             return False
         self._busy = True
         # snapshot the observations: the caller's buffers are overwritten by newer messages
-        self._req.put(_Job(np.array(image, copy=True), np.array(state, copy=True),
-                           t_issue, epoch, prefix, weights))
+        snapshot = {k: np.array(v, copy=True) for k, v in obs.items()}
+        self._req.put(_Job(snapshot, t_issue, epoch, prefix, weights))
         return True
 
     def poll(self) -> Arrival | None:
@@ -99,10 +98,9 @@ class InferenceWorker:
             t0 = time.perf_counter()
             try:
                 if job.prefix is not None and len(job.prefix) > 0:
-                    chunk = self.policy.predict_inpaint(
-                        job.image, job.state, job.prefix, job.weights)
+                    chunk = self.policy.predict_inpaint(job.obs, job.prefix, job.weights)
                 else:
-                    chunk = self.policy.predict(job.image, job.state)
+                    chunk = self.policy.predict(job.obs)
             except Exception:
                 logger.exception('policy inference failed; delivering a zero chunk')
                 chunk = np.zeros(

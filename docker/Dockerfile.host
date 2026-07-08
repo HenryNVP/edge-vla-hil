@@ -12,6 +12,13 @@ COPY requirements-host.txt /ws/
 RUN pip install --no-cache-dir torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128 \
     && pip install --no-cache-dir -r requirements-host.txt
 
+# diffusion_policy-repo checkpoint support (see evh_controller/dp_repo_policy.py):
+# deps + a baked clone of the repo; a mounted /ws/external copy is used if EVH_DP_REPO unset.
+COPY scripts/setup_dp_deps.sh /tmp/setup_dp_deps.sh
+RUN bash /tmp/setup_dp_deps.sh \
+    && git clone --depth 1 https://github.com/real-stanford/diffusion_policy /opt/diffusion_policy
+ENV EVH_DP_REPO=/opt/diffusion_policy
+
 COPY ros2_ws /ws/ros2_ws
 RUN . /opt/ros/humble/setup.sh && cd /ws/ros2_ws && colcon build --symlink-install
 

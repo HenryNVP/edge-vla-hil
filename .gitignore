@@ -32,3 +32,4 @@ results/*.png
 
 experiments/pusht_sanity/results/
 *.mp4
+external/

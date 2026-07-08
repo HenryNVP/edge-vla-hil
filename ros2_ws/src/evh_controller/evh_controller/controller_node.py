@@ -23,6 +23,8 @@ Metrics (published on the tick a chunk arrives):
 """
 from __future__ import annotations
 
+import collections
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -39,31 +41,40 @@ class ControllerNode(Node):
     def __init__(self, **kwargs) -> None:
         super().__init__('evh_controller', **kwargs)
 
-        self.declare_parameter('backend', 'pytorch')        # pytorch | tensorrt
-        self.declare_parameter('weights_path', '')           # ckpt dir or .engine
+        self.declare_parameter('backend', 'pytorch')        # pytorch | dp | tensorrt
+        self.declare_parameter('weights_path', '')           # ckpt (dir/.ckpt) or .engine
         self.declare_parameter('strategy', 'synchronous')    # chunk-execution strategy
         self.declare_parameter('control_hz', 20.0)   # action stream rate = policy training rate
+        self.declare_parameter('denoise_steps', 16)  # dp backend: DDIM steps (0=ckpt default)
         self.declare_parameter('prompt', 'pick up the block')
 
         backend = self.get_parameter('backend').value
         weights = self.get_parameter('weights_path').value
         strategy = self.get_parameter('strategy').value
         self.control_hz = self.get_parameter('control_hz').value
+        denoise_steps = int(self.get_parameter('denoise_steps').value)
 
-        self.policy = make_policy(backend, weights)
+        self.policy = make_policy(backend, weights, denoise_steps=denoise_steps)
         self.worker = InferenceWorker(self.policy)
         self.chunk_executor = make_executor(strategy, self.worker, self.policy)
         self.get_logger().info(
-            f'evh_controller: backend={backend} strategy={strategy} ctrl={self.control_hz}Hz')
+            f'evh_controller: backend={backend} strategy={strategy} ctrl={self.control_hz}Hz '
+            f'chunk={self.policy.chunk_size} n_obs={self.policy.n_obs_steps} '
+            f'absolute={self.policy.absolute_actions}')
 
-        # latest observations (overwritten by callbacks; the strategy samples the freshest)
+        # latest observations (overwritten by callbacks) + per-tick history for the policy
         self._image: np.ndarray | None = None
-        self._joint: np.ndarray | None = None
+        self._wrist: np.ndarray | None = None
+        self._proprio: np.ndarray | None = None
+        self._history: collections.deque = collections.deque(
+            maxlen=max(1, self.policy.n_obs_steps))
         self._t = 0   # control timestep counter
 
         self.create_subscription(Image, '/obs/image', self._on_image, qos_profile_sensor_data)
         self.create_subscription(
-            JointState, '/obs/joint_state', self._on_joint, qos_profile_sensor_data)
+            Image, '/obs/image_wrist', self._on_wrist, qos_profile_sensor_data)
+        self.create_subscription(
+            JointState, '/obs/proprio', self._on_proprio, qos_profile_sensor_data)
         # eval-plane signal from the plant; deliberately NOT routed through the latency relay
         self.create_subscription(Empty, '/episode/reset', self._on_episode_reset, 10)
 
@@ -77,19 +88,39 @@ class ControllerNode(Node):
     def _on_image(self, msg: Image) -> None:
         self._image = np.frombuffer(msg.data, np.uint8).reshape(msg.height, msg.width, 3)
 
-    def _on_joint(self, msg: JointState) -> None:
-        self._joint = np.asarray(msg.position, dtype=np.float32)
+    def _on_wrist(self, msg: Image) -> None:
+        self._wrist = np.frombuffer(msg.data, np.uint8).reshape(msg.height, msg.width, 3)
+
+    def _on_proprio(self, msg: JointState) -> None:
+        self._proprio = np.asarray(msg.position, dtype=np.float32)
 
     def _on_episode_reset(self, _msg: Empty) -> None:
         self.chunk_executor.reset()
+        self._history.clear()
         self._t = 0
 
     # --------------------------------------------------------------- control
+    def _current_obs(self) -> dict | None:
+        """Snapshot the latest obs into the per-tick history; None until all required arrive."""
+        if self._image is None or self._proprio is None:
+            return None
+        if self.policy.needs_wrist and self._wrist is None:
+            return None
+        self._history.append((self._image, self._wrist, self._proprio))
+        obs = {
+            'agentview': np.stack([h[0] for h in self._history]),
+            'proprio': np.stack([h[2] for h in self._history]),
+        }
+        if self._wrist is not None:
+            obs['wrist'] = np.stack([h[1] for h in self._history])
+        return obs
+
     def _tick(self) -> None:
-        if self._image is None or self._joint is None:
+        obs = self._current_obs()
+        if obs is None:
             return  # wait for first observations
 
-        action = self.chunk_executor.step((self._image, self._joint), self._t)
+        action = self.chunk_executor.step(obs, self._t)
         self._t += 1
 
         metrics = self.chunk_executor.take_arrival_metrics()

@@ -7,30 +7,35 @@
     robot: "Panda"
     control_hz: 20.0        # observation publish rate (cognitive-relevant)
     action_hz: 200.0        # physics / action apply rate
-    camera: "agentview"
-    image_size: 224
+    camera: "agentview,robot0_eye_in_hand"  # first -> /obs/image, second -> /obs/image_wrist
+    image_size: 84          # DP checkpoints are trained at 84x84
     seed: 0
     max_episode_s: 20.0     # episode horizon (sim control steps); timeout = recorded failure
+    absolute_actions: true  # abs-action policy: OSC control_delta=False (DP Lift checkpoint)
     video_path: ""          # e.g. /ws/outputs/hil.mp4 for headless mp4 recording
     video_duration: 0.0     # seconds; 0 = record until shutdown
 
 /evh_controller:
   ros__parameters:
-    backend: "pytorch"      # pytorch (fallback, build first) | tensorrt (Jetson fast path)
-    weights_path: ""        # diffusion/flow checkpoint dir or .engine
+    backend: "pytorch"      # pytorch (lerobot) | dp (diffusion_policy repo, the real one) | tensorrt
+    weights_path: ""        # e.g. /ws/checkpoints/dp_lift_ph_image_cnn.ckpt
     strategy: "synchronous" # synchronous | naive_async | temporal_ensemble | bid | rtc | network_aware
     control_hz: 20.0        # action stream rate; keep equal to the policy's training rate
+    denoise_steps: 16       # dp backend: DDIM steps (0 = checkpoint default DDPM-100)
     prompt: "pick up the block"
 
 /evh_reactive:
   ros__parameters:
     rate_hz: 250.0
-    kp_pos: 1.0             # tracking gain on EE position error
-    kp_rot: 1.0             # tracking gain on EE orientation error
-    pos_scale: 0.05         # m per unit action — keep in sync with plant OSC output_max
-    rot_scale: 0.5          # rad per unit action
+    absolute_waypoints: true  # waypoints are absolute EE targets (abs-action DP checkpoint)
+    max_step_pos: 0.004     # abs mode: m per tick toward the target (rate-limited interpolation)
+    max_step_rot: 0.02      # abs mode: rad per tick
+    kp_pos: 1.0             # delta mode: tracking gain on EE position error
+    kp_rot: 1.0             # delta mode: tracking gain on EE orientation error
+    pos_scale: 0.05         # delta mode: m per unit action — sync with plant OSC output_max
+    rot_scale: 0.5          # delta mode: rad per unit action
     passthrough: false      # true -> monolithic baseline (no reactive layer)
-    passthrough_scale: 0.1  # ~ controller_hz / plant action_hz (delta held at action rate)
+    passthrough_scale: 0.1  # delta mode: ~ controller_hz / plant action_hz
 
 # Latency relays are parameterized per-instance in the launch files; these are the sweep defaults.
 /latency_defaults:

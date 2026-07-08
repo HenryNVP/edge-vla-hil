@@ -19,6 +19,8 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
 from geometry_msgs.msg import PoseStamped
@@ -39,6 +41,16 @@ def _make_controller_config():
         return None
 
 
+def _set_control_delta(config: dict, value: bool) -> None:
+    """Set OSC control_delta across robosuite config shapes (1.4 flat / 1.5 composite)."""
+    if 'control_delta' in config:
+        config['control_delta'] = value
+        return
+    for part_cfg in config.get('body_parts', {}).values():
+        if isinstance(part_cfg, dict) and part_cfg.get('type', '').startswith('OSC'):
+            part_cfg['control_delta'] = value
+
+
 class PlantNode(Node):
     def __init__(self, **kwargs) -> None:
         super().__init__('evh_plant', **kwargs)
@@ -48,17 +60,24 @@ class PlantNode(Node):
         self.declare_parameter('robot', 'Panda')
         self.declare_parameter('control_hz', 20.0)          # observation publish rate
         self.declare_parameter('action_hz', 200.0)          # physics / action apply rate
-        self.declare_parameter('camera', 'agentview')
-        self.declare_parameter('image_size', 224)
+        # comma-separated; first camera -> /obs/image, second (if any) -> /obs/image_wrist
+        self.declare_parameter('camera', 'agentview,robot0_eye_in_hand')
+        self.declare_parameter('image_size', 84)       # DP checkpoints are trained at 84x84
         self.declare_parameter('seed', 0)
         self.declare_parameter('max_episode_s', 20.0)  # episode horizon; timeout counts as failure
+        # True -> OSC control_delta=False: /cmd/action is an absolute EE pose target
+        # [pos(3), axis-angle(3), gripper], matching the abs-action DP checkpoints
+        self.declare_parameter('absolute_actions', True)
         self.declare_parameter('video_path', '')       # headless mp4; empty disables recording
         self.declare_parameter('video_duration', 0.0)  # seconds; 0 = record until shutdown
 
         self.control_hz = self.get_parameter('control_hz').value
         self.action_hz = self.get_parameter('action_hz').value
         self.img_size = int(self.get_parameter('image_size').value)
-        self.camera = self.get_parameter('camera').value
+        self.cameras = [c.strip() for c in str(self.get_parameter('camera').value).split(',')
+                        if c.strip()]
+        self.camera = self.cameras[0]
+        self.absolute_actions = bool(self.get_parameter('absolute_actions').value)
         self._video_writer = None
         self._video_frames = 0
         video_duration = float(self.get_parameter('video_duration').value)
@@ -68,7 +87,10 @@ class PlantNode(Node):
 
         # --- publishers ---
         self.pub_image = self.create_publisher(Image, '/obs/image', 10)
+        self.pub_wrist = (self.create_publisher(Image, '/obs/image_wrist', 10)
+                          if len(self.cameras) > 1 else None)
         self.pub_joint = self.create_publisher(JointState, '/obs/joint_state', 10)
+        self.pub_proprio = self.create_publisher(JointState, '/obs/proprio', 10)
         self.pub_ee_pose = self.create_publisher(PoseStamped, '/obs/ee_pose', 10)
         self.pub_success = self.create_publisher(Bool, '/eval/success', 10)
         self.pub_reset = self.create_publisher(Empty, '/episode/reset', 10)
@@ -88,8 +110,15 @@ class PlantNode(Node):
                 f'robosuite unavailable ({type(exc).__name__}: {exc}); '
                 'publishing synthetic observations (no physics, no episodes)')
 
-        self.create_timer(1.0 / self.control_hz, self._publish_observation)
-        self.create_timer(1.0 / self.action_hz, self._step_physics)
+        # separate callback groups: with a MultiThreadedExecutor the high-rate physics timer
+        # can never starve the obs publisher (observed under load with a single thread).
+        # _publish_observation only reads self._obs (replaced atomically) — no env calls.
+        self._cb_physics = MutuallyExclusiveCallbackGroup()
+        self._cb_io = MutuallyExclusiveCallbackGroup()
+        self.create_timer(1.0 / self.control_hz, self._publish_observation,
+                          callback_group=self._cb_io)
+        self.create_timer(1.0 / self.action_hz, self._step_physics,
+                          callback_group=self._cb_physics)
 
         self.get_logger().info(
             f'evh_plant up: env={self.get_parameter("env_name").value} '
@@ -109,21 +138,30 @@ class PlantNode(Node):
             has_renderer=False,
             has_offscreen_renderer=True,
             use_camera_obs=True,
-            camera_names=self.camera,
-            camera_heights=self.img_size,
-            camera_widths=self.img_size,
+            camera_names=self.cameras,
+            camera_heights=[self.img_size] * len(self.cameras),
+            camera_widths=[self.img_size] * len(self.cameras),
             control_freq=self.action_hz,
             # horizon is in control steps; hitting it = episode timeout = recorded failure
             horizon=int(float(self.get_parameter('max_episode_s').value) * self.action_hz),
+            reward_shaping=False,
             seed=seed,
         )
         controller = _make_controller_config()
         if controller is not None:
+            if self.absolute_actions:
+                _set_control_delta(controller, False)
             kwargs['controller_configs'] = controller
+        elif self.absolute_actions:
+            raise RuntimeError('absolute_actions needs an OSC controller config')
         else:
             self.get_logger().warn('evh_plant: using robosuite default controller config')
 
-        self._env = suite.make(**kwargs)
+        try:
+            self._env = suite.make(**kwargs)
+        except TypeError:            # robosuite 1.4 has no seed kwarg (np.random covers it)
+            kwargs.pop('seed', None)
+            self._env = suite.make(**kwargs)
         self._obs = self._env.reset()
         low, _high = self._env.action_spec
         self._action_dim = len(low)
@@ -196,27 +234,33 @@ class PlantNode(Node):
 
     def _publish_observation(self) -> None:
         now = self.get_clock().now().to_msg()
-        camera_key = f'{self.camera}_image'
 
         if self._env is None or self._obs is None:
             frame = np.random.randint(0, 255, (self.img_size, self.img_size, 3), np.uint8)
+            wrist = frame
             joint_pos = np.zeros(7, dtype=float)
             joint_vel = np.zeros(7, dtype=float)
             ee_pos = np.zeros(3, dtype=float)
             ee_quat = np.array([0.0, 0.0, 0.0, 1.0])
+            gripper_qpos = np.zeros(2, dtype=float)
         else:
-            frame = self._obs.get(camera_key)
+            obs = self._obs   # grab one reference; _step_physics replaces it atomically
+            frame = self._upright(obs.get(f'{self.camera}_image'))
+            wrist = (self._upright(obs.get(f'{self.cameras[1]}_image'))
+                     if self.pub_wrist is not None else None)
             if frame is None:
-                frame = self._env.sim.render(
-                    camera_name=self.camera, height=self.img_size, width=self.img_size)
-            frame = np.flipud(np.asarray(frame)).astype(np.uint8)
+                return   # obs dict without images (shouldn't happen with use_camera_obs)
             joint_pos = np.asarray(self._obs.get('robot0_joint_pos', np.zeros(7)), dtype=float)
             joint_vel = np.asarray(self._obs.get('robot0_joint_vel', np.zeros(7)), dtype=float)
             ee_pos = np.asarray(self._obs.get('robot0_eef_pos', np.zeros(3)), dtype=float)
             ee_quat = np.asarray(   # robosuite convention: [x, y, z, w]
                 self._obs.get('robot0_eef_quat', [0.0, 0.0, 0.0, 1.0]), dtype=float)
+            gripper_qpos = np.asarray(
+                self._obs.get('robot0_gripper_qpos', np.zeros(2)), dtype=float)
 
         self.pub_image.publish(self._to_image_msg(frame, now))
+        if self.pub_wrist is not None and wrist is not None:
+            self.pub_wrist.publish(self._to_image_msg(wrist, now))
         self._maybe_record_frame(frame)
 
         js = JointState()
@@ -224,6 +268,11 @@ class PlantNode(Node):
         js.position = list(joint_pos)
         js.velocity = list(joint_vel)
         self.pub_joint.publish(js)
+
+        prop = JointState()   # [eef_pos(3), eef_quat(4, xyzw), gripper_qpos(2)]
+        prop.header.stamp = now
+        prop.position = list(ee_pos) + list(ee_quat) + list(gripper_qpos)
+        self.pub_proprio.publish(prop)
 
         ee = PoseStamped()
         ee.header.stamp = now
@@ -234,6 +283,13 @@ class PlantNode(Node):
         self.pub_ee_pose.publish(ee)
 
     # -------------------------------------------------------------- helpers
+    @staticmethod
+    def _upright(frame) -> np.ndarray | None:
+        """robosuite camera obs are bottom-up; flip to upright uint8."""
+        if frame is None:
+            return None
+        return np.flipud(np.asarray(frame)).astype(np.uint8).copy()
+
     def _to_image_msg(self, frame: np.ndarray, stamp) -> Image:
         msg = Image()
         msg.header.stamp = stamp
@@ -254,8 +310,10 @@ class PlantNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = PlantNode()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:

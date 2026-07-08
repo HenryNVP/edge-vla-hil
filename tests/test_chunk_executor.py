@@ -20,7 +20,7 @@ H, A = 8, 7
 
 
 def _obs():
-    return (np.zeros((84, 84, 3), np.uint8), np.zeros(A, np.float32))
+    return {'agentview': np.zeros((84, 84, 3), np.uint8), 'proprio': np.zeros(9, np.float32)}
 
 
 class FakePolicy:
@@ -45,7 +45,7 @@ class FakeWorker:
         self._pending = None          # (polls_remaining, Arrival)
         self.requests = []            # (t_issue, prefix, weights) for assertions
 
-    def try_request(self, image, state, t_issue, epoch, prefix=None, weights=None):
+    def try_request(self, obs, t_issue, epoch, prefix=None, weights=None):
         if self._pending is not None:
             return False
         self.requests.append((t_issue, prefix, weights))

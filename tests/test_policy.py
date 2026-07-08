@@ -11,9 +11,11 @@ from evh_controller.policy import make_policy, PyTorchBackend, TensorRTBackend
 
 
 def _dummy_obs():
-    image = np.zeros((224, 224, 3), dtype=np.uint8)
-    joint = np.zeros(7, dtype=np.float32)
-    return image, joint
+    return {
+        'agentview': np.zeros((2, 84, 84, 3), dtype=np.uint8),   # stacked history of 2
+        'wrist': np.zeros((2, 84, 84, 3), dtype=np.uint8),
+        'proprio': np.zeros((2, 9), dtype=np.float32),
+    }
 
 
 @pytest.mark.parametrize('backend,cls', [
@@ -38,7 +40,16 @@ def test_make_policy_rejects_unknown():
 @pytest.mark.parametrize('backend', ['pytorch', 'tensorrt'])
 def test_predict_chunk_shape_and_dtype(backend):
     policy = make_policy(backend, '')
-    image, joint = _dummy_obs()
-    chunk = policy.predict(image, joint)
+    chunk = policy.predict(_dummy_obs())
     assert chunk.shape == (policy.chunk_size, policy.action_dim)
     assert chunk.dtype == np.float32
+
+
+def test_newest_unwraps_history():
+    from evh_controller.policy import newest
+    imgs = np.arange(2 * 4 * 4 * 3, dtype=np.uint8).reshape(2, 4, 4, 3)
+    assert np.array_equal(newest(imgs), imgs[1])
+    vecs = np.array([[1.0, 2.0], [3.0, 4.0]])
+    assert np.array_equal(newest(vecs), [3.0, 4.0])
+    single = np.zeros((4, 4, 3))
+    assert newest(single).shape == (4, 4, 3)   # no history axis -> unchanged

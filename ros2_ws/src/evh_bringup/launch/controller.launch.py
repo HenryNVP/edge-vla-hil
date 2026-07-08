@@ -5,8 +5,9 @@ machines on the same ROS_DOMAIN_ID over Ethernet, DDS discovers the topics autom
 *physical* network replaces the software latency relay (or stacks with it).
 
 Args:
-  backend : pytorch | tensorrt
-  weights : ACT checkpoint dir or .engine path
+  backend : pytorch | dp | tensorrt
+  weights : checkpoint path (dir/.ckpt) or .engine path
+  strategy, denoise_steps : see hil.launch.py
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -18,13 +19,21 @@ def generate_launch_description() -> LaunchDescription:
     backend = LaunchConfiguration('backend')
     weights = LaunchConfiguration('weights')
     strategy = LaunchConfiguration('strategy')
+    denoise_steps = LaunchConfiguration('denoise_steps')
 
     return LaunchDescription([
         DeclareLaunchArgument('backend', default_value='tensorrt'),
         DeclareLaunchArgument('weights', default_value=''),
         DeclareLaunchArgument('strategy', default_value='rtc'),
+        DeclareLaunchArgument('denoise_steps', default_value='16'),
         Node(
             package='evh_controller', executable='controller_node', name='evh_controller',
             output='screen',
-            parameters=[{'backend': backend, 'weights_path': weights, 'strategy': strategy}]),
+            parameters=[{'backend': backend, 'weights_path': weights, 'strategy': strategy,
+                         'denoise_steps': denoise_steps}],
+            remappings=[
+                ('/obs/image', '/obs/image/delayed'),
+                ('/obs/image_wrist', '/obs/image_wrist/delayed'),
+                ('/obs/proprio', '/obs/proprio/delayed'),
+            ]),
     ])

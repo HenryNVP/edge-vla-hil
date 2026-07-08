@@ -15,18 +15,23 @@ def _topic_names(node):
 @requires_ros2
 def test_plant_boots_and_publishes(ros):
     import rclpy
+    from rclpy.parameter import Parameter
     from sensor_msgs.msg import Image, JointState
     from geometry_msgs.msg import PoseStamped
     from evh_plant.plant_node import PlantNode
 
-    node = PlantNode()
-    got = {'image': False, 'joint': False, 'ee_pose': False}
+    # modest action rate: the boot test drives everything on ONE executor thread, so a 200 Hz
+    # physics timer (with per-step camera renders) can starve the 20 Hz obs timer under load
+    node = PlantNode(parameter_overrides=[Parameter('action_hz', value=50.0)])
+    got = {'image': False, 'joint': False, 'ee_pose': False, 'proprio': False}
     sub_node = rclpy.create_node('plant_probe')
     sub_node.create_subscription(Image, '/obs/image', lambda _m: got.update(image=True), 10)
     sub_node.create_subscription(
         JointState, '/obs/joint_state', lambda _m: got.update(joint=True), 10)
     sub_node.create_subscription(
         PoseStamped, '/obs/ee_pose', lambda _m: got.update(ee_pose=True), 10)
+    sub_node.create_subscription(
+        JointState, '/obs/proprio', lambda _m: got.update(proprio=True), 10)
 
     from rclpy.executors import SingleThreadedExecutor
     ex = SingleThreadedExecutor()
@@ -41,6 +46,7 @@ def test_plant_boots_and_publishes(ros):
     assert got['image'], 'plant did not publish /obs/image'
     assert got['joint'], 'plant did not publish /obs/joint_state'
     assert got['ee_pose'], 'plant did not publish /obs/ee_pose'
+    assert got['proprio'], 'plant did not publish /obs/proprio'
     node.destroy_node()
     sub_node.destroy_node()
 
