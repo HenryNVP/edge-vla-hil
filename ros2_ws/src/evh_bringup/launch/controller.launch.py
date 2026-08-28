@@ -14,12 +14,14 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+from evh_bringup.launch_utils import typed
+
 
 def generate_launch_description() -> LaunchDescription:
     backend = LaunchConfiguration('backend')
     weights = LaunchConfiguration('weights')
     strategy = LaunchConfiguration('strategy')
-    denoise_steps = LaunchConfiguration('denoise_steps')
+    denoise_steps = typed('denoise_steps', int)
 
     return LaunchDescription([
         DeclareLaunchArgument('backend', default_value='tensorrt'),

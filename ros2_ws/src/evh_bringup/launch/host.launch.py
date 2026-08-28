@@ -9,17 +9,19 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+from evh_bringup.launch_utils import typed
+
 
 def generate_launch_description() -> LaunchDescription:
-    latency_ms = LaunchConfiguration('latency_ms')
-    jitter_ms = LaunchConfiguration('jitter_ms')
-    drop_prob = LaunchConfiguration('drop_prob')
-    absolute = LaunchConfiguration('absolute')
-    strict_mode_check = LaunchConfiguration('strict_mode_check')
-    passthrough = LaunchConfiguration('passthrough')
-    image_size = LaunchConfiguration('image_size')
+    latency_ms = typed('latency_ms', float)
+    jitter_ms = typed('jitter_ms', float)
+    drop_prob = typed('drop_prob', float)
+    absolute = typed('absolute', bool)
+    strict_mode_check = typed('strict_mode_check', bool)
+    passthrough = typed('passthrough', bool)
+    image_size = typed('image_size', int)
     video = LaunchConfiguration('video')
-    video_duration = LaunchConfiguration('video_duration')
+    video_duration = typed('video_duration', float)
 
     args = [
         DeclareLaunchArgument('latency_ms', default_value='0.0'),

@@ -14,8 +14,10 @@ the graph properties the rest of the system's invariants rest on:
 
 Needs the `launch` / `launch_ros` packages, hence the ros2 mark. Nothing is executed.
 """
+import ast
 import importlib.util
 import os
+import pathlib
 import re
 
 import pytest
@@ -56,17 +58,32 @@ def _context(ld):
     return ctx
 
 
+def _unwrap(value):
+    """Strip a ParameterValue wrapper down to the substitution list inside it."""
+    from launch_ros.parameter_descriptions import ParameterValue
+
+    return value.value if isinstance(value, ParameterValue) else value
+
+
 def _perform(ctx, value):
     """Resolve a substitution list to a plain string.
 
-    Two quirks of launch_ros: some fields (package, executable) hold a bare str rather than a
-    substitution list, and literal parameter values are round-tripped through yaml.dump, which
-    tacks a `\n...\n` document-end marker onto scalars.
+    Three quirks of launch_ros: some fields (package, executable) hold a bare str rather than a
+    substitution list, typed parameters are wrapped in a ParameterValue, and literal parameter
+    values are round-tripped through yaml.dump, which tacks a `\n...\n` marker onto scalars.
     """
     from launch.utilities import perform_substitutions
 
+    value = _unwrap(value)
     text = value if isinstance(value, str) else perform_substitutions(ctx, list(value))
     return text.removesuffix('\n...\n').strip()
+
+
+def _value_type(value):
+    """The type a parameter declares at the launch boundary, or None if it declares none."""
+    from launch_ros.parameter_descriptions import ParameterValue
+
+    return value.value_type if isinstance(value, ParameterValue) else None
 
 
 def _nodes(ld):
@@ -95,11 +112,27 @@ def _param_refs(ctx, node):
     refs = {}
     for block in node._Node__parameters or ():
         for key, value in block.items():
+            value = _unwrap(value)
             subs = [value] if not isinstance(value, (list, tuple)) else list(value)
             for sub in subs:
                 if isinstance(sub, LaunchConfiguration):
                     refs[_perform(ctx, key)] = _perform(ctx, sub.variable_name)
     return refs
+
+
+def _typed_params(node):
+    """{param name: declared value_type or None} for every parameter reading a launch arg."""
+    from launch.substitutions import LaunchConfiguration
+
+    out = {}
+    for block in node._Node__parameters or ():
+        for key, value in block.items():
+            inner = _unwrap(value)
+            subs = [inner] if not isinstance(inner, (list, tuple)) else list(inner)
+            if any(isinstance(sub, LaunchConfiguration) for sub in subs):
+                name = ''.join(s.text for s in key if hasattr(s, 'text')) or str(key)
+                out[name] = _value_type(value)
+    return out
 
 
 def _remaps(ctx, node):
@@ -265,3 +298,61 @@ def test_each_packages_entry_points_resolve_to_a_real_main(package):
         with open(source) as fh:
             assert re.search(rf'^def {func}\(', fh.read(), re.M), (
                 f'{source} defines no {func}()')
+
+
+# --------------------------------------------------------- launch-argument types
+def _declared_param_types(package: str, executable: str) -> dict:
+    """{parameter name: Python type} parsed from the node's declare_parameter() defaults."""
+    module_path, _func = _console_scripts(package)[executable].split(':')
+    source = os.path.join(_SRC, package, *module_path.split('.')) + '.py'
+    tree = ast.parse(pathlib.Path(source).read_text())
+
+    types = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == 'declare_parameter' and len(node.args) >= 2):
+            try:
+                name = ast.literal_eval(node.args[0])
+                types[name] = type(ast.literal_eval(node.args[1]))
+            except ValueError:
+                continue     # a non-literal default; nothing to check against
+    return types
+
+
+@requires_ros2
+@pytest.mark.parametrize('filename', LAUNCH_FILES)
+def test_non_string_parameters_declare_their_type_at_the_launch_boundary(filename):
+    """A launch argument is a string, and launch_ros infers its parameter type by YAML-parsing it.
+    So `latency_ms:=40` becomes an INTEGER against a node that declared a DOUBLE, rclpy raises,
+    and that node alone dies at startup — the rest of the graph runs and reports a full, undegraded
+    result under a label saying otherwise. Wrapping in ParameterValue(..., value_type=) is what
+    makes `40`, `40.0` and `0` all arrive as a float. See evh_bringup/launch_utils.typed."""
+    ld = _load(filename)
+    ctx = _context(ld)
+
+    for node in _nodes(ld):
+        package = _perform(ctx, node._Node__package)
+        executable = _perform(ctx, node._Node__node_executable)
+        declared = _declared_param_types(package, executable)
+
+        for param, launch_type in _typed_params(node).items():
+            expected = declared.get(param)
+            if expected in (None, str):
+                continue        # strings need no coercion; YAML leaves them alone
+            assert launch_type is expected, (
+                f'{filename}: {package}/{param} is declared {expected.__name__} by the node but '
+                f'the launch file passes it as {launch_type}; wrap it with '
+                f"typed('<arg>', {expected.__name__})")
+
+
+@requires_ros2
+@pytest.mark.parametrize('raw', ['40', '40.0', '0'])
+def test_an_integer_latency_argument_still_reaches_the_relay_as_a_float(raw):
+    """The exact input that used to kill all three relays."""
+    from launch import LaunchContext
+    from launch.substitutions import TextSubstitution
+    from launch_ros.parameter_descriptions import ParameterValue
+
+    value = ParameterValue(TextSubstitution(text=raw), value_type=float).evaluate(LaunchContext())
+    assert isinstance(value, float)
+    assert value == float(raw)
