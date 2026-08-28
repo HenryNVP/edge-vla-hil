@@ -90,6 +90,7 @@ minversion = "6.0"
 testpaths = ["tests"]
 markers = [
     "ros2: test requires a sourced ROS2 environment (rclpy + message packages)",
+    "integration: test spins real nodes over DDS (implies ros2); give it its own ROS_DOMAIN_ID",
 ]
 # UserWarning is deliberately NOT filtered: scipy/numpy raise one when the pinned versions drift
 # (invariant 4), and that is a signal, not noise.

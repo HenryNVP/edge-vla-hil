@@ -1,12 +1,12 @@
 """Smoke + behavior tests for the latency relay (the experimental instrument).
 
-Marked ros2: needs rclpy + std_msgs. Verifies the relay forwards messages end-to-end, that delay
+Marked integration: constructs a real relay node and spins it. Verifies the relay forwards messages end-to-end, that delay
 sampling is seeded/reproducible, and that drop_prob=1.0 drops everything.
 """
 import random
 
 import pytest
-from conftest import requires_ros2
+from conftest import integration
 
 
 def _relay(rclpy, **overrides):
@@ -28,7 +28,7 @@ def _drain_executor(ex, predicate, timeout=5.0):
     return predicate()
 
 
-@requires_ros2
+@integration
 def test_relay_forwards_messages(ros):
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
@@ -58,7 +58,7 @@ def test_relay_forwards_messages(ros):
     helper.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_drop_prob_one_drops_all(ros):
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
@@ -88,7 +88,7 @@ def test_drop_prob_one_drops_all(ros):
     helper.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_timer_is_idle_until_a_message_arrives(ros):
     """The drain timer is event-driven: cancelled while the queue is empty, so an idle relay
     costs no CPU. A polled tick burned ~17% of a core per relay spinning on an empty heap."""
@@ -107,7 +107,7 @@ def test_timer_is_idle_until_a_message_arrives(ros):
     relay.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_timer_is_cancelled_again_once_the_queue_drains(ros):
     import time
 
@@ -128,7 +128,7 @@ def test_timer_is_cancelled_again_once_the_queue_drains(ros):
     relay.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_zero_latency_publishes_without_waiting_for_a_tick(ros):
     """latency_ms=0 must add no scheduling delay: the message goes out from the subscription
     callback itself, not on a later timer tick."""
@@ -147,7 +147,7 @@ def test_zero_latency_publishes_without_waiting_for_a_tick(ros):
     relay.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_release_order_is_preserved_under_jitter(ros):
     """reorder=False must not let a low-jitter sample overtake an earlier message."""
     import rclpy
@@ -164,7 +164,7 @@ def test_release_order_is_preserved_under_jitter(ros):
     relay.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_delay_sampling_is_seeded(ros):
     import rclpy
     relay = _relay(rclpy, input_topic='/a', output_topic='/b',

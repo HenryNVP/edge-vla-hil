@@ -10,7 +10,7 @@ import time
 
 import numpy as np
 import pytest
-from conftest import requires_ros2
+from conftest import integration
 
 
 def _make_probe(ros, actions):
@@ -65,7 +65,7 @@ def _delta_node(ros, **extra):
     return ReactiveNode(parameter_overrides=params)
 
 
-@requires_ros2
+@integration
 def test_tracking_emits_action_toward_target(ros):
     node = _delta_node(ros)
     actions = []
@@ -89,7 +89,7 @@ def test_tracking_emits_action_toward_target(ros):
     probe.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_tracking_holds_at_target(ros):
     """Once the local EE pose reaches the latched target, the emitted action goes to ~zero."""
     node = _delta_node(ros)
@@ -115,7 +115,7 @@ def test_tracking_holds_at_target(ros):
     probe.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_episode_reset_clears_target(ros):
     from std_msgs.msg import Empty
 
@@ -141,7 +141,7 @@ def test_episode_reset_clears_target(ros):
     probe.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_absolute_tracking_rate_limits_toward_target(ros):
     """Absolute mode: the emitted setpoint steps toward the target, capped at max_step_pos."""
     from rclpy.parameter import Parameter
@@ -176,7 +176,7 @@ def test_absolute_tracking_rate_limits_toward_target(ros):
     assert a[6] == 1.0
 
 
-@requires_ros2
+@integration
 def test_absolute_passthrough_forwards_target_unscaled(ros):
     from rclpy.parameter import Parameter
 
@@ -199,7 +199,7 @@ def test_absolute_passthrough_forwards_target_unscaled(ros):
     probe.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_passthrough_scales_delta_not_gripper(ros):
 
     node = _delta_node(ros, passthrough=True, passthrough_scale=0.1)

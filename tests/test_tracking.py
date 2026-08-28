@@ -1,6 +1,6 @@
 """Unit tests for the reactive layer's tracking math — pure Python, no ROS, no spinning nodes.
 
-test_reactive_tracking.py still covers the same behaviour end-to-end over real topics; these run
+test_reactive_node.py still covers the same behaviour end-to-end over real topics; these run
 in milliseconds against the trackers directly, so the tick-by-tick trajectory (which a ROS test
 can only sample) is actually assertable. That is what moving the math out of the node bought.
 """

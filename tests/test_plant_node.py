@@ -2,7 +2,7 @@
 
 Everything PlantNode itself decides, driven through a stub so no robosuite env (and no GPU) is
 needed. The env construction, observation packing and video recording that used to live in this
-module have their own files now (test_env_factory, test_plant_messages, test_video_recorder); the
+module have their own files now (test_env_factory, test_messages, test_video); the
 node's cross-check handshake with the controller is test_mode_crosscheck.
 
 What is guarded here:

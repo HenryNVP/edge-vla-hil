@@ -1,6 +1,6 @@
 """Tests for robosuite env construction — pure Python, no ROS and no robosuite needed.
 
-These used to live in test_plant_episode.py and carry a ros2 mark, only because the code was
+These used to live in test_plant_node.py and carry a ros2 mark, only because the code was
 inside plant_node.py and importing it pulled in rclpy. Moving the simulator-facing logic into its
 own module put them in the fast suite, which is the point of the split.
 

@@ -39,8 +39,26 @@ def requires_ros2(func):
     The skip is what keeps the suite green on a bare Python box; the marker is what makes the
     split selectable — `pytest -m "not ros2"` runs only the pure-Python logic tests, so CI can
     assert that set really is import-free rather than inferring it from a pile of skips.
+
+    `ros2` means "needs ROS installed" — most such tests just import a message type and run in
+    milliseconds. For "needs a running ROS graph", use `integration` below.
     """
     return pytest.mark.ros2(_skip_no_ros2(func))
+
+
+def integration(func):
+    """Tag a test that spins real nodes and talks over DDS. Implies requires_ros2.
+
+    These are a different animal from the rest of the ros2-marked tests: ~25 of them account for
+    almost all of the suite's wall-clock time, and they are the only ones exposed to cross-talk
+    from a zombie container or a stale node on the same ROS_DOMAIN_ID — the trap that makes
+    metrics look self-contradictory. Having them selectable is what lets you give them their own
+    domain instead of hoping the ambient one is clean:
+
+        ROS_DOMAIN_ID=$RANDOM pytest -m integration     # isolated, ~18s
+        pytest -m 'not integration'                     # everything else, ~0.2s
+    """
+    return pytest.mark.integration(requires_ros2(func))
 
 
 @pytest.fixture()

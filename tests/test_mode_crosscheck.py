@@ -7,7 +7,7 @@ announces its mode on a latched /policy/absolute and the plant checks it; the me
 what a confused user actually reads, so it is pinned here.
 """
 import pytest
-from conftest import requires_ros2
+from conftest import integration, requires_ros2
 
 
 @requires_ros2
@@ -71,7 +71,7 @@ def _run_mode_handshake(ros, plant_absolute, announced):
     return plant
 
 
-@requires_ros2
+@integration
 def test_plant_flags_a_mismatched_policy_mode_over_ros(ros):
     """End-to-end: the check is worthless if the topic name or QoS drifts, so exercise the wire."""
     plant = _run_mode_handshake(ros, plant_absolute=False, announced=True)
@@ -79,7 +79,7 @@ def test_plant_flags_a_mismatched_policy_mode_over_ros(ros):
     plant.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_plant_stays_quiet_when_the_policy_mode_agrees(ros):
     plant = _run_mode_handshake(ros, plant_absolute=True, announced=True)
     assert plant.mode_mismatch is False

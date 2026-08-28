@@ -1,17 +1,17 @@
 """Boot smoke test: every node constructs, spins briefly, and advertises its contract topics.
 
-Marked ros2. This is the cheap CI guard that catches import errors, bad QoS, typos in topic
+Marked integration (boots every node on a live DDS graph). This is the cheap CI guard that catches import errors, bad QoS, typos in topic
 names, and broken parameter declarations across the whole graph before any real logic is wired in.
 """
 
-from conftest import requires_ros2, spin_until
+from conftest import integration, spin_until
 
 
 def _topic_names(node):
     return {name for name, _types in node.get_topic_names_and_types()}
 
 
-@requires_ros2
+@integration
 def test_plant_boots_and_publishes(ros):
     import rclpy
     from geometry_msgs.msg import PoseStamped
@@ -51,7 +51,7 @@ def test_plant_boots_and_publishes(ros):
     sub_node.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_controller_boots(ros):
     from evh_controller.controller_node import ControllerNode
     node = ControllerNode()  # pytorch stub backend by default
@@ -60,7 +60,7 @@ def test_controller_boots(ros):
     node.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_reactive_boots(ros):
     from evh_reactive.reactive_node import ReactiveNode
     node = ReactiveNode()
@@ -68,7 +68,7 @@ def test_reactive_boots(ros):
     node.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_reactive_passthrough_param(ros):
     from rclpy.parameter import Parameter
 
@@ -78,7 +78,7 @@ def test_reactive_passthrough_param(ros):
     node.destroy_node()
 
 
-@requires_ros2
+@integration
 def test_latency_boots(ros):
     from evh_latency.latency_node import LatencyNode
     node = LatencyNode()

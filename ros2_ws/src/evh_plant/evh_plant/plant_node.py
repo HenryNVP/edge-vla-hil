@@ -43,7 +43,7 @@ def _quat_to_axisangle(q: np.ndarray) -> np.ndarray:
     """Quaternion [x, y, z, w] -> axis-angle (axis * angle). Canonical (shortest-path) hemisphere.
 
     Duplicated from evh_reactive.transforms rather than shared: the two packages are deployed on
-    different machines and neither depends on the other. test_plant_hold.py asserts they agree.
+    different machines and neither depends on the other. test_plant_node.py asserts they agree.
     """
     q = np.asarray(q, dtype=np.float64)
     n = np.linalg.norm(q)
