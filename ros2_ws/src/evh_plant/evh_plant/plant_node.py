@@ -7,15 +7,17 @@ Responsibilities (HiL "Plant" side):
   * apply incoming low-level actions <- /cmd/action (JointState) from the reactive layer,
   * manage episodes: on task success OR horizon timeout, publish the outcome on /eval/success
     (std_msgs/Bool, True/False — the recorder needs BOTH for an honest success rate), reset the
-    env, and announce the boundary on /episode/reset so downstream nodes clear their state.
+    env, and announce the boundary on /episode/reset so downstream nodes clear their state,
+  * cross-check the policy's action mode against ours and abort on a disagreement.
 
 The node is deliberately unaware of the network boundary; latency is injected downstream by
 evh_latency via topic remapping. If robosuite is unavailable it degrades to synthetic
 observations (no physics, no episodes) so the graph and tests still run.
+
+Sibling modules hold what is not HiL logic: `env_factory` (robosuite construction and its
+version quirks), `messages` (the observation contract and ROS packing), `video` (mp4 recording).
 """
 from __future__ import annotations
-
-from pathlib import Path
 
 import numpy as np
 import rclpy
@@ -27,38 +29,22 @@ from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Bool, Empty
 
+from evh_plant.env_factory import EnvSpec, build_env
+from evh_plant.messages import PlantObservation
+from evh_plant.video import VideoRecorder
+
 # must match the controller's publisher QoS (latched) — the controller announces its mode once,
 # at startup, and the plant is usually already running by then.
 MODE_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
                       durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
 
 
-def _make_controller_config():
-    """OSC_POSE-style controller config across robosuite 1.4 / 1.5 APIs."""
-    try:
-        from robosuite.controllers import load_controller_config
-        return load_controller_config(default_controller='OSC_POSE')
-    except Exception:
-        pass
-    try:
-        from robosuite.controllers import load_composite_controller_config
-        return load_composite_controller_config(controller='BASIC')
-    except Exception:
-        return None
-
-
-def _set_control_delta(config: dict, value: bool) -> None:
-    """Set OSC control_delta across robosuite config shapes (1.4 flat / 1.5 composite)."""
-    if 'control_delta' in config:
-        config['control_delta'] = value
-        return
-    for part_cfg in config.get('body_parts', {}).values():
-        if isinstance(part_cfg, dict) and part_cfg.get('type', '').startswith('OSC'):
-            part_cfg['control_delta'] = value
-
-
 def _quat_to_axisangle(q: np.ndarray) -> np.ndarray:
-    """Quaternion [x, y, z, w] -> axis-angle (axis * angle). Canonical (shortest-path) hemisphere."""
+    """Quaternion [x, y, z, w] -> axis-angle (axis * angle). Canonical (shortest-path) hemisphere.
+
+    Duplicated from evh_reactive.transforms rather than shared: the two packages are deployed on
+    different machines and neither depends on the other. test_plant_hold.py asserts they agree.
+    """
     q = np.asarray(q, dtype=np.float64)
     n = np.linalg.norm(q)
     if n < 1e-12:
@@ -121,12 +107,10 @@ class PlantNode(Node):
         self.absolute_actions = bool(self.get_parameter('absolute_actions').value)
         self.strict_mode_check = bool(self.get_parameter('strict_mode_check').value)
         self.mode_mismatch = False
-        self._video_writer = None
-        self._video_frames = 0
-        video_duration = float(self.get_parameter('video_duration').value)
-        self._video_max_frames = (
-            int(video_duration * self.control_hz) if video_duration > 0.0 else 0)
-        self._open_video_writer()
+
+        self.recorder = VideoRecorder.from_duration(
+            str(self.get_parameter('video_path').value), self.control_hz,
+            float(self.get_parameter('video_duration').value))
 
         # --- publishers ---
         self.pub_image = self.create_publisher(Image, '/obs/image', 10)
@@ -148,12 +132,7 @@ class PlantNode(Node):
         self._obs: dict | None = None
         self._last_action: np.ndarray | None = None
         self._action_dim = 7
-        try:
-            self._build_env()
-        except Exception as exc:
-            self.get_logger().warn(
-                f'robosuite unavailable ({type(exc).__name__}: {exc}); '
-                'publishing synthetic observations (no physics, no episodes)')
+        self._build_env()
 
         # separate callback groups: with a MultiThreadedExecutor the high-rate physics timer
         # can never starve the obs publisher (observed under load with a single thread).
@@ -171,79 +150,30 @@ class PlantNode(Node):
 
     # ------------------------------------------------------------------ env
     def _build_env(self) -> None:
-        """Construct the robosuite env."""
-        import robosuite as suite
-
-        seed = int(self.get_parameter('seed').value)
-        np.random.seed(seed)
-
-        kwargs = {
-            'env_name': self.get_parameter('env_name').value,
-            'robots': self.get_parameter('robot').value,   # robosuite >=1.5 uses `robots`
-            'has_renderer': False,
-            'has_offscreen_renderer': True,
-            'use_camera_obs': True,
-            'camera_names': self.cameras,
-            'camera_heights': [self.img_size] * len(self.cameras),
-            'camera_widths': [self.img_size] * len(self.cameras),
-            'control_freq': self.action_hz,
-            # horizon is in control steps; hitting it = episode timeout = recorded failure
-            'horizon': int(float(self.get_parameter('max_episode_s').value) * self.action_hz),
-            'reward_shaping': False,
-            'seed': seed,
-        }
-        controller = _make_controller_config()
-        if controller is not None:
-            if self.absolute_actions:
-                _set_control_delta(controller, False)
-            kwargs['controller_configs'] = controller
-        elif self.absolute_actions:
-            raise RuntimeError('absolute_actions needs an OSC controller config')
-        else:
-            self.get_logger().warn('evh_plant: using robosuite default controller config')
-
+        """Construct the sim, or fall back to synthetic observations if robosuite is missing."""
+        spec = EnvSpec(
+            env_name=self.get_parameter('env_name').value,
+            robot=self.get_parameter('robot').value,
+            cameras=tuple(self.cameras),
+            image_size=self.img_size,
+            action_hz=self.action_hz,
+            max_episode_s=float(self.get_parameter('max_episode_s').value),
+            seed=int(self.get_parameter('seed').value),
+            absolute_actions=self.absolute_actions,
+        )
         try:
-            self._env = suite.make(**kwargs)
-        except TypeError:            # robosuite 1.4 has no seed kwarg (np.random covers it)
-            kwargs.pop('seed', None)
-            self._env = suite.make(**kwargs)
-        self._obs = self._env.reset()
-        low, _high = self._env.action_spec
-        self._action_dim = len(low)
+            built = build_env(spec)
+        except Exception as exc:
+            self.get_logger().warn(
+                f'robosuite unavailable ({type(exc).__name__}: {exc}); '
+                'publishing synthetic observations (no physics, no episodes)')
+            return
+
+        for note in built.notes:
+            self.get_logger().warn(f'evh_plant: {note}')
+        self._env, self._obs, self._action_dim = built.env, built.obs, built.action_dim
         self.get_logger().info(
             f'evh_plant: robosuite env ready (action_dim={self._action_dim})')
-
-    def _open_video_writer(self) -> None:
-        video_path = str(self.get_parameter('video_path').value).strip()
-        if not video_path:
-            return
-        import imageio
-
-        path = Path(video_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._video_writer = imageio.get_writer(str(path), fps=int(self.control_hz))
-        limit = (
-            f', max {self._video_max_frames} frames'
-            if self._video_max_frames else ', until shutdown')
-        self.get_logger().info(
-            f'evh_plant: recording {path} @ {int(self.control_hz)} Hz{limit}')
-
-    def _close_video_writer(self) -> None:
-        if self._video_writer is None:
-            return
-        self._video_writer.close()
-        self.get_logger().info(
-            f'evh_plant: wrote {self._video_frames} frames to '
-            f'{self.get_parameter("video_path").value}')
-        self._video_writer = None
-
-    def _maybe_record_frame(self, frame: np.ndarray) -> None:
-        if self._video_writer is None:
-            return
-        self._video_writer.append_data(frame)
-        self._video_frames += 1
-        if self._video_max_frames and self._video_frames >= self._video_max_frames:
-            self._close_video_writer()
 
     # ------------------------------------------------------------- callbacks
     def _on_action(self, msg: JointState) -> None:
@@ -276,6 +206,7 @@ class PlantNode(Node):
         self.get_logger().error('evh_plant: aborting; pass strict_mode_check:=false to override')
         rclpy.shutdown()   # ends executor.spin(); main() then exits non-zero
 
+    # ---------------------------------------------------------------- actions
     def _current_action(self) -> np.ndarray:
         if self._last_action is None:
             return self._hold_action()
@@ -307,6 +238,7 @@ class PlantNode(Node):
             action[3:6] = _quat_to_axisangle(ee_quat).astype(np.float32)
         return action
 
+    # --------------------------------------------------------------- episodes
     def _step_physics(self) -> None:
         """Advance the simulator one action step; close the episode on success or timeout."""
         if self._env is None:
@@ -326,78 +258,33 @@ class PlantNode(Node):
         self._last_action = None   # don't carry the last command into the new episode
         self.pub_reset.publish(Empty())
 
+    # ----------------------------------------------------------- observations
     def _publish_observation(self) -> None:
         now = self.get_clock().now().to_msg()
+        want_wrist = self.pub_wrist is not None
 
         if self._env is None or self._obs is None:
-            frame = np.random.randint(0, 255, (self.img_size, self.img_size, 3), np.uint8)
-            wrist = frame
-            joint_pos = np.zeros(7, dtype=float)
-            joint_vel = np.zeros(7, dtype=float)
-            ee_pos = np.zeros(3, dtype=float)
-            ee_quat = np.array([0.0, 0.0, 0.0, 1.0])
-            gripper_qpos = np.zeros(2, dtype=float)
+            obs = PlantObservation.synthetic(self.img_size, want_wrist)
         else:
-            # snapshot ONE obs reference and read every field from it: _step_physics (200 Hz on a
-            # separate thread) and _reset_episode both rebind self._obs, so re-reading self._obs
-            # per-field would pair an image with proprio/ee_pose from a different sim step.
-            obs = self._obs
-            frame = self._upright(obs.get(f'{self.camera}_image'))
-            wrist = (self._upright(obs.get(f'{self.cameras[1]}_image'))
-                     if self.pub_wrist is not None else None)
-            if frame is None:
-                return   # obs dict without images (shouldn't happen with use_camera_obs)
-            joint_pos = np.asarray(obs.get('robot0_joint_pos', np.zeros(7)), dtype=float)
-            joint_vel = np.asarray(obs.get('robot0_joint_vel', np.zeros(7)), dtype=float)
-            ee_pos = np.asarray(obs.get('robot0_eef_pos', np.zeros(3)), dtype=float)
-            ee_quat = np.asarray(   # robosuite convention: [x, y, z, w]
-                obs.get('robot0_eef_quat', [0.0, 0.0, 0.0, 1.0]), dtype=float)
-            gripper_qpos = np.asarray(
-                obs.get('robot0_gripper_qpos', np.zeros(2)), dtype=float)
+            # snapshot ONE obs reference and hand it over whole: _step_physics (200 Hz on a
+            # separate thread) and _reset_episode both rebind self._obs, so reading it per-field
+            # would pair an image with proprio/ee_pose from a different sim step.
+            obs = PlantObservation.from_robosuite(self._obs, self.cameras, want_wrist)
+            if obs is None:
+                return   # obs dict carried no image; nothing to publish this tick
 
-        self.pub_image.publish(self._to_image_msg(frame, now))
-        if self.pub_wrist is not None and wrist is not None:
-            self.pub_wrist.publish(self._to_image_msg(wrist, now))
-        self._maybe_record_frame(frame)
+        self.pub_image.publish(obs.image_msg(now))
+        wrist_msg = obs.wrist_msg(now)
+        if self.pub_wrist is not None and wrist_msg is not None:
+            self.pub_wrist.publish(wrist_msg)
+        self.recorder.record(obs.frame)
 
-        js = JointState()
-        js.header.stamp = now
-        js.position = list(joint_pos)
-        js.velocity = list(joint_vel)
-        self.pub_joint.publish(js)
-
-        prop = JointState()   # [eef_pos(3), eef_quat(4, xyzw), gripper_qpos(2)]
-        prop.header.stamp = now
-        prop.position = list(ee_pos) + list(ee_quat) + list(gripper_qpos)
-        self.pub_proprio.publish(prop)
-
-        ee = PoseStamped()
-        ee.header.stamp = now
-        ee.header.frame_id = 'base'
-        ee.pose.position.x, ee.pose.position.y, ee.pose.position.z = map(float, ee_pos)
-        (ee.pose.orientation.x, ee.pose.orientation.y,
-         ee.pose.orientation.z, ee.pose.orientation.w) = map(float, ee_quat)
-        self.pub_ee_pose.publish(ee)
-
-    # -------------------------------------------------------------- helpers
-    @staticmethod
-    def _upright(frame) -> np.ndarray | None:
-        """robosuite camera obs are bottom-up; flip to upright uint8."""
-        if frame is None:
-            return None
-        return np.flipud(np.asarray(frame)).astype(np.uint8).copy()
-
-    def _to_image_msg(self, frame: np.ndarray, stamp) -> Image:
-        msg = Image()
-        msg.header.stamp = stamp
-        msg.height, msg.width = frame.shape[0], frame.shape[1]
-        msg.encoding = 'rgb8'
-        msg.step = msg.width * 3
-        msg.data = frame.tobytes()
-        return msg
+        self.pub_joint.publish(obs.joint_state_msg(now))
+        self.pub_proprio.publish(obs.proprio_msg(now))
+        self.pub_ee_pose.publish(obs.ee_pose_msg(now))
 
     def destroy_node(self) -> None:
-        self._close_video_writer()
+        self.recorder.close()
         if self._env is not None:
             self._env.close()
             self._env = None

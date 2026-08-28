@@ -7,8 +7,6 @@ Covers the plant logic that test_plant_hold.py and test_mode_crosscheck.py leave
   * a reset must drop the last command, or the first physics step of the new episode replays a
     stale action against a freshly randomised scene.
   * `_current_action` pads/truncates to the env's action dim; nothing upstream guarantees width.
-  * `_set_control_delta` is the mechanism behind invariant #1 (absolute mode) and has to work on
-    both robosuite config shapes, silently doing nothing on neither.
 
 The import needs rclpy, hence the ros2 mark; the node itself is never constructed.
 """
@@ -141,37 +139,3 @@ def test_current_action_is_reshaped_to_the_env_action_dim(width):
     assert action.dtype == np.float32
     assert np.array_equal(action[:min(width, 7)], np.arange(min(width, 7)))
     assert np.all(action[width:] == 0.0)   # padding only, no garbage
-
-
-# ---------------------------------------------------------------- controller config
-@requires_ros2
-@pytest.mark.parametrize('value', [True, False])
-def test_set_control_delta_on_the_flat_robosuite_14_config(value):
-    from evh_plant.plant_node import _set_control_delta
-
-    cfg = {'type': 'OSC_POSE', 'control_delta': not value}
-    _set_control_delta(cfg, value)
-    assert cfg['control_delta'] is value
-
-
-@requires_ros2
-@pytest.mark.parametrize('value', [True, False])
-def test_set_control_delta_reaches_into_a_composite_15_config(value):
-    from evh_plant.plant_node import _set_control_delta
-
-    cfg = {'body_parts': {'right': {'type': 'OSC_POSE', 'control_delta': not value},
-                          'base': {'type': 'JOINT_VELOCITY'},
-                          'gripper': 'not-a-dict'}}
-    _set_control_delta(cfg, value)
-
-    assert cfg['body_parts']['right']['control_delta'] is value
-    assert 'control_delta' not in cfg['body_parts']['base'], 'only OSC parts take control_delta'
-
-
-@requires_ros2
-def test_set_control_delta_tolerates_a_config_it_does_not_recognise():
-    from evh_plant.plant_node import _set_control_delta
-
-    cfg = {'type': 'JOINT_POSITION'}
-    _set_control_delta(cfg, False)      # must not raise
-    assert cfg == {'type': 'JOINT_POSITION'}
