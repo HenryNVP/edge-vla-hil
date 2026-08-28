@@ -128,7 +128,6 @@ class PyTorchBackend(ChunkPolicy):
             return
 
         DiffusionPolicy = _import_diffusion_policy()
-        import torch
 
         self._torch_device = _resolve_device(self.device)
         logger.info('Loading diffusion policy from %s on %s', self.ckpt_path, self._torch_device)

@@ -10,7 +10,6 @@ import time
 
 import numpy as np
 import pytest
-
 from conftest import requires_ros2
 
 
@@ -59,6 +58,7 @@ def _publish_waypoint(node, action):
 def _delta_node(ros, **extra):
     """ReactiveNode in delta-waypoint mode (the non-default legacy contract)."""
     from rclpy.parameter import Parameter
+
     from evh_reactive.reactive_node import ReactiveNode
     params = [Parameter('absolute_waypoints', value=False)]
     params += [Parameter(k, value=v) for k, v in extra.items()]
@@ -145,6 +145,7 @@ def test_episode_reset_clears_target(ros):
 def test_absolute_tracking_rate_limits_toward_target(ros):
     """Absolute mode: the emitted setpoint steps toward the target, capped at max_step_pos."""
     from rclpy.parameter import Parameter
+
     from evh_reactive.reactive_node import ReactiveNode
 
     node = ReactiveNode(parameter_overrides=[
@@ -178,6 +179,7 @@ def test_absolute_tracking_rate_limits_toward_target(ros):
 @requires_ros2
 def test_absolute_passthrough_forwards_target_unscaled(ros):
     from rclpy.parameter import Parameter
+
     from evh_reactive.reactive_node import ReactiveNode
 
     node = ReactiveNode(parameter_overrides=[
@@ -199,7 +201,6 @@ def test_absolute_passthrough_forwards_target_unscaled(ros):
 
 @requires_ros2
 def test_passthrough_scales_delta_not_gripper(ros):
-    from rclpy.parameter import Parameter
 
     node = _delta_node(ros, passthrough=True, passthrough_scale=0.1)
     actions = []

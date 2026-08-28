@@ -9,8 +9,13 @@ import numpy as np
 import pytest
 
 from evh_controller.chunk_executor import (
-    make_executor, ChunkExecutor, RTCExecutor, NetworkAwareExecutor,
-    SynchronousExecutor, NaiveAsyncExecutor, TemporalEnsembleExecutor, BIDExecutor,
+    BIDExecutor,
+    NaiveAsyncExecutor,
+    NetworkAwareExecutor,
+    RTCExecutor,
+    SynchronousExecutor,
+    TemporalEnsembleExecutor,
+    make_executor,
 )
 from evh_controller.inference_worker import Arrival
 

@@ -7,7 +7,6 @@ announces its mode on a latched /policy/absolute and the plant checks it; the me
 what a confused user actually reads, so it is pinned here.
 """
 import pytest
-
 from conftest import requires_ros2
 
 
@@ -46,10 +45,12 @@ def _run_mode_handshake(ros, plant_absolute, announced):
     underneath the test fixture.
     """
     import time
+
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.parameter import Parameter
     from std_msgs.msg import Bool
+
     from evh_plant.plant_node import MODE_QOS, PlantNode
 
     plant = PlantNode(parameter_overrides=[
@@ -89,8 +90,8 @@ def test_plant_stays_quiet_when_the_policy_mode_agrees(ros):
 def test_plant_and_controller_agree_on_the_mode_topic_qos():
     """A latched publisher only reaches a subscriber whose QoS is compatible; if these drift the
     check silently never fires, which is the exact failure it exists to prevent."""
-    from evh_plant.plant_node import MODE_QOS as plant_qos
     from evh_controller.controller_node import MODE_QOS as controller_qos
+    from evh_plant.plant_node import MODE_QOS as plant_qos
 
     assert plant_qos.durability == controller_qos.durability
     assert plant_qos.reliability == controller_qos.reliability

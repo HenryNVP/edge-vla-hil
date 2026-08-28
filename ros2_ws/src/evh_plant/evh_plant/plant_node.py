@@ -19,12 +19,12 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
+from geometry_msgs.msg import PoseStamped
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import Image, JointState
-from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Bool, Empty
 
 # must match the controller's publisher QoS (latched) — the controller announces its mode once,
@@ -177,21 +177,21 @@ class PlantNode(Node):
         seed = int(self.get_parameter('seed').value)
         np.random.seed(seed)
 
-        kwargs = dict(
-            env_name=self.get_parameter('env_name').value,
-            robots=self.get_parameter('robot').value,   # robosuite >=1.5 uses `robots`
-            has_renderer=False,
-            has_offscreen_renderer=True,
-            use_camera_obs=True,
-            camera_names=self.cameras,
-            camera_heights=[self.img_size] * len(self.cameras),
-            camera_widths=[self.img_size] * len(self.cameras),
-            control_freq=self.action_hz,
+        kwargs = {
+            'env_name': self.get_parameter('env_name').value,
+            'robots': self.get_parameter('robot').value,   # robosuite >=1.5 uses `robots`
+            'has_renderer': False,
+            'has_offscreen_renderer': True,
+            'use_camera_obs': True,
+            'camera_names': self.cameras,
+            'camera_heights': [self.img_size] * len(self.cameras),
+            'camera_widths': [self.img_size] * len(self.cameras),
+            'control_freq': self.action_hz,
             # horizon is in control steps; hitting it = episode timeout = recorded failure
-            horizon=int(float(self.get_parameter('max_episode_s').value) * self.action_hz),
-            reward_shaping=False,
-            seed=seed,
-        )
+            'horizon': int(float(self.get_parameter('max_episode_s').value) * self.action_hz),
+            'reward_shaping': False,
+            'seed': seed,
+        }
         controller = _make_controller_config()
         if controller is not None:
             if self.absolute_actions:

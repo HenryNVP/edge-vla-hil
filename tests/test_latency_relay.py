@@ -5,14 +5,13 @@ sampling is seeded/reproducible, and that drop_prob=1.0 drops everything.
 """
 import random
 
-import pytest
-
 from conftest import requires_ros2
 
 
 def _relay(rclpy, **overrides):
     """Construct a LatencyNode with parameter overrides (read in its __init__)."""
     from rclpy.parameter import Parameter
+
     from evh_latency.latency_node import LatencyNode
     params = [Parameter(k, value=v) for k, v in overrides.items()]
     return LatencyNode(parameter_overrides=params)
@@ -32,9 +31,8 @@ def _drain_executor(ex, predicate, timeout=5.0):
 def test_relay_forwards_messages(ros):
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
-    from std_msgs.msg import String
-
     from rclpy.qos import qos_profile_sensor_data
+    from std_msgs.msg import String
 
     relay = _relay(rclpy, input_topic='/in', output_topic='/out',
                    msg_type='std_msgs/msg/String', latency_ms=0.0)
@@ -63,9 +61,8 @@ def test_relay_forwards_messages(ros):
 def test_drop_prob_one_drops_all(ros):
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
-    from std_msgs.msg import String
-
     from rclpy.qos import qos_profile_sensor_data
+    from std_msgs.msg import String
 
     relay = _relay(rclpy, input_topic='/in2', output_topic='/out2',
                    msg_type='std_msgs/msg/String', latency_ms=0.0, drop_prob=1.0)

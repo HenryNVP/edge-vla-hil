@@ -44,14 +44,19 @@ from __future__ import annotations
 
 import numpy as np
 import rclpy
+from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
-from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Empty
 
 from evh_reactive.transforms import (
-    axisangle_to_quat, quat_conj, quat_mul, quat_normalize, quat_to_axisangle)
+    axisangle_to_quat,
+    quat_conj,
+    quat_mul,
+    quat_normalize,
+    quat_to_axisangle,
+)
 
 ACTION_DIM = 7   # OSC_POSE: dpos(3) + axis-angle drot(3) + gripper
 

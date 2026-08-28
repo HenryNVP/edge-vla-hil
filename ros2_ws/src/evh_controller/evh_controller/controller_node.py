@@ -32,9 +32,9 @@ from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy, qos
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Bool, Empty, Float32
 
-from evh_controller.policy import make_policy
 from evh_controller.chunk_executor import make_executor
 from evh_controller.inference_worker import InferenceWorker
+from evh_controller.policy import make_policy
 
 # Latched: published once at startup, but the plant must receive it whenever it joins — the
 # controller often comes up much later (checkpoint load / HF download). See PlantNode._on_policy_mode.

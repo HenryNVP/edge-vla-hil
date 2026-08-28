@@ -7,7 +7,6 @@ point from the plot — hence count-over-window rather than 1/mean(inter-arrival
 import math
 
 import pytest
-
 from conftest import requires_ros2
 
 

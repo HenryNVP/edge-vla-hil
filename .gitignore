@@ -3,12 +3,17 @@ ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
 
-# Python
+# Python & Tooling Caches
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
 # Models / artifacts
 *.onnx

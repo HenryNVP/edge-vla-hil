@@ -3,7 +3,6 @@
 Marked ros2. This is the cheap CI guard that catches import errors, bad QoS, typos in topic
 names, and broken parameter declarations across the whole graph before any real logic is wired in.
 """
-import pytest
 
 from conftest import requires_ros2, spin_until
 
@@ -15,9 +14,10 @@ def _topic_names(node):
 @requires_ros2
 def test_plant_boots_and_publishes(ros):
     import rclpy
+    from geometry_msgs.msg import PoseStamped
     from rclpy.parameter import Parameter
     from sensor_msgs.msg import Image, JointState
-    from geometry_msgs.msg import PoseStamped
+
     from evh_plant.plant_node import PlantNode
 
     # modest action rate: the boot test drives everything on ONE executor thread, so a 200 Hz
@@ -70,8 +70,8 @@ def test_reactive_boots(ros):
 
 @requires_ros2
 def test_reactive_passthrough_param(ros):
-    import rclpy
     from rclpy.parameter import Parameter
+
     from evh_reactive.reactive_node import ReactiveNode
     node = ReactiveNode(parameter_overrides=[Parameter('passthrough', value=True)])
     assert node.passthrough is True

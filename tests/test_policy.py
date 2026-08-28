@@ -7,7 +7,7 @@ lands, these still hold and catch shape regressions.
 import numpy as np
 import pytest
 
-from evh_controller.policy import make_policy, PyTorchBackend, TensorRTBackend
+from evh_controller.policy import PyTorchBackend, TensorRTBackend, make_policy
 
 
 def _dummy_obs():

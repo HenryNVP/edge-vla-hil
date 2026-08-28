@@ -61,16 +61,16 @@ def build_env(args):
     import robosuite as suite
 
     cameras = args.cameras
-    kwargs = dict(
-        env_name=args.env,
-        robots=args.robot,
-        has_renderer=args.viewer,
-        has_offscreen_renderer=bool(args.video) or args.use_camera,
-        use_camera_obs=args.use_camera,
-        control_freq=args.control_hz,
-        horizon=args.steps,
-        render_camera=cameras[0],  # mjviewer supports one fixed cam at a time
-    )
+    kwargs = {
+        'env_name': args.env,
+        'robots': args.robot,
+        'has_renderer': args.viewer,
+        'has_offscreen_renderer': bool(args.video) or args.use_camera,
+        'use_camera_obs': args.use_camera,
+        'control_freq': args.control_hz,
+        'horizon': args.steps,
+        'render_camera': cameras[0],  # mjviewer supports one fixed cam at a time
+    }
     if args.use_camera or args.video:
         n = len(cameras)
         kwargs.update(
@@ -168,7 +168,7 @@ def main() -> None:
         env.close()
         return
 
-    frames, writer = [], None
+    writer = None
     if args.video:
         import imageio
         writer = imageio.get_writer(args.video, fps=int(args.control_hz))

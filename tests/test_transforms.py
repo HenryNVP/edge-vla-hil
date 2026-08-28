@@ -8,7 +8,12 @@ import numpy as np
 import pytest
 
 from evh_reactive.transforms import (
-    axisangle_to_quat, quat_conj, quat_mul, quat_normalize, quat_to_axisangle)
+    axisangle_to_quat,
+    quat_conj,
+    quat_mul,
+    quat_normalize,
+    quat_to_axisangle,
+)
 
 
 def test_axisangle_quat_roundtrip():
@@ -52,5 +57,5 @@ def test_delta_compose_then_error_recovers_delta():
 
 def test_normalize_degenerate():
     assert np.allclose(quat_normalize(np.zeros(4)), [0, 0, 0, 1])
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         quat_mul(np.zeros(3), np.zeros(4))   # malformed input should not pass silently

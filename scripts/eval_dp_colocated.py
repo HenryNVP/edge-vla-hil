@@ -59,21 +59,21 @@ def set_control_delta(config: dict, value: bool) -> None:
 def build_env(args, absolute_actions=False):
     import robosuite as suite
 
-    kwargs = dict(
-        env_name=args.env,
-        robots='Panda',
-        has_renderer=False,
-        has_offscreen_renderer=True,
-        use_camera_obs=True,
-        camera_names=['agentview', 'robot0_eye_in_hand'],
-        camera_heights=args.image_size,
-        camera_widths=args.image_size,
-        control_freq=20,             # the rate the checkpoint was trained at
-        horizon=args.horizon,
-        ignore_done=True,            # robomimic protocol: terminate on success, not on horizon
-        reward_shaping=False,
-        seed=args.seed,
-    )
+    kwargs = {
+        'env_name': args.env,
+        'robots': 'Panda',
+        'has_renderer': False,
+        'has_offscreen_renderer': True,
+        'use_camera_obs': True,
+        'camera_names': ['agentview', 'robot0_eye_in_hand'],
+        'camera_heights': args.image_size,
+        'camera_widths': args.image_size,
+        'control_freq': 20,             # the rate the checkpoint was trained at
+        'horizon': args.horizon,
+        'ignore_done': True,            # robomimic protocol: terminate on success, not on horizon
+        'reward_shaping': False,
+        'seed': args.seed,
+    }
     controller = make_controller_config()
     if controller is not None:
         if absolute_actions:

@@ -22,9 +22,11 @@ import csv
 import os
 
 import numpy as np
-
 from latency_chunking import (
-    DelayModel, make_strategy, run_episode, EpisodeResult,
+    DelayModel,
+    EpisodeResult,
+    make_strategy,
+    run_episode,
 )
 
 
@@ -35,8 +37,8 @@ class GymPushTEnv:
     Keeps the raw gym observation dict so the policy adapter can build its input batch.
     """
     def __init__(self, render: bool = False):
-        import gymnasium as gym
         import gym_pusht  # noqa: F401  (registers the env)
+        import gymnasium as gym
         self.env = gym.make(
             'gym_pusht/PushT-v0',
             obs_type='pixels_agent_pos',          ### obs format: image + agent position

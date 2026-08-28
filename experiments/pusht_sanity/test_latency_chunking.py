@@ -13,8 +13,13 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from latency_chunking import (  # noqa: E402
-    DelayModel, PointMassEnv, make_mock_policy, make_strategy, run_episode,
-    RTCFreeze, NaiveAsync,
+    DelayModel,
+    NaiveAsync,
+    PointMassEnv,
+    RTCFreeze,
+    make_mock_policy,
+    make_strategy,
+    run_episode,
 )
 
 STRATEGIES = ['synchronous', 'naive_async', 'temporal_ensemble', 'rtc_freeze']

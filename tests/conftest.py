@@ -48,6 +48,7 @@ def ros():
 def spin_until(node, predicate, timeout=5.0, period=0.02):
     """Spin a node until predicate() is true or timeout; return predicate()'s final value."""
     import time
+
     import rclpy
     end = time.time() + timeout
     while time.time() < end:

@@ -11,7 +11,6 @@ import types
 
 import numpy as np
 import pytest
-
 from conftest import requires_ros2
 
 

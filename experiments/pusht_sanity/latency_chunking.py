@@ -25,9 +25,10 @@ Latency knobs: latency_steps (mean d), jitter_steps (std, gaussian), drop_prob (
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import random
-from typing import Callable, Protocol
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Protocol
 
 import numpy as np
 
