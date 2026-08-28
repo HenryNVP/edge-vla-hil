@@ -37,7 +37,9 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-    "pytest>=7.4.0",
+    # 6.2 floor: the documented test loop runs in edge-vla-hil:host on apt python3-pytest 6.2.5.
+    # Keep this and [tool.pytest.ini_options] minversion in agreement.
+    "pytest>=6.2",
     "pytest-cov>=4.1.0",
     "pytest-mock>=3.11.0",
     "pytest-asyncio>=0.21.0",
