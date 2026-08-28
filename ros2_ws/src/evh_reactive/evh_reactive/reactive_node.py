@@ -1,44 +1,20 @@
-"""Reactive layer: high-rate local tracking of the (delayed) cognitive waypoints.
+"""Reactive layer node: high-rate local tracking of the (delayed) cognitive waypoints.
 
-This is the "fix" half of the experiment. It runs co-located with the plant (zero-delay local
-state) and tracks the *delayed, low-rate* OSC_POSE deltas arriving from the controller on
-/cmd/waypoint. On each new waypoint it latches an ABSOLUTE task-space target
+Wiring only. It runs co-located with the plant, so `/obs/ee_pose` reaches it with zero delay
+(deliberately NOT routed through the latency relay — invariant 6), and it re-emits a `/cmd/action`
+every tick at `rate_hz` while `/cmd/waypoint` arrives late and sparse from the controller.
 
-    x_target = x_local + dpos * pos_scale
-    q_target = R(drot * rot_scale) ⊗ q_local          (world-frame delta, robosuite convention)
+The tracking itself — what a waypoint means, how the target is latched, how the setpoint marches —
+lives in `tracking.py`, which has no ROS in it and is unit-tested directly. This module chooses a
+tracker from the parameters and moves messages in and out of it:
 
-anchored at the *local* EE pose (from /obs/ee_pose, no network in between), then re-emits, every
-tick, the OSC_POSE action that drives the current local pose toward that target:
+    /cmd/waypoint  --> tracker.set_waypoint()
+    /obs/ee_pose   --> the local anchor passed to tracker.step()
+    /episode/reset --> tracker.reset()
+    tick (rate_hz) --> tracker.step() --> /cmd/action
 
-    a_pos = clip(kp_pos * (x_target - x) / pos_scale, -1, 1)
-    a_rot = clip(kp_rot * axisangle(q_target ⊗ q⁻¹) / rot_scale, -1, 1)
-
-robosuite's OSC controller underneath supplies the impedance (F = Kp Δx - Kd ẋ); this layer
-supplies the zero-delay error recomputation. Because the target is latched absolute, a lost or
-late waypoint means "hold the last target" instead of "keep re-applying a stale delta" — that
-difference is the reactive layer's contribution under network degradation.
-
-pos_scale / rot_scale mirror the plant OSC's output_max (robosuite defaults 0.05 m / 0.5 rad):
-how far a unit action moves the OSC goal in one control step. Keep them in sync with the plant.
-
-Gain scheduling (kp as a function of the language prompt) is the documented future-work
-extension; the fixed-gain interface below is shaped to accept that later.
-
-Ablation switch: `passthrough=true` forwards the raw delta instead, scaled by `passthrough_scale`
-(the plant re-applies the cached action at action_hz, so a delta meant for one policy step at
-control_hz must be shrunk by ~control_hz/action_hz to keep the commanded EE speed). This
-reproduces the monolithic (no-reactive-layer) baseline for the benchmark.
-
-ABSOLUTE mode (`absolute_waypoints=true`, for the abs-action DP checkpoints; the plant runs its
-OSC with control_delta=False): the waypoint already IS the absolute target
-[pos(3), axis-angle(3), gripper] — no anchoring. Tracking maintains its own SETPOINT trajectory:
-each tick the setpoint marches toward the latched target, capped at max_step_pos / max_step_rot
-per tick, and the setpoint (not the raw target) is what the plant's OSC receives. The setpoint
-marches from its own previous value — NOT from the measured EE pose: re-anchoring at the
-measured pose would keep the OSC goal a single step ahead of the arm and reduce the commanded
-speed to a crawl (the proportional force never grows). This gives smooth interpolation between
-sparse delayed targets and holds the last target when waypoints stop arriving. Passthrough
-forwards the raw target unscaled (absolute commands are idempotent — no rate compensation).
+`absolute_waypoints` must match the plant's `absolute_actions`; every launch file feeds both the
+same argument, and the plant aborts if the loaded policy disagrees (invariant 1).
 """
 from __future__ import annotations
 
@@ -50,15 +26,14 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Empty
 
-from evh_reactive.transforms import (
-    axisangle_to_quat,
-    quat_conj,
-    quat_mul,
-    quat_normalize,
-    quat_to_axisangle,
+from evh_reactive.tracking import (
+    AbsoluteTracker,
+    DeltaTracker,
+    PassthroughTracker,
+    Pose,
+    normalize_waypoint,
 )
-
-ACTION_DIM = 7   # OSC_POSE: dpos(3) + axis-angle drot(3) + gripper
+from evh_reactive.transforms import quat_normalize
 
 
 class ReactiveNode(Node):
@@ -72,32 +47,16 @@ class ReactiveNode(Node):
         self.declare_parameter('rot_scale', 0.5)         # rad per unit action
         self.declare_parameter('passthrough', False)     # True -> monolithic baseline
         self.declare_parameter('passthrough_scale', 0.1)  # ~ controller_hz / plant action_hz
-        self.declare_parameter('absolute_waypoints', True)  # abs-action policy (see docstring)
+        self.declare_parameter('absolute_waypoints', True)  # abs-action policy (see tracking.py)
         self.declare_parameter('max_step_pos', 0.004)    # m per tick toward the target (abs)
         self.declare_parameter('max_step_rot', 0.02)     # rad per tick toward the target (abs)
 
         self.rate_hz = self.get_parameter('rate_hz').value
-        self.kp_pos = float(self.get_parameter('kp_pos').value)
-        self.kp_rot = float(self.get_parameter('kp_rot').value)
-        self.pos_scale = float(self.get_parameter('pos_scale').value)
-        self.rot_scale = float(self.get_parameter('rot_scale').value)
         self.passthrough = bool(self.get_parameter('passthrough').value)
-        self.passthrough_scale = float(self.get_parameter('passthrough_scale').value)
         self.absolute = bool(self.get_parameter('absolute_waypoints').value)
-        self.max_step_pos = float(self.get_parameter('max_step_pos').value)
-        self.max_step_rot = float(self.get_parameter('max_step_rot').value)
+        self.tracker = self._make_tracker()
 
-        # local (zero-delay) EE state
-        self._ee_pos: np.ndarray | None = None
-        self._ee_quat: np.ndarray | None = None
-        # latched absolute target (tracking mode) / raw delta (passthrough mode)
-        self._target_pos: np.ndarray | None = None
-        self._target_quat: np.ndarray | None = None
-        self._gripper = 0.0
-        self._raw: np.ndarray | None = None
-        # setpoint trajectory state (absolute tracking mode)
-        self._sp_pos: np.ndarray | None = None
-        self._sp_quat: np.ndarray | None = None
+        self._ee: Pose | None = None   # local, zero-delay EE state
 
         self.create_subscription(JointState, '/cmd/waypoint', self._on_waypoint, 10)
         self.create_subscription(
@@ -108,100 +67,48 @@ class ReactiveNode(Node):
         self.create_timer(1.0 / self.rate_hz, self._tick)
 
         mode = 'PASSTHROUGH (baseline)' if self.passthrough else 'tracking'
-        self.get_logger().info(f'evh_reactive up: {self.rate_hz}Hz mode={mode}')
+        self.get_logger().info(
+            f'evh_reactive up: {self.rate_hz}Hz mode={mode} absolute={self.absolute}')
+
+    def _make_tracker(self):
+        """Pick the tracking strategy the parameters describe."""
+        if self.passthrough:
+            return PassthroughTracker(
+                absolute=self.absolute,
+                scale=float(self.get_parameter('passthrough_scale').value))
+        if self.absolute:
+            return AbsoluteTracker(
+                max_step_pos=float(self.get_parameter('max_step_pos').value),
+                max_step_rot=float(self.get_parameter('max_step_rot').value))
+        return DeltaTracker(
+            kp_pos=float(self.get_parameter('kp_pos').value),
+            kp_rot=float(self.get_parameter('kp_rot').value),
+            pos_scale=float(self.get_parameter('pos_scale').value),
+            rot_scale=float(self.get_parameter('rot_scale').value))
 
     # ------------------------------------------------------------- callbacks
     def _on_ee_pose(self, msg: PoseStamped) -> None:
         p, o = msg.pose.position, msg.pose.orientation
-        self._ee_pos = np.array([p.x, p.y, p.z])
-        self._ee_quat = quat_normalize(np.array([o.x, o.y, o.z, o.w]))
+        self._ee = Pose(pos=np.array([p.x, p.y, p.z]),
+                        quat=quat_normalize(np.array([o.x, o.y, o.z, o.w])))
 
     def _on_waypoint(self, msg: JointState) -> None:
-        a = np.asarray(msg.position, dtype=np.float64).reshape(-1)
-        if a.size < ACTION_DIM:
-            a = np.pad(a, (0, ACTION_DIM - a.size))
-        self._raw = a[:ACTION_DIM]
-        self._gripper = float(self._raw[6])
-        if self.passthrough:
-            return
-        if self.absolute:
-            # the waypoint IS the target — no anchoring needed
-            self._target_pos = self._raw[:3].copy()
-            self._target_quat = axisangle_to_quat(self._raw[3:6])
-            return
-        if self._ee_pos is None:
-            return  # cannot anchor a delta target before the first local EE pose
-        self._target_pos = self._ee_pos + self._raw[:3] * self.pos_scale
-        self._target_quat = quat_mul(
-            axisangle_to_quat(self._raw[3:6] * self.rot_scale), self._ee_quat)
+        self.tracker.set_waypoint(normalize_waypoint(msg.position), self._ee)
 
     def _on_episode_reset(self, _msg: Empty) -> None:
-        self._target_pos = None
-        self._target_quat = None
-        self._raw = None
-        self._gripper = 0.0
-        self._sp_pos = None
-        self._sp_quat = None
+        self.tracker.reset()
 
     # ------------------------------------------------------------- high-rate
     def _tick(self) -> None:
-        if self.passthrough:
-            action = self._passthrough_action()
-        else:
-            action = self._tracking_action()
+        if self.tracker.needs_ee and self._ee is None:
+            return   # nothing to anchor against yet
+        action = self.tracker.step(self._ee)
         if action is None:
             return
         out = JointState()
         out.header.stamp = self.get_clock().now().to_msg()
         out.position = [float(v) for v in action]
         self.pub_action.publish(out)
-
-    def _passthrough_action(self) -> np.ndarray | None:
-        if self._raw is None:
-            return None
-        action = self._raw.copy()
-        if not self.absolute:
-            action[:6] *= self.passthrough_scale   # gripper is a command, not a delta: unscaled
-        return action
-
-    def _tracking_action(self) -> np.ndarray | None:
-        if self._target_pos is None or self._ee_pos is None:
-            return None
-        return (self._track_absolute() if self.absolute else self._track_delta())
-
-    def _track_delta(self) -> np.ndarray:
-        """Delta-OSC plant: emit a clipped error-delta toward the latched target."""
-        err_pos = self._target_pos - self._ee_pos
-        err_rot = quat_to_axisangle(quat_mul(self._target_quat, quat_conj(self._ee_quat)))
-        action = np.empty(ACTION_DIM)
-        action[:3] = np.clip(self.kp_pos * err_pos / self.pos_scale, -1.0, 1.0)
-        action[3:6] = np.clip(self.kp_rot * err_rot / self.rot_scale, -1.0, 1.0)
-        action[6] = self._gripper
-        return action
-
-    def _track_absolute(self) -> np.ndarray:
-        """Absolute-OSC plant: march the setpoint trajectory toward the target and emit it."""
-        if self._sp_pos is None:      # first tick of an episode: start from the arm's pose
-            self._sp_pos = self._ee_pos.copy()
-            self._sp_quat = self._ee_quat.copy()
-
-        err_pos = self._target_pos - self._sp_pos
-        dist = float(np.linalg.norm(err_pos))
-        if dist > self.max_step_pos:
-            err_pos *= self.max_step_pos / dist
-        self._sp_pos = self._sp_pos + err_pos
-
-        err_rot = quat_to_axisangle(quat_mul(self._target_quat, quat_conj(self._sp_quat)))
-        angle = float(np.linalg.norm(err_rot))
-        if angle > self.max_step_rot:
-            err_rot *= self.max_step_rot / angle
-        self._sp_quat = quat_mul(axisangle_to_quat(err_rot), self._sp_quat)
-
-        action = np.empty(ACTION_DIM)
-        action[:3] = self._sp_pos
-        action[3:6] = quat_to_axisangle(self._sp_quat)
-        action[6] = self._gripper
-        return action
 
 
 def main(args=None) -> None:
