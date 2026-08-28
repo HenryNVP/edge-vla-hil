@@ -6,7 +6,6 @@ sampling is seeded/reproducible, and that drop_prob=1.0 drops everything.
 import random
 
 import pytest
-
 from conftest import requires_ros2
 
 
