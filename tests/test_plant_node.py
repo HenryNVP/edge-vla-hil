@@ -1,12 +1,20 @@
-"""Plant episode bookkeeping and action shaping — stub env, no robosuite (or GPU) needed.
+"""Unit tests for plant_node.py — episodes, action shaping, and the hold action.
 
-Covers the plant logic that test_plant_hold.py and test_mode_crosscheck.py leave open:
+Everything PlantNode itself decides, driven through a stub so no robosuite env (and no GPU) is
+needed. The env construction, observation packing and video recording that used to live in this
+module have their own files now (test_env_factory, test_plant_messages, test_video_recorder); the
+node's cross-check handshake with the controller is test_mode_crosscheck.
+
+What is guarded here:
 
   * `/eval/success` must be published on BOTH task success and horizon timeout (True/False) —
     the recorder needs both or the success rate is computed over the successes only.
   * a reset must drop the last command, or the first physics step of the new episode replays a
     stale action against a freshly randomised scene.
   * `_current_action` pads/truncates to the env's action dim; nothing upstream guarantees width.
+  * `_hold_action` is mode-aware. THE regression: in absolute mode (OSC control_delta=False) a
+    zero action is an ABSOLUTE pose target at the world origin, so defaulting to zeros before the
+    first /cmd/action yanked the arm off the table on every reset. Delta mode stays zeros.
 
 The import needs rclpy, hence the ros2 mark; the node itself is never constructed.
 """
@@ -139,3 +147,65 @@ def test_current_action_is_reshaped_to_the_env_action_dim(width):
     assert action.dtype == np.float32
     assert np.array_equal(action[:min(width, 7)], np.arange(min(width, 7)))
     assert np.all(action[width:] == 0.0)   # padding only, no garbage
+
+
+# ------------------------------------------------------------------- hold action
+@requires_ros2
+def test_hold_action_absolute_commands_current_pose_not_origin():
+    """The regression guard: a zero here is a world-origin target, not 'stay put'."""
+    from evh_plant.plant_node import PlantNode, _quat_to_axisangle
+
+    ee_pos = np.array([0.4, -0.1, 1.05])
+    ee_quat = np.array([0.0, 0.0, 0.0, 1.0])
+    stub = _stub_plant(absolute_actions=True,
+                       _obs={'robot0_eef_pos': ee_pos, 'robot0_eef_quat': ee_quat})
+
+    hold = PlantNode._hold_action(stub)
+
+    assert hold.shape == (7,)
+    assert np.allclose(hold[:3], ee_pos)                      # NOT the origin
+    assert np.allclose(hold[3:6], _quat_to_axisangle(ee_quat))
+    assert hold[6] == 0.0                                     # gripper neutral
+    assert not np.allclose(hold[:3], 0.0)                     # the actual regression guard
+
+
+@requires_ros2
+def test_hold_action_delta_mode_is_zeros():
+    from evh_plant.plant_node import PlantNode
+
+    stub = _stub_plant(absolute_actions=False,
+                       _obs={'robot0_eef_pos': np.array([0.4, -0.1, 1.05])})
+    assert np.allclose(PlantNode._hold_action(stub), np.zeros(7))
+
+
+@requires_ros2
+def test_hold_action_absolute_refuses_to_default_a_missing_pose():
+    """A .get() default here would silently rebuild the origin lurch; raising is the point."""
+    from evh_plant.plant_node import PlantNode
+
+    stub = _stub_plant(absolute_actions=True, _obs={'unrelated': 1})
+    with pytest.raises(RuntimeError, match='world origin'):
+        PlantNode._hold_action(stub)
+
+
+@requires_ros2
+def test_hold_action_absolute_without_obs_falls_back_to_zeros():
+    """Before the first obs (self._obs is None) there is nothing to hold to; zeros is the only
+    safe default. The origin-lurch window here is unavoidable but momentary (pre-first-step)."""
+    from evh_plant.plant_node import PlantNode
+
+    stub = _stub_plant(absolute_actions=True, _obs=None)
+    assert np.allclose(PlantNode._hold_action(stub), np.zeros(7))
+
+
+@requires_ros2
+def test_quat_to_axisangle_matches_reactive_transforms():
+    """plant_node duplicates this helper rather than depending on evh_reactive (the two packages
+    deploy to different machines). Duplicated math has to stay identical math."""
+    from evh_plant.plant_node import _quat_to_axisangle
+    from evh_reactive.transforms import axisangle_to_quat, quat_to_axisangle
+
+    assert np.allclose(_quat_to_axisangle([0.0, 0.0, 0.0, 1.0]), np.zeros(3))
+    for aa in ([0.3, -0.1, 0.7], [np.pi / 2, 0.0, 0.0], [0.0, 2.5, 0.0]):
+        q = axisangle_to_quat(np.asarray(aa))
+        assert np.allclose(_quat_to_axisangle(q), quat_to_axisangle(q), atol=1e-9)
