@@ -15,6 +15,7 @@ def generate_launch_description() -> LaunchDescription:
     jitter_ms = LaunchConfiguration('jitter_ms')
     drop_prob = LaunchConfiguration('drop_prob')
     absolute = LaunchConfiguration('absolute')
+    strict_mode_check = LaunchConfiguration('strict_mode_check')
     passthrough = LaunchConfiguration('passthrough')
     image_size = LaunchConfiguration('image_size')
     video = LaunchConfiguration('video')
@@ -25,6 +26,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('jitter_ms', default_value='0.0'),
         DeclareLaunchArgument('drop_prob', default_value='0.0'),
         DeclareLaunchArgument('absolute', default_value='true'),
+        DeclareLaunchArgument('strict_mode_check', default_value='true'),
         DeclareLaunchArgument('passthrough', default_value='false'),
         DeclareLaunchArgument('image_size', default_value='84'),
         DeclareLaunchArgument('video', default_value=''),
@@ -35,6 +37,7 @@ def generate_launch_description() -> LaunchDescription:
         package='evh_plant', executable='plant_node', name='evh_plant', output='screen',
         parameters=[{
             'image_size': image_size, 'absolute_actions': absolute,
+            'strict_mode_check': strict_mode_check,
             'video_path': video, 'video_duration': video_duration,
         }])
 

@@ -28,13 +28,18 @@ import collections
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy, qos_profile_sensor_data
 from sensor_msgs.msg import Image, JointState
-from std_msgs.msg import Empty, Float32
+from std_msgs.msg import Bool, Empty, Float32
 
 from evh_controller.policy import make_policy
 from evh_controller.chunk_executor import make_executor
 from evh_controller.inference_worker import InferenceWorker
+
+# Latched: published once at startup, but the plant must receive it whenever it joins — the
+# controller often comes up much later (checkpoint load / HF download). See PlantNode._on_policy_mode.
+MODE_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
+                      durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
 
 
 class ControllerNode(Node):
@@ -81,6 +86,10 @@ class ControllerNode(Node):
         self.pub_waypoint = self.create_publisher(JointState, '/cmd/waypoint', 10)
         self.pub_latency = self.create_publisher(Float32, '/metrics/inference_ms', 10)
         self.pub_delay = self.create_publisher(Float32, '/metrics/delay_steps', 10)
+
+        # announce the mode the CHECKPOINT dictates so the plant can cross-check its launch arg
+        self.pub_mode = self.create_publisher(Bool, '/policy/absolute', MODE_QOS)
+        self.pub_mode.publish(Bool(data=bool(self.policy.absolute_actions)))
 
         self.create_timer(1.0 / self.control_hz, self._tick)
 

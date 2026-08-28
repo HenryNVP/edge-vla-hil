@@ -14,6 +14,8 @@ Launch args:
   denoise_steps : dp backend DDIM steps (0 = checkpoint default DDPM-100)
   absolute    : true -> abs-action policy: plant OSC control_delta=False, reactive latches
                 the waypoint as the target directly (default; matches the DP Lift checkpoint)
+  strict_mode_check : true (default) -> the plant aborts if `absolute` disagrees with the mode
+                the loaded checkpoint dictates; false to run a mismatched config anyway
   passthrough : true -> disable reactive layer (monolithic baseline ablation)
   image_size  : camera resolution (84 = DP training resolution)
   video       : headless mp4 path on the plant (empty = off); e.g. /ws/outputs/hil.mp4
@@ -34,6 +36,7 @@ def generate_launch_description() -> LaunchDescription:
     strategy = LaunchConfiguration('strategy')
     denoise_steps = LaunchConfiguration('denoise_steps')
     absolute = LaunchConfiguration('absolute')
+    strict_mode_check = LaunchConfiguration('strict_mode_check')
     passthrough = LaunchConfiguration('passthrough')
     image_size = LaunchConfiguration('image_size')
     video = LaunchConfiguration('video')
@@ -48,6 +51,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('strategy', default_value='synchronous'),
         DeclareLaunchArgument('denoise_steps', default_value='16'),
         DeclareLaunchArgument('absolute', default_value='true'),
+        DeclareLaunchArgument('strict_mode_check', default_value='true'),
         DeclareLaunchArgument('passthrough', default_value='false'),
         DeclareLaunchArgument('image_size', default_value='84'),
         DeclareLaunchArgument('video', default_value=''),
@@ -58,6 +62,7 @@ def generate_launch_description() -> LaunchDescription:
         package='evh_plant', executable='plant_node', name='evh_plant', output='screen',
         parameters=[{
             'image_size': image_size, 'absolute_actions': absolute,
+            'strict_mode_check': strict_mode_check,
             'video_path': video, 'video_duration': video_duration,
         }])
 

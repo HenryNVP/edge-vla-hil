@@ -22,9 +22,15 @@ import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import Image, JointState
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Bool, Empty
+
+# must match the controller's publisher QoS (latched) — the controller announces its mode once,
+# at startup, and the plant is usually already running by then.
+MODE_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
+                      durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
 
 
 def _make_controller_config():
@@ -51,6 +57,38 @@ def _set_control_delta(config: dict, value: bool) -> None:
             part_cfg['control_delta'] = value
 
 
+def _quat_to_axisangle(q: np.ndarray) -> np.ndarray:
+    """Quaternion [x, y, z, w] -> axis-angle (axis * angle). Canonical (shortest-path) hemisphere."""
+    q = np.asarray(q, dtype=np.float64)
+    n = np.linalg.norm(q)
+    if n < 1e-12:
+        return np.zeros(3)
+    q = q / n
+    if q[3] < 0.0:
+        q = -q
+    s = np.linalg.norm(q[:3])
+    if s < 1e-12:
+        return np.zeros(3)
+    return (q[:3] / s) * (2.0 * np.arctan2(s, q[3]))
+
+
+def mode_mismatch_message(plant_absolute: bool, policy_absolute: bool) -> str | None:
+    """Describe an action-mode disagreement, or None when the two modes agree.
+
+    Split out from the node so the wording (the thing a confused user actually reads) is
+    unit-testable without ROS.
+    """
+    if bool(plant_absolute) == bool(policy_absolute):
+        return None
+    misread = ('a world-frame pose read as a delta' if policy_absolute
+               else 'a delta read as a world-frame pose')
+    return (f'ACTION MODE MISMATCH: the plant/reactive layer is running with '
+            f'absolute_actions={plant_absolute}, but the loaded policy emits '
+            f'absolute={policy_absolute} actions — every command would be misread ({misread}), '
+            f'and the run would still produce plausible-looking metrics. '
+            f'Relaunch with absolute:={"true" if policy_absolute else "false"}.')
+
+
 class PlantNode(Node):
     def __init__(self, **kwargs) -> None:
         super().__init__('evh_plant', **kwargs)
@@ -68,6 +106,9 @@ class PlantNode(Node):
         # True -> OSC control_delta=False: /cmd/action is an absolute EE pose target
         # [pos(3), axis-angle(3), gripper], matching the abs-action DP checkpoints
         self.declare_parameter('absolute_actions', True)
+        # abort instead of running on if the policy's mode disagrees with ours (see
+        # _on_policy_mode); false only to deliberately run a mismatched config for debugging
+        self.declare_parameter('strict_mode_check', True)
         self.declare_parameter('video_path', '')       # headless mp4; empty disables recording
         self.declare_parameter('video_duration', 0.0)  # seconds; 0 = record until shutdown
 
@@ -78,6 +119,8 @@ class PlantNode(Node):
                         if c.strip()]
         self.camera = self.cameras[0]
         self.absolute_actions = bool(self.get_parameter('absolute_actions').value)
+        self.strict_mode_check = bool(self.get_parameter('strict_mode_check').value)
+        self.mode_mismatch = False
         self._video_writer = None
         self._video_frames = 0
         video_duration = float(self.get_parameter('video_duration').value)
@@ -98,6 +141,8 @@ class PlantNode(Node):
         # --- subscribers ---
         self.sub_action = self.create_subscription(
             JointState, '/cmd/action', self._on_action, 10)
+        self.sub_policy_mode = self.create_subscription(
+            Bool, '/policy/absolute', self._on_policy_mode, MODE_QOS)
 
         self._env = None
         self._obs: dict | None = None
@@ -205,13 +250,62 @@ class PlantNode(Node):
         """Cache the latest low-level action from the reactive layer."""
         self._last_action = np.asarray(msg.position, dtype=np.float32)
 
+    def _on_policy_mode(self, msg: Bool) -> None:
+        """Cross-check the policy's action mode against ours — invariant: they MUST agree.
+
+        The plant and the reactive layer take `absolute` from a launch arg; the policy derives it
+        from the checkpoint. Nothing else compares the two, and a disagreement raises no error
+        anywhere — it just produces garbage motion and a CSV full of plausible numbers. This is
+        the one place both values meet, so the check lives here.
+
+        The reactive layer is not checked separately on purpose: every launch file feeds it and
+        the plant the SAME `absolute` arg, so it cannot disagree with us.
+        """
+        problem = mode_mismatch_message(self.absolute_actions, bool(msg.data))
+        if problem is None:
+            self.get_logger().info(
+                f'evh_plant: action mode agrees with the policy (absolute={bool(msg.data)})')
+            return
+        self.mode_mismatch = True
+        self.get_logger().error(problem)
+        if not self.strict_mode_check:
+            self.get_logger().error(
+                'evh_plant: continuing anyway (strict_mode_check=false) — metrics from this run '
+                'are NOT trustworthy')
+            return
+        self.get_logger().error('evh_plant: aborting; pass strict_mode_check:=false to override')
+        rclpy.shutdown()   # ends executor.spin(); main() then exits non-zero
+
     def _current_action(self) -> np.ndarray:
         if self._last_action is None:
-            return np.zeros(self._action_dim, dtype=np.float32)
+            return self._hold_action()
         action = self._last_action.reshape(-1)
         if action.size < self._action_dim:
             action = np.pad(action, (0, self._action_dim - action.size))
         return action[:self._action_dim].astype(np.float32)
+
+    def _hold_action(self) -> np.ndarray:
+        """Neutral action for 'no command yet' (episode start / just after reset).
+
+        Delta mode: zeros = don't move. Absolute mode (OSC control_delta=False): zeros would be an
+        ABSOLUTE target at the world origin (0,0,0), yanking the arm off the table until the
+        reactive layer's first /cmd/action lands (~one inference latency) — so command the CURRENT
+        EE pose instead, i.e. a genuine hold. Gripper stays 0 (neutral/open at episode start).
+        """
+        action = np.zeros(self._action_dim, dtype=np.float32)
+        if self.absolute_actions and self._obs is not None and self._action_dim >= 6:
+            try:
+                ee_pos = np.asarray(self._obs['robot0_eef_pos'], dtype=np.float32)
+                ee_quat = self._obs['robot0_eef_quat']
+            except KeyError as exc:
+                # a .get() default here would silently reintroduce the origin lurch this
+                # function exists to prevent; never happens for a robosuite robot env
+                raise RuntimeError(
+                    f'absolute-mode hold needs {exc} in the obs dict — refusing to fall back '
+                    'to a zero action, which OSC would read as the world origin') from None
+            action[:3] = ee_pos
+            action[3:6] = _quat_to_axisangle(ee_quat).astype(np.float32)
+        return action
 
     def _step_physics(self) -> None:
         """Advance the simulator one action step; close the episode on success or timeout."""
@@ -244,19 +338,22 @@ class PlantNode(Node):
             ee_quat = np.array([0.0, 0.0, 0.0, 1.0])
             gripper_qpos = np.zeros(2, dtype=float)
         else:
-            obs = self._obs   # grab one reference; _step_physics replaces it atomically
+            # snapshot ONE obs reference and read every field from it: _step_physics (200 Hz on a
+            # separate thread) and _reset_episode both rebind self._obs, so re-reading self._obs
+            # per-field would pair an image with proprio/ee_pose from a different sim step.
+            obs = self._obs
             frame = self._upright(obs.get(f'{self.camera}_image'))
             wrist = (self._upright(obs.get(f'{self.cameras[1]}_image'))
                      if self.pub_wrist is not None else None)
             if frame is None:
                 return   # obs dict without images (shouldn't happen with use_camera_obs)
-            joint_pos = np.asarray(self._obs.get('robot0_joint_pos', np.zeros(7)), dtype=float)
-            joint_vel = np.asarray(self._obs.get('robot0_joint_vel', np.zeros(7)), dtype=float)
-            ee_pos = np.asarray(self._obs.get('robot0_eef_pos', np.zeros(3)), dtype=float)
+            joint_pos = np.asarray(obs.get('robot0_joint_pos', np.zeros(7)), dtype=float)
+            joint_vel = np.asarray(obs.get('robot0_joint_vel', np.zeros(7)), dtype=float)
+            ee_pos = np.asarray(obs.get('robot0_eef_pos', np.zeros(3)), dtype=float)
             ee_quat = np.asarray(   # robosuite convention: [x, y, z, w]
-                self._obs.get('robot0_eef_quat', [0.0, 0.0, 0.0, 1.0]), dtype=float)
+                obs.get('robot0_eef_quat', [0.0, 0.0, 0.0, 1.0]), dtype=float)
             gripper_qpos = np.asarray(
-                self._obs.get('robot0_gripper_qpos', np.zeros(2)), dtype=float)
+                obs.get('robot0_gripper_qpos', np.zeros(2)), dtype=float)
 
         self.pub_image.publish(self._to_image_msg(frame, now))
         if self.pub_wrist is not None and wrist is not None:
@@ -317,8 +414,14 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        aborted = node.mode_mismatch and node.strict_mode_check
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():        # _on_policy_mode may already have shut rclpy down
+            rclpy.shutdown()
+    if aborted:
+        # non-zero so `ros2 launch` and the benchmark sweep surface it instead of recording
+        # an empty row that looks like a merely unlucky condition
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':
