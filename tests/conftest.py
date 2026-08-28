@@ -30,7 +30,17 @@ def _ros2_available() -> bool:
 
 
 ROS2 = _ros2_available()
-requires_ros2 = pytest.mark.skipif(not ROS2, reason='ROS2 / rclpy not sourced')
+_skip_no_ros2 = pytest.mark.skipif(not ROS2, reason='ROS2 / rclpy not sourced')
+
+
+def requires_ros2(func):
+    """Skip when ROS2 is not sourced, AND tag with the registered `ros2` marker.
+
+    The skip is what keeps the suite green on a bare Python box; the marker is what makes the
+    split selectable — `pytest -m "not ros2"` runs only the pure-Python logic tests, so CI can
+    assert that set really is import-free rather than inferring it from a pile of skips.
+    """
+    return pytest.mark.ros2(_skip_no_ros2(func))
 
 
 @pytest.fixture()

@@ -76,17 +76,24 @@ where = [
 # Tooling configurations
 # ----------------------------------------------------------------------
 
+# The single pytest config: there is no pytest.ini (it would silently take precedence over
+# this block). Tests live in the top-level tests/ rather than per-package test/ dirs — a third of
+# them assert agreements BETWEEN packages (see tests/test_launch_graph.py), which have no honest
+# home under one package, and the pure-Python suite must run without a colcon build.
 [tool.pytest.ini_options]
-minversion = "7.0"
+# 6.0, not the 7.4 of the [test] extra: the documented loop runs inside edge-vla-hil:host, which
+# has apt python3-pytest 6.2.5 (the same install whose anyio plugin clash forces
+# PYTEST_DISABLE_PLUGIN_AUTOLOAD=1). A higher floor here just refuses to collect in the container.
+minversion = "6.0"
 testpaths = ["tests"]
 markers = [
     "ros2: test requires a sourced ROS2 environment (rclpy + message packages)",
 ]
+# UserWarning is deliberately NOT filtered: scipy/numpy raise one when the pinned versions drift
+# (invariant 4), and that is a signal, not noise.
 filterwarnings = [
     "ignore::DeprecationWarning",
-    "ignore::UserWarning",
 ]
-addopts = "-q"
 
 [tool.ruff]
 target-version = "py310"
