@@ -17,13 +17,15 @@ honestly and published, and is what feeds RTC's delay forecast.
 Resets the executor (chunk buffers, timestep counter) on /episode/reset from the plant so chunks
 never bleed across episode boundaries.
 
+Wiring only. The pieces with behaviour of their own live beside it: `chunk_executor/` (the
+strategies), `inference_worker.py` (the background GPU slot), `obs_buffer.py` (the observation
+history contract), `policy.py` (the backends).
+
 Metrics (published on the tick a chunk arrives):
   /metrics/inference_ms   true wall-clock inference time of that chunk
   /metrics/delay_steps    request->arrival delay in control steps (what the strategies fight)
 """
 from __future__ import annotations
-
-import collections
 
 import numpy as np
 import rclpy
@@ -34,6 +36,7 @@ from std_msgs.msg import Bool, Empty, Float32
 
 from evh_controller.chunk_executor import make_executor
 from evh_controller.inference_worker import InferenceWorker
+from evh_controller.obs_buffer import ObsBuffer
 from evh_controller.policy import make_policy
 
 # Latched: published once at startup, but the plant must receive it whenever it joins — the
@@ -68,11 +71,7 @@ class ControllerNode(Node):
             f'absolute={self.policy.absolute_actions}')
 
         # latest observations (overwritten by callbacks) + per-tick history for the policy
-        self._image: np.ndarray | None = None
-        self._wrist: np.ndarray | None = None
-        self._proprio: np.ndarray | None = None
-        self._history: collections.deque = collections.deque(
-            maxlen=max(1, self.policy.n_obs_steps))
+        self.obs = ObsBuffer(self.policy.n_obs_steps, self.policy.needs_wrist)
         self._t = 0   # control timestep counter
 
         self.create_subscription(Image, '/obs/image', self._on_image, qos_profile_sensor_data)
@@ -95,37 +94,22 @@ class ControllerNode(Node):
 
     # ------------------------------------------------------------- callbacks
     def _on_image(self, msg: Image) -> None:
-        self._image = np.frombuffer(msg.data, np.uint8).reshape(msg.height, msg.width, 3)
+        self.obs.image = np.frombuffer(msg.data, np.uint8).reshape(msg.height, msg.width, 3)
 
     def _on_wrist(self, msg: Image) -> None:
-        self._wrist = np.frombuffer(msg.data, np.uint8).reshape(msg.height, msg.width, 3)
+        self.obs.wrist = np.frombuffer(msg.data, np.uint8).reshape(msg.height, msg.width, 3)
 
     def _on_proprio(self, msg: JointState) -> None:
-        self._proprio = np.asarray(msg.position, dtype=np.float32)
+        self.obs.proprio = np.asarray(msg.position, dtype=np.float32)
 
     def _on_episode_reset(self, _msg: Empty) -> None:
         self.chunk_executor.reset()
-        self._history.clear()
+        self.obs.clear()
         self._t = 0
 
     # --------------------------------------------------------------- control
-    def _current_obs(self) -> dict | None:
-        """Snapshot the latest obs into the per-tick history; None until all required arrive."""
-        if self._image is None or self._proprio is None:
-            return None
-        if self.policy.needs_wrist and self._wrist is None:
-            return None
-        self._history.append((self._image, self._wrist, self._proprio))
-        obs = {
-            'agentview': np.stack([h[0] for h in self._history]),
-            'proprio': np.stack([h[2] for h in self._history]),
-        }
-        if self._wrist is not None:
-            obs['wrist'] = np.stack([h[1] for h in self._history])
-        return obs
-
     def _tick(self) -> None:
-        obs = self._current_obs()
+        obs = self.obs.sample()
         if obs is None:
             return  # wait for first observations
 
