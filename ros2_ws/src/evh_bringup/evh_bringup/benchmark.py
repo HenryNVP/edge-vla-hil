@@ -22,6 +22,13 @@ Two modes:
       --absolute/--backend must agree with the checkpoint (see resolve_absolute); the plant
       enforces this at runtime and aborts a mismatched cell rather than recording garbage.
 
+      Each cell waits for the graph to be READY (first /cmd/waypoint) rather than sleeping a
+      fixed --warmup: loading the DP checkpoint takes ~7 s warm and far longer cold, and a cell
+      that starts recording early reports a throughput the graph never had. --warmup is the
+      timeout on that wait, not a delay. Launch output goes to a per-cell log and the driver
+      checks the launch is still alive, so a cell whose nodes died is reported instead of
+      silently contributing an empty row. --video_dir records an mp4 per cell.
+
 CSV columns: condition,strategy,latency_ms,jitter_ms,reactive,trials,success_rate,infer_ms_mean,
              infer_ms_p95,waypoint_hz,loop_hz
 """
@@ -134,6 +141,61 @@ def _append_csv(path: str, args, s: dict) -> None:
 
 
 # ---------------------------------------------------------------------- sweep
+def _deaths_so_far(log_path: str) -> int:
+    """How many nodes have logged "process has died" in this cell's launch log.
+
+    Sampled BEFORE teardown, never after: SIGINT makes most of the graph log the same line, and
+    how many do is not stable (the plant exits cleanly through destroy_node and does not).
+    Comparing against a magic expected-deaths constant was wrong by one in practice, which would
+    have hidden exactly one real mid-run death per cell.
+    """
+    with open(log_path) as log:
+        return sum('process has died' in line for line in log)
+
+
+def _shutdown(proc: subprocess.Popen) -> None:
+    """SIGINT the launch process group, escalating only if it will not go.
+
+    SIGINT and not SIGKILL: the plant finalizes its mp4 and closes the robosuite env in
+    destroy_node(). Killing the group (not just the launcher) is what stops a node surviving as
+    an orphan and polluting the next cell's ROS domain.
+    """
+    group = os.getpgid(proc.pid)
+    os.killpg(group, signal.SIGINT)
+    try:
+        proc.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        os.killpg(group, signal.SIGKILL)
+        proc.wait(timeout=10)
+
+
+def wait_until_ready(timeout_s: float) -> float:
+    """Block until the graph produces its first /cmd/waypoint. Returns seconds waited, or -1.
+
+    A true end-to-end readiness signal: a waypoint means the plant is publishing observations,
+    the relay is forwarding them, the checkpoint is loaded and the policy has produced a chunk.
+    Sleeping a fixed interval instead guesses at all four, and guessing short is not benign — the
+    recorder counts messages over the whole window, so a graph that is still coming up drags
+    waypoint_hz down and the cell looks degraded by the condition rather than by the clock.
+    """
+    # owns its own rclpy context: this runs before run_record(), which inits and shuts down its
+    # own, and two live contexts in one process would clash
+    rclpy.init()
+    probe = rclpy.create_node('evh_benchmark_probe')
+    seen: list[int] = []
+    probe.create_subscription(JointState, '/cmd/waypoint', lambda _m: seen.append(1), 10)
+    t0 = time.perf_counter()
+    try:
+        while time.perf_counter() - t0 < timeout_s:
+            rclpy.spin_once(probe, timeout_sec=0.1)
+            if seen:
+                return time.perf_counter() - t0
+        return -1.0
+    finally:
+        probe.destroy_node()
+        rclpy.shutdown()
+
+
 def resolve_absolute(choice: str, backend: str) -> str:
     """Pick the launch's `absolute` value, as the lowercase string ros2 launch wants.
 
@@ -156,34 +218,66 @@ def run_sweep(args) -> None:
     """
     values = [float(v) for v in args.values.split(',')]
     strategies = [s.strip() for s in args.strategies.split(',')]
+    reactive_modes = (True, False) if args.reactive_modes == 'both' else (
+        (True,) if args.reactive_modes == 'on' else (False,))
     absolute = resolve_absolute(args.absolute, args.backend)
+
+    log_dir = args.log_dir or os.path.join(os.path.dirname(args.out) or '.', 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    if args.video_dir:
+        os.makedirs(args.video_dir, exist_ok=True)
+
+    cells = [(st, rx, lat) for st in strategies for rx in reactive_modes for lat in values]
     print(f'[sweep] backend={args.backend} absolute={absolute} '
-          f'({len(strategies)} strategies x 2 reactive x {len(values)} latencies)')
-    for strategy in strategies:
-        for reactive in (True, False):
-            for lat in values:
-                passthrough = 'false' if reactive else 'true'
-                label = f'strat={strategy}_reactive={reactive}_lat={lat}'
-                print(f'[sweep] launching {label} ...')
-                proc = subprocess.Popen(
-                    ['ros2', 'launch', 'evh_bringup', 'hil.launch.py',
-                     f'latency_ms:={lat}', f'jitter_ms:={args.jitter_ms}',
-                     f'backend:={args.backend}', f'weights:={args.weights}',
-                     f'strategy:={strategy}', f'passthrough:={passthrough}',
-                     f'absolute:={absolute}'],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    preexec_fn=os.setsid)
-                try:
-                    time.sleep(args.warmup)   # let the graph come up
-                    rec_args = argparse.Namespace(
-                        out=args.out, duration=args.duration, label=label,
-                        latency_ms=lat, jitter_ms=args.jitter_ms, reactive=reactive,
-                        strategy=strategy)
-                    run_record(rec_args)
-                finally:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGINT)
-                    proc.wait(timeout=15)
-                time.sleep(2.0)
+          f'({len(cells)} cells x ~{args.duration:.0f}s)')
+
+    failures = []
+    for n, (strategy, reactive, lat) in enumerate(cells, 1):
+        label = f'strat={strategy}_reactive={reactive}_lat={lat}'
+        log_path = os.path.join(log_dir, f'{label}.log'.replace('/', '_'))
+        cmd = ['ros2', 'launch', 'evh_bringup', 'hil.launch.py',
+               f'latency_ms:={lat}', f'jitter_ms:={args.jitter_ms}',
+               f'backend:={args.backend}', f'weights:={args.weights}',
+               f'strategy:={strategy}', f'passthrough:={"false" if reactive else "true"}',
+               f'absolute:={absolute}']
+        if args.video_dir:
+            cmd += [f'video:={os.path.join(args.video_dir, label + ".mp4")}',
+                    f'video_duration:={args.video_duration}']
+
+        print(f'[sweep] {n}/{len(cells)} {label} ...', flush=True)
+        with open(log_path, 'w') as log:
+            proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
+                                    preexec_fn=os.setsid)
+            try:
+                waited = wait_until_ready(args.warmup)
+                if waited < 0:
+                    # never produced a waypoint: checkpoint load failed, a node died, or the
+                    # plant aborted on an action-mode mismatch. Recording anyway would write a
+                    # zero row indistinguishable from "this condition is simply too degraded".
+                    failures.append((label, f'no /cmd/waypoint within {args.warmup:.0f}s'))
+                    print(f'[sweep]   SKIPPED — not ready; see {log_path}')
+                    continue
+                if proc.poll() is not None:
+                    failures.append((label, f'launch exited {proc.returncode}'))
+                    print(f'[sweep]   SKIPPED — launch died; see {log_path}')
+                    continue
+                print(f'[sweep]   ready in {waited:.1f}s, recording {args.duration:.0f}s')
+                run_record(argparse.Namespace(
+                    out=args.out, duration=args.duration, label=label, latency_ms=lat,
+                    jitter_ms=args.jitter_ms, reactive=reactive, strategy=strategy))
+                # a node that died mid-window still produced a row; say so rather than let it pass
+                died = _deaths_so_far(log_path)
+                if died:
+                    failures.append((label, f'{died} node(s) died mid-run'))
+                    print(f'[sweep]   WARNING — nodes died mid-run; see {log_path}')
+            finally:
+                _shutdown(proc)
+        time.sleep(2.0)
+
+    if failures:
+        print(f'[sweep] {len(failures)} cell(s) did not produce a trustworthy row:')
+        for label, why in failures:
+            print(f'[sweep]   {label}: {why}')
     print(f'[sweep] done -> {args.out}')
 
 
@@ -196,7 +290,14 @@ def main(argv=None) -> None:
     p.add_argument('--strategies', default='synchronous,temporal_ensemble,rtc',
                    help='comma-separated chunk-execution strategies to sweep (Wedge A)')
     p.add_argument('--duration', type=float, default=60.0, help='record window seconds')
-    p.add_argument('--warmup', type=float, default=8.0, help='seconds to wait after launch')
+    p.add_argument('--warmup', type=float, default=90.0,
+                   help='TIMEOUT (not a delay) on waiting for the first /cmd/waypoint')
+    p.add_argument('--reactive_modes', choices=['both', 'on', 'off'], default='both',
+                   help='which reactive-layer settings to sweep')
+    p.add_argument('--video_dir', default='', help='record one mp4 per cell into this directory')
+    p.add_argument('--video_duration', type=float, default=0.0,
+                   help='seconds of video per cell (0 = the whole cell)')
+    p.add_argument('--log_dir', default='', help='per-cell launch logs (default: <out dir>/logs)')
     p.add_argument('--out', default='results/sweep.csv')
     p.add_argument('--backend', default='pytorch')
     p.add_argument('--weights', default='')

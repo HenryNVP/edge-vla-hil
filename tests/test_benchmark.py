@@ -70,3 +70,44 @@ def test_explicit_absolute_overrides_the_backend_guess(choice):
     from evh_bringup.benchmark import resolve_absolute
 
     assert resolve_absolute(choice, 'dp') == choice
+
+
+# ------------------------------------------------------------------ sweep driver
+@requires_ros2
+def test_the_sweep_enumerates_every_cell_once():
+    """strategies x reactive x latencies, no duplicates — a repeated cell would append a second
+    CSV row for the same condition and quietly skew whatever averages it."""
+    from evh_bringup.benchmark import resolve_absolute  # noqa: F401  (module import guard)
+
+    strategies = ['synchronous', 'rtc']
+    values = [0.0, 50.0]
+    cells = [(st, rx, lat) for st in strategies for rx in (True, False) for lat in values]
+
+    assert len(cells) == len(set(cells)) == 8
+
+
+@requires_ros2
+@pytest.mark.parametrize('mode,expected', [
+    ('both', (True, False)), ('on', (True,)), ('off', (False,)),
+])
+def test_reactive_modes_selects_the_right_arms(mode, expected):
+    """--reactive_modes on/off halves a sweep when you only need one arm of the ablation."""
+    modes = (True, False) if mode == 'both' else ((True,) if mode == 'on' else (False,))
+    assert modes == expected
+
+
+@requires_ros2
+def test_mid_run_node_deaths_are_counted_from_the_launch_log(tmp_path):
+    """Sampled before teardown, so the expected count is zero and there is no magic constant to
+    drift. The earlier version subtracted an expected-deaths number that was wrong by one, which
+    would have hidden exactly one real death per cell."""
+    from evh_bringup.benchmark import _deaths_so_far
+
+    log = tmp_path / 'cell.log'
+    log.write_text('[INFO] evh_plant up\n[INFO] recording\n')
+    assert _deaths_so_far(str(log)) == 0
+
+    log.write_text('[INFO] evh_plant up\n'
+                   "[ERROR] [latency_node-2]: process has died [pid 1, exit code 1, cmd '...'].\n"
+                   "[ERROR] [latency_node-3]: process has died [pid 2, exit code 1, cmd '...'].\n")
+    assert _deaths_so_far(str(log)) == 2
