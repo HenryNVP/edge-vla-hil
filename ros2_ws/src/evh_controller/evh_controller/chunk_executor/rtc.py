@@ -101,8 +101,13 @@ class RTCExecutor(ChunkExecutor):
                 # (matters when d_hat >= H, i.e. inference slower than a full chunk)
                 d_frz = min(d_hat, max(H - self.s_min, 0), max(len(self._chunk) - self._i, 0))
                 s = max(self.s_min, min(d_hat, H - d_frz))
-                prefix = self._chunk[self._i:self._i + d_frz]
-                self._issue(obs, t, prefix=prefix, weights=self.freeze_weights(H, s, d_frz))
+                # guidance is the whole REMAINING PLAN, not just the frozen part: freeze_weights
+                # assigns a decaying weight across [d_frz, H - s) too, and those weights need
+                # something to pull toward. Sending only the frozen slice left the soft region
+                # with no target, so the new chunk was continuous with the executed prefix and
+                # then free to jump — the discontinuity RTC exists to remove.
+                guide = self._chunk[self._i:self._i + H]
+                self._issue(obs, t, prefix=guide, weights=self.freeze_weights(H, s, d_frz))
 
         if self._chunk is not None and self._i < len(self._chunk):
             a = self._chunk[self._i]

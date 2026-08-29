@@ -174,17 +174,23 @@ def test_rtc_continues_time_aligned_no_replay():
     assert ex._delays and ex._delays[-1] == 3  # measured, not assumed
 
 
-def test_rtc_passes_executing_overlap_as_prefix():
+def test_rtc_passes_the_remaining_plan_as_guidance():
+    """RTC sends the plan in hand from the current action onward, and the MASK says which of it
+    is frozen. The frozen length is read off the weights, not off len(guide): the guide also
+    covers the soft region, which is what keeps the new chunk continuous with the old plan."""
     ex, worker, _ = _make('rtc', delay=2)
     _run(ex, 10)
-    with_prefix = [r for r in worker.requests if r[1] is not None and len(r[1])]
-    assert with_prefix, 'RTC never requested an inpainted chunk'
-    t_issue, prefix, weights = with_prefix[0]
-    d_hat = len(prefix)
-    assert np.allclose(weights[:d_hat], 1.0)   # frozen region hard-masked
-    assert len(weights) == H                   # full-chunk soft mask (Step 4 uses the tail)
-    # the prefix is the executing chunk's continuation: constant chunk value, not zeros
-    assert np.all(prefix == prefix.flat[0]) and prefix.flat[0] > 0
+    with_guide = [r for r in worker.requests if r[1] is not None and len(r[1])]
+    assert with_guide, 'RTC never requested an inpainted chunk'
+    _t_issue, guide, weights = with_guide[0]
+
+    assert len(weights) == H                          # full-chunk soft mask
+    d = int(np.count_nonzero(weights == 1.0))
+    assert d > 0, 'nothing was frozen, so inference has no protected overlap'
+    assert np.allclose(weights[:d], 1.0)              # frozen region is a prefix of the mask
+    assert len(guide) >= int(np.count_nonzero(weights)), 'weighted steps with no target'
+    # the guide is the executing chunk's continuation: constant chunk value, not zeros
+    assert np.all(guide == guide.flat[0]) and guide.flat[0] > 0
 
 
 def test_rtc_survives_delay_longer_than_chunk():
@@ -196,9 +202,12 @@ def test_rtc_survives_delay_longer_than_chunk():
     assert out[:12] == [None] * 12             # waiting for the first chunk
     assert out[12:20] == [1.0] * 8             # stale chunk executed from 0, not dropped
     assert any(v is not None and v >= 2.0 for v in out[20:]), 'second chunk never executed'
-    for _t, prefix, _w in worker.requests:
-        if prefix is not None:
-            assert len(prefix) < H, 'a fully-frozen request can never plan anything new'
+    for _t, guide, w in worker.requests:
+        if guide is not None:
+            # the invariant is about the MASK, not the guide's length: s_min actions must stay
+            # unfrozen or the policy is asked to reproduce a plan it cannot improve on
+            assert int(np.count_nonzero(w == 1.0)) < H, (
+                'a fully-frozen request can never plan anything new')
 
 
 def test_rtc_forecast_tracks_measured_delay():
