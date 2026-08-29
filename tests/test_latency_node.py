@@ -177,3 +177,54 @@ def test_delay_sampling_is_seeded(ros):
     assert first == second                       # reproducible
     assert all(d >= 0.0 for d in first)          # never negative
     relay.destroy_node()
+
+
+@integration
+def test_lognormal_jitter_is_heavy_tailed_where_the_others_are_not(ros):
+    """A quantile delay forecast can only beat a max when the delay distribution has a TAIL.
+    gaussian and uniform do not have one, so a sweep using them cannot separate the two — the
+    forecasts land on the same integer. This is the model that makes Wedge B testable."""
+    import rclpy
+
+    tails = {}
+    for model in ('gaussian', 'uniform', 'lognormal'):
+        relay = _relay(rclpy, input_topic='/i7', output_topic='/o7',
+                       msg_type='std_msgs/msg/String', latency_ms=100.0, jitter_ms=20.0,
+                       jitter_model=model, seed=3)
+        d = sorted(relay._sample_delay_ms() for _ in range(4000))
+        tails[model] = d[-1] / max(d[int(0.95 * len(d))], 1e-9)
+        relay.destroy_node()
+
+    assert tails['uniform'] < 1.2, 'uniform is bounded; it has no tail by construction'
+    assert tails['lognormal'] > 2 * tails['gaussian'], (
+        f'lognormal must be materially heavier-tailed than gaussian: {tails}')
+
+
+@integration
+def test_every_jitter_model_stays_non_negative_and_near_the_nominal_delay(ros):
+    """A negative delay would let a message arrive before it was sent; lognormal is one-sided so
+    it must not drag the mean somewhere unrecognisable either."""
+    import rclpy
+
+    for model in ('gaussian', 'uniform', 'lognormal'):
+        relay = _relay(rclpy, input_topic='/i8', output_topic='/o8',
+                       msg_type='std_msgs/msg/String', latency_ms=100.0, jitter_ms=20.0,
+                       jitter_model=model, seed=5)
+        d = [relay._sample_delay_ms() for _ in range(2000)]
+        assert min(d) >= 0.0, f'{model} produced a negative delay'
+        mean = sum(d) / len(d)
+        assert 90.0 <= mean <= 130.0, f'{model} mean delay {mean:.0f} ms is not near nominal 100'
+        relay.destroy_node()
+
+
+@integration
+def test_an_unknown_jitter_model_falls_back_to_gaussian_rather_than_raising(ros):
+    """A typo'd model must not kill the relay mid-sweep; gaussian is the documented default."""
+    import rclpy
+
+    relay = _relay(rclpy, input_topic='/i9', output_topic='/o9',
+                   msg_type='std_msgs/msg/String', latency_ms=50.0, jitter_ms=5.0,
+                   jitter_model='definitely-not-a-model', seed=1)
+    d = [relay._sample_delay_ms() for _ in range(200)]
+    assert all(x >= 0.0 for x in d) and len(set(d)) > 1
+    relay.destroy_node()

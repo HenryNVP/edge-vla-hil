@@ -6,7 +6,13 @@ the same sweep runs whether the controller is on the same host or across the Eth
 
 Effects (composable):
   * latency_ms  : constant base one-way delay.
-  * jitter_ms   : added zero-mean noise; distribution selected by `jitter_model`.
+  * jitter_ms   : added noise; distribution selected by `jitter_model`.
+                  gaussian | uniform are zero-mean and LIGHT-TAILED — the sample almost never
+                  strays far from latency_ms. Real links are not like that, and neither is the
+                  regime the network-aware strategy exists for: a max-over-buffer delay forecast
+                  only loses to a quantile when the tail is heavy. `lognormal` supplies that
+                  tail (occasional large spikes, same mean deviation), so a sweep can actually
+                  distinguish the two forecasts instead of feeding them identical integers.
   * drop_prob   : probability a message is dropped entirely (packet loss).
   * reorder     : if False (default), enforce monotonic release ordering even when jitter would
                   otherwise reorder messages (TCP-like); if True, allow reordering (UDP-like).
@@ -50,7 +56,7 @@ class LatencyNode(Node):
         self.declare_parameter('msg_type', 'sensor_msgs/msg/Image')
         self.declare_parameter('latency_ms', 0.0)
         self.declare_parameter('jitter_ms', 0.0)
-        self.declare_parameter('jitter_model', 'gaussian')   # gaussian | uniform
+        self.declare_parameter('jitter_model', 'gaussian')   # gaussian|uniform|lognormal
         self.declare_parameter('drop_prob', 0.0)
         self.declare_parameter('reorder', False)
         self.declare_parameter('seed', 0)
@@ -122,10 +128,17 @@ class LatencyNode(Node):
 
     # -------------------------------------------------------------- helpers
     def _sample_delay_ms(self) -> float:
+        """Sample this message's one-way delay. Never negative; see jitter_model in the docstring."""
         d = self.latency_ms
         if self.jitter_ms > 0.0:
             if self.jitter_model == 'uniform':
                 d += self._rng.uniform(-self.jitter_ms, self.jitter_ms)
+            elif self.jitter_model == 'lognormal':
+                # heavy-tailed and one-sided: a link is occasionally much slower than nominal and
+                # never faster. Scaled so the MEAN excess is jitter_ms, keeping the knob
+                # comparable to the light-tailed models while the tail behaves nothing like them.
+                sigma = 1.0
+                d += self.jitter_ms * self._rng.lognormvariate(-0.5 * sigma * sigma, sigma)
             else:
                 d += self._rng.gauss(0.0, self.jitter_ms)
         return max(0.0, d)

@@ -64,6 +64,11 @@ class Recorder(Node):
         self.create_subscription(JointState, '/cmd/waypoint', self._on_waypoint, 10)
         self.create_subscription(JointState, '/cmd/action', self._on_action, 10)
 
+    @property
+    def trials(self) -> int:
+        """Episodes closed so far — the recorder's stopping condition in trial mode."""
+        return self._trials
+
     def _on_success(self, msg: Bool) -> None:
         self._trials += 1
         self._successes += int(msg.data)
@@ -109,17 +114,34 @@ class Recorder(Node):
 
 
 def run_record(args) -> dict:
+    """Record one condition. Stops at --trials episodes, or --duration seconds, whichever first.
+
+    Trial mode is the honest one for comparing cells. Episodes get LONGER as conditions degrade
+    (measured: ~7 s at 0 ms, ~15 s at 800 ms), so a fixed-seconds window hands the degraded
+    cells — exactly the interesting end of the curve — roughly half the episodes of the easy
+    ones, and the success rates being compared then carry very different uncertainties.
+    --duration stays on as a wall-clock cap so a wedged cell still terminates; a row that hit the
+    cap is flagged `truncated` rather than quietly reported as if it had reached its target.
+    """
     rclpy.init()
     node = Recorder()
+    target = int(getattr(args, 'trials_target', 0) or 0)
     t0 = time.perf_counter()
+    truncated = False
     try:
         t_end = time.time() + args.duration
-        while time.time() < t_end and rclpy.ok():
+        while rclpy.ok():
+            if time.time() >= t_end:
+                truncated = bool(target) and node.trials < target
+                break
+            if target and node.trials >= target:
+                break
             rclpy.spin_once(node, timeout_sec=0.1)
     finally:
         # inside the finally: a window cut short (crashed graph, Ctrl-C) still gets its row, so a
         # long sweep never loses a cell's data to an exception on the way out
         s = node.summary(time.perf_counter() - t0)
+        s['truncated'] = truncated
         node.destroy_node()
         rclpy.shutdown()
         _append_csv(args.out, args, s)
@@ -134,10 +156,12 @@ def _append_csv(path: str, args, s: dict) -> None:
         w = csv.writer(f)
         if new:
             w.writerow(['condition', 'strategy', 'latency_ms', 'jitter_ms', 'reactive', 'trials',
-                        'success_rate', 'infer_ms_mean', 'infer_ms_p95', 'waypoint_hz', 'loop_hz'])
+                        'success_rate', 'infer_ms_mean', 'infer_ms_p95', 'waypoint_hz', 'loop_hz',
+                        'truncated'])
         w.writerow([args.label, args.strategy, args.latency_ms, args.jitter_ms,
                     args.reactive, s['trials'], s['success_rate'], s['infer_ms_mean'],
-                    s['infer_ms_p95'], s['waypoint_hz'], s['loop_hz']])
+                    s['infer_ms_p95'], s['waypoint_hz'], s['loop_hz'],
+                    s.get('truncated', False)])
 
 
 # ---------------------------------------------------------------------- sweep
@@ -210,6 +234,9 @@ def resolve_absolute(choice: str, backend: str) -> str:
     return 'true' if backend == 'dp' else 'false'
 
 
+_AXIS_PARAM = {'latency': 'latency_ms', 'jitter': 'jitter_ms', 'drop': 'drop_prob'}
+
+
 def run_sweep(args) -> None:
     """Wedge-A sweep: launch the stack once per (strategy x latency x reactive) cell and record.
 
@@ -218,6 +245,7 @@ def run_sweep(args) -> None:
     """
     values = [float(v) for v in args.values.split(',')]
     strategies = [s.strip() for s in args.strategies.split(',')]
+    axis = args.sweep      # which knob --values walks; the others stay at their flags
     reactive_modes = (True, False) if args.reactive_modes == 'both' else (
         (True,) if args.reactive_modes == 'on' else (False,))
     absolute = resolve_absolute(args.absolute, args.backend)
@@ -228,15 +256,22 @@ def run_sweep(args) -> None:
         os.makedirs(args.video_dir, exist_ok=True)
 
     cells = [(st, rx, lat) for st in strategies for rx in reactive_modes for lat in values]
-    print(f'[sweep] backend={args.backend} absolute={absolute} '
-          f'({len(cells)} cells x ~{args.duration:.0f}s)')
+    print(f'[sweep] axis={axis} backend={args.backend} absolute={absolute} '
+          f'jitter_model={args.jitter_model} ({len(cells)} cells)')
 
     failures = []
     for n, (strategy, reactive, lat) in enumerate(cells, 1):
-        label = f'strat={strategy}_reactive={reactive}_lat={lat}'
+        label = f'strat={strategy}_reactive={reactive}_{axis}={lat}'
         log_path = os.path.join(log_dir, f'{label}.log'.replace('/', '_'))
+        # every degradation knob is passed EXPLICITLY, swept or not. drop_prob used to be
+        # omitted entirely, so it silently stayed at the launch default of 0.0 and no sweep
+        # could ever reach it — the same class of landmine as the `absolute` default.
+        knobs = {'latency_ms': args.latency_ms, 'jitter_ms': args.jitter_ms,
+                 'drop_prob': args.drop_prob}
+        knobs[_AXIS_PARAM[axis]] = lat
         cmd = ['ros2', 'launch', 'evh_bringup', 'hil.launch.py',
-               f'latency_ms:={lat}', f'jitter_ms:={args.jitter_ms}',
+               *(f'{k}:={v}' for k, v in knobs.items()),
+               f'jitter_model:={args.jitter_model}',
                f'backend:={args.backend}', f'weights:={args.weights}',
                f'strategy:={strategy}', f'passthrough:={"false" if reactive else "true"}',
                f'absolute:={absolute}']
@@ -261,10 +296,17 @@ def run_sweep(args) -> None:
                     failures.append((label, f'launch exited {proc.returncode}'))
                     print(f'[sweep]   SKIPPED — launch died; see {log_path}')
                     continue
-                print(f'[sweep]   ready in {waited:.1f}s, recording {args.duration:.0f}s')
-                run_record(argparse.Namespace(
-                    out=args.out, duration=args.duration, label=label, latency_ms=lat,
-                    jitter_ms=args.jitter_ms, reactive=reactive, strategy=strategy))
+                goal = (f'{args.trials} episodes (cap {args.duration:.0f}s)' if args.trials
+                        else f'{args.duration:.0f}s')
+                print(f'[sweep]   ready in {waited:.1f}s, recording {goal}')
+                row = run_record(argparse.Namespace(
+                    out=args.out, duration=args.duration, label=label,
+                    latency_ms=knobs['latency_ms'], jitter_ms=knobs['jitter_ms'],
+                    reactive=reactive, strategy=strategy, trials_target=args.trials))
+                if row.get('truncated'):
+                    failures.append((label, f"hit the {args.duration:.0f}s cap at "
+                                            f"{row['trials']}/{args.trials} episodes"))
+                    print(f'[sweep]   WARNING — truncated at {row["trials"]}/{args.trials}')
                 # a node that died mid-window still produced a row; say so rather than let it pass
                 died = _deaths_so_far(log_path)
                 if died:
@@ -285,11 +327,22 @@ def run_sweep(args) -> None:
 def main(argv=None) -> None:
     argv = argv if argv is not None else sys.argv[1:]
     p = argparse.ArgumentParser(description='EdgeVLA-HiL benchmark')
-    p.add_argument('--sweep', choices=['latency'], help='run the orchestrated sweep')
+    p.add_argument('--sweep', choices=['latency', 'jitter', 'drop'],
+                   help='run the orchestrated sweep, walking --values along this knob')
+    p.add_argument('--drop_prob', type=float, default=0.0,
+                   help='packet-loss probability held fixed (or swept with --sweep drop)')
+    p.add_argument('--jitter_model', choices=['gaussian', 'uniform', 'lognormal'],
+                   default='gaussian',
+                   help='gaussian/uniform are light-tailed; lognormal supplies the heavy tail a '
+                        'quantile delay forecast needs in order to differ from a max')
     p.add_argument('--values', default='0,25,50,100,200', help='comma-separated latency_ms values')
     p.add_argument('--strategies', default='synchronous,temporal_ensemble,rtc',
                    help='comma-separated chunk-execution strategies to sweep (Wedge A)')
-    p.add_argument('--duration', type=float, default=60.0, help='record window seconds')
+    p.add_argument('--duration', type=float, default=60.0,
+                   help='record window seconds; with --trials this is the wall-clock cap')
+    p.add_argument('--trials', type=int, default=0,
+                   help='stop each cell after N episodes instead of a fixed window (recommended: '
+                        'degraded cells run longer episodes and a time window under-samples them)')
     p.add_argument('--warmup', type=float, default=90.0,
                    help='TIMEOUT (not a delay) on waiting for the first /cmd/waypoint')
     p.add_argument('--reactive_modes', choices=['both', 'on', 'off'], default='both',

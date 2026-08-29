@@ -16,6 +16,7 @@ def generate_launch_description() -> LaunchDescription:
     latency_ms = typed('latency_ms', float)
     jitter_ms = typed('jitter_ms', float)
     drop_prob = typed('drop_prob', float)
+    jitter_model = LaunchConfiguration('jitter_model')
     absolute = typed('absolute', bool)
     strict_mode_check = typed('strict_mode_check', bool)
     passthrough = typed('passthrough', bool)
@@ -27,6 +28,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('latency_ms', default_value='0.0'),
         DeclareLaunchArgument('jitter_ms', default_value='0.0'),
         DeclareLaunchArgument('drop_prob', default_value='0.0'),
+        DeclareLaunchArgument('jitter_model', default_value='gaussian'),
         DeclareLaunchArgument('absolute', default_value='true'),
         DeclareLaunchArgument('strict_mode_check', default_value='true'),
         DeclareLaunchArgument('passthrough', default_value='false'),
@@ -49,7 +51,8 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[{
                 'input_topic': topic, 'output_topic': f'{topic}/delayed',
                 'msg_type': msg_type,
-                'latency_ms': latency_ms, 'jitter_ms': jitter_ms, 'drop_prob': drop_prob,
+                'latency_ms': latency_ms, 'jitter_ms': jitter_ms,
+                'drop_prob': drop_prob, 'jitter_model': jitter_model,
             }])
 
     relay_img = relay('latency_image', '/obs/image', 'sensor_msgs/msg/Image')

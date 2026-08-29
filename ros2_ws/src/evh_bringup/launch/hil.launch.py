@@ -8,6 +8,9 @@ controller.launch.py on the Jetson and host.launch.py (plant + reactive + relays
 
 Launch args:
   latency_ms, jitter_ms, drop_prob : network-condition knobs (passed to all relays)
+  jitter_model : gaussian | uniform | lognormal. The first two are light-tailed, so a
+                delay forecast based on a quantile cannot differ from one based on a
+                max; lognormal supplies the heavy tail that separates them.
   backend     : pytorch | dp | tensorrt   (dp = diffusion_policy-repo checkpoint, the real one)
   weights     : checkpoint path (e.g. /ws/checkpoints/dp_lift_ph_image_cnn.ckpt) or .engine
   strategy    : synchronous | naive_async | temporal_ensemble | bid | rtc | network_aware
@@ -33,6 +36,7 @@ def generate_launch_description() -> LaunchDescription:
     latency_ms = typed('latency_ms', float)
     jitter_ms = typed('jitter_ms', float)
     drop_prob = typed('drop_prob', float)
+    jitter_model = LaunchConfiguration('jitter_model')
     backend = LaunchConfiguration('backend')
     weights = LaunchConfiguration('weights')
     strategy = LaunchConfiguration('strategy')
@@ -48,6 +52,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('latency_ms', default_value='0.0'),
         DeclareLaunchArgument('jitter_ms', default_value='0.0'),
         DeclareLaunchArgument('drop_prob', default_value='0.0'),
+        DeclareLaunchArgument('jitter_model', default_value='gaussian'),
         DeclareLaunchArgument('backend', default_value='pytorch'),
         DeclareLaunchArgument('weights', default_value=''),
         DeclareLaunchArgument('strategy', default_value='synchronous'),
@@ -75,7 +80,8 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[{
                 'input_topic': topic, 'output_topic': f'{topic}/delayed',
                 'msg_type': msg_type,
-                'latency_ms': latency_ms, 'jitter_ms': jitter_ms, 'drop_prob': drop_prob,
+                'latency_ms': latency_ms, 'jitter_ms': jitter_ms,
+                'drop_prob': drop_prob, 'jitter_model': jitter_model,
             }])
 
     relay_img = relay('latency_image', '/obs/image', 'sensor_msgs/msg/Image')

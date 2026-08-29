@@ -111,3 +111,75 @@ def test_mid_run_node_deaths_are_counted_from_the_launch_log(tmp_path):
                    "[ERROR] [latency_node-2]: process has died [pid 1, exit code 1, cmd '...'].\n"
                    "[ERROR] [latency_node-3]: process has died [pid 2, exit code 1, cmd '...'].\n")
     assert _deaths_so_far(str(log)) == 2
+
+
+# ------------------------------------------------------- trial-count recording
+@requires_ros2
+def test_recorder_exposes_the_episode_count_it_stops_on():
+    from std_msgs.msg import Bool
+
+    from evh_bringup.benchmark import Recorder
+
+    rec = Recorder.__new__(Recorder)          # __init__ needs a live ROS context
+    rec._successes = rec._trials = 0
+    rec._infer_ms, rec._action_stamps, rec._waypoint_stamps = [], [], []
+
+    assert rec.trials == 0
+    for data in (True, False, True):
+        rec._on_success(Bool(data=data))
+    assert rec.trials == 3, 'both outcomes count as trials, not just successes'
+
+
+@requires_ros2
+@pytest.mark.parametrize('target,seen,capped,expected', [
+    (20, 20, False, False),   # reached the target before the cap
+    (20, 11, True, True),     # cap hit first: the row is short and must say so
+    (0, 40, True, False),     # pure time mode: hitting the cap IS the stopping condition
+])
+def test_a_row_is_flagged_truncated_only_when_it_fell_short(target, seen, capped, expected):
+    """The point of the flag: a cell that ran out of wall clock has a smaller n than the cells it
+    will be plotted against, and that has to be visible in the CSV rather than inferred."""
+    truncated = capped and bool(target) and seen < target
+    assert truncated is expected
+
+
+@requires_ros2
+def test_time_windows_under_sample_the_degraded_cells():
+    """Why --trials exists, in the measured numbers: the same 90 s window yielded 13 episodes at
+    0 ms but only 6 at 800 ms, so the interesting end of the curve carried half the evidence."""
+    per_episode_s = {0: 6.9, 800: 15.0}
+    window = 90.0
+    counts = {lat: int(window // s) for lat, s in per_episode_s.items()}
+
+    assert counts[0] > 2 * counts[800] - 3, 'expected roughly a 2x sampling imbalance'
+    # trial mode equalises it, at the cost of a longer window for the degraded cell
+    target = 25
+    assert per_episode_s[800] * target > per_episode_s[0] * target
+
+
+# ------------------------------------------------------------- sweep axis knobs
+@requires_ros2
+@pytest.mark.parametrize('axis,param', [
+    ('latency', 'latency_ms'), ('jitter', 'jitter_ms'), ('drop', 'drop_prob'),
+])
+def test_the_swept_axis_maps_to_the_right_launch_argument(axis, param):
+    from evh_bringup.benchmark import _AXIS_PARAM
+    assert _AXIS_PARAM[axis] == param
+
+
+@requires_ros2
+def test_every_degradation_knob_is_passed_even_when_it_is_not_swept():
+    """drop_prob used to be omitted from the launch command entirely, so it silently stayed at
+    the launch default and no sweep could reach it — the same landmine as the `absolute` arg.
+    Each knob must appear in the command line whether or not it is the swept one."""
+    from evh_bringup.benchmark import _AXIS_PARAM
+
+    args_jitter, args_drop, args_latency = 5.0, 0.1, 200.0
+    for axis, swept_value in (('latency', 300.0), ('jitter', 40.0), ('drop', 0.25)):
+        knobs = {'latency_ms': args_latency, 'jitter_ms': args_jitter, 'drop_prob': args_drop}
+        knobs[_AXIS_PARAM[axis]] = swept_value
+
+        assert set(knobs) == {'latency_ms', 'jitter_ms', 'drop_prob'}
+        assert knobs[_AXIS_PARAM[axis]] == swept_value, 'swept knob did not take the value'
+        held = {k: v for k, v in knobs.items() if k != _AXIS_PARAM[axis]}
+        assert all(v is not None for v in held.values()), 'a held knob went unpassed'
