@@ -9,8 +9,9 @@ the graph properties the rest of the system's invariants rest on:
     precisely why the plant's cross-check does not also police the reactive layer),
   * exactly the three observation topics are relayed, and `/obs/ee_pose` never is (invariant #6),
   * every relay output is what the controller actually subscribes to,
-  * every LaunchConfiguration referenced is declared, and
-  * every (package, executable) launched exists as a console_script.
+  * every LaunchConfiguration referenced is declared,
+  * every (package, executable) launched exists as a console_script, and
+  * config/default.yaml still mirrors the node parameter defaults it claims to document.
 
 Needs the `launch` / `launch_ros` packages, hence the ros2 mark. Nothing is executed.
 """
@@ -65,6 +66,21 @@ def _unwrap(value):
     return value.value if isinstance(value, ParameterValue) else value
 
 
+def _launch_configs(value):
+    """The LaunchConfiguration objects a parameter value reads, seeing through typed()."""
+    from launch.substitutions import LaunchConfiguration
+
+    from evh_bringup.launch_utils import _TypedArgument
+
+    inner = _unwrap(value)
+    subs = [inner] if not isinstance(inner, (list, tuple)) else list(inner)
+    for sub in subs:
+        if isinstance(sub, _TypedArgument):
+            yield sub.source
+        elif isinstance(sub, LaunchConfiguration):
+            yield sub
+
+
 def _perform(ctx, value):
     """Resolve a substitution list to a plain string.
 
@@ -107,29 +123,22 @@ def _params(ctx, node):
 
 def _param_refs(ctx, node):
     """{param name: launch-argument name it reads}, skipping literal parameters."""
-    from launch.substitutions import LaunchConfiguration
 
     refs = {}
     for block in node._Node__parameters or ():
         for key, value in block.items():
-            value = _unwrap(value)
-            subs = [value] if not isinstance(value, (list, tuple)) else list(value)
-            for sub in subs:
-                if isinstance(sub, LaunchConfiguration):
-                    refs[_perform(ctx, key)] = _perform(ctx, sub.variable_name)
+            for config in _launch_configs(value):
+                refs[_perform(ctx, key)] = _perform(ctx, config.variable_name)
     return refs
 
 
 def _typed_params(node):
     """{param name: declared value_type or None} for every parameter reading a launch arg."""
-    from launch.substitutions import LaunchConfiguration
 
     out = {}
     for block in node._Node__parameters or ():
         for key, value in block.items():
-            inner = _unwrap(value)
-            subs = [inner] if not isinstance(inner, (list, tuple)) else list(inner)
-            if any(isinstance(sub, LaunchConfiguration) for sub in subs):
+            if any(True for _ in _launch_configs(value)):
                 name = ''.join(s.text for s in key if hasattr(s, 'text')) or str(key)
                 out[name] = _value_type(value)
     return out
@@ -356,3 +365,50 @@ def test_an_integer_latency_argument_still_reaches_the_relay_as_a_float(raw):
     value = ParameterValue(TextSubstitution(text=raw), value_type=float).evaluate(LaunchContext())
     assert isinstance(value, float)
     assert value == float(raw)
+
+
+# ----------------------------------------------------------------- default.yaml
+def _declared_param_defaults(package: str, module: str) -> dict:
+    """{parameter name: default value} parsed from a node's declare_parameter() calls."""
+    source = os.path.join(_SRC, package, package, f'{module}.py')
+    tree = ast.parse(pathlib.Path(source).read_text())
+
+    defaults = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == 'declare_parameter' and len(node.args) >= 2):
+            try:
+                defaults[ast.literal_eval(node.args[0])] = ast.literal_eval(node.args[1])
+            except ValueError:
+                continue
+    return defaults
+
+
+CONFIGURED_NODES = [
+    ('/evh_plant', 'evh_plant', 'plant_node'),
+    ('/evh_controller', 'evh_controller', 'controller_node'),
+    ('/evh_reactive', 'evh_reactive', 'reactive_node'),
+]
+
+
+@pytest.mark.parametrize('key,package,module', CONFIGURED_NODES)
+def test_default_config_still_mirrors_the_node_defaults(key, package, module):
+    """config/default.yaml says "values mirror the node parameter defaults" and is what someone
+    copies to build an experiment config. Nothing loads it at launch, so drift is invisible: a
+    parameter added to a node just never appears, and a config copied from it silently omits the
+    knob. `strict_mode_check` had already gone missing this way."""
+    import yaml
+
+    config = yaml.safe_load(
+        pathlib.Path(os.path.join(_SRC, 'evh_bringup/config/default.yaml')).read_text())
+    listed = config.get(key, {}).get('ros__parameters', {})
+    declared = _declared_param_defaults(package, module)
+
+    assert not set(declared) - set(listed), (
+        f'default.yaml is missing {sorted(set(declared) - set(listed))} under {key}')
+    assert not set(listed) - set(declared), (
+        f'default.yaml documents {sorted(set(listed) - set(declared))} which {module} '
+        'no longer declares')
+    for name, value in listed.items():
+        assert value == declared[name] and type(value) is type(declared[name]), (
+            f'{key}/{name}: default.yaml says {value!r}, {module}.py declares {declared[name]!r}')

@@ -12,6 +12,7 @@
     seed: 0
     max_episode_s: 20.0     # episode horizon (sim control steps); timeout = recorded failure
     absolute_actions: true  # abs-action policy: OSC control_delta=False (DP Lift checkpoint)
+    strict_mode_check: true # abort if the loaded checkpoint's mode disagrees with the above
     video_path: ""          # e.g. /ws/outputs/hil.mp4 for headless mp4 recording
     video_duration: 0.0     # seconds; 0 = record until shutdown
 
