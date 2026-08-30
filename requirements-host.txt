@@ -1,13 +1,16 @@
-# PC host (x86) — simulation plant + diffusion policy in PyTorch fallback mode.
-# ROS2 Humble itself is installed via apt, not pip.
+# x86 host image (docker/Dockerfile.host). Deliberately MIRRORS [project].dependencies in
+# pyproject.toml rather than doing `-e .`, and tests/test_dependencies.py fails if the two drift.
+#
+# Why not just `-e .`: pyproject's packages.find points at ros2_ws/src/*, so pip cannot generate
+# metadata until the source is copied — it installs as UNKNOWN-0.0.0. Copying source before the
+# pip layer would fix that but invalidates the torch layer (~2.5 GB from the CUDA index) on every
+# code change. The duplication buys the build cache; the test buys back the safety.
+#
+# torch is NOT installed from here: Dockerfile.host installs it first from the cu128 index, which
+# a requirements file cannot express. The pin below only records the range we accept.
 numpy>=1.24,<2.0
-# robosuite 1.5.x has broken multi-camera offscreen rendering (obs images swap/corrupt after
-# env.step — validated 2026-07-07); 1.4.1 is also the version family the diffusion_policy
-# robomimic checkpoints were evaluated on (visuals match the training distribution).
 robosuite==1.4.1
 mujoco==2.3.7  # robosuite 1.4.x targets mujoco 2.3
-# lerobot: pin PyPI release — git main fails pip metadata ("unknown" project name);
-# 0.4+ moved normalization out of the policy (breaks from_pretrained for diffusion checkpoints).
 torch>=2.2.1,<2.8.0
 lerobot==0.3.3
 opencv-python>=4.8

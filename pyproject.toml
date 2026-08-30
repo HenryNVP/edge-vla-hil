@@ -22,6 +22,8 @@ keywords = [
     "edge-ai",
 ]
 
+# Mirrored by requirements-host.txt for Docker layer caching (see the note there).
+# tests/test_dependencies.py asserts the two stay identical.
 dependencies = [
     "numpy>=1.24,<2.0",
     "robosuite==1.4.1",
