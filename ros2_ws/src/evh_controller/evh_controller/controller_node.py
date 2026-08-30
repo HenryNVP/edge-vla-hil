@@ -30,7 +30,13 @@ from __future__ import annotations
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy, qos_profile_sensor_data
+from rclpy.qos import (
+    QoSDurabilityPolicy,
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Bool, Empty, Float32
 
@@ -43,6 +49,20 @@ from evh_controller.policy import make_policy
 # controller often comes up much later (checkpoint load / HF download). See PlantNode._on_policy_mode.
 MODE_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
                       durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+
+
+# The command path, and the one topic that crosses the network in the split deployment. It is
+# BEST_EFFORT with a depth of 1 ON PURPOSE, and the three packages that touch it must agree or DDS
+# silently refuses to pair them.
+#
+# Reliable delivery is the wrong contract here. A waypoint is an ABSOLUTE target and the reactive
+# layer latches it, so a lost one costs nothing — it simply keeps tracking the previous target.
+# A LATE one costs plenty: reliable QoS retransmits and delivers in order, so a stale waypoint
+# arrives after a fresher one was already available and the arm is commanded backwards. That is
+# precisely the "re-apply an old command" behaviour the latched-absolute-target design exists to
+# prevent. Newest-wins, no retransmit, no head-of-line blocking.
+WAYPOINT_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                          history=QoSHistoryPolicy.KEEP_LAST)
 
 
 class ControllerNode(Node):
@@ -82,7 +102,7 @@ class ControllerNode(Node):
         # eval-plane signal from the plant; deliberately NOT routed through the latency relay
         self.create_subscription(Empty, '/episode/reset', self._on_episode_reset, 10)
 
-        self.pub_waypoint = self.create_publisher(JointState, '/cmd/waypoint', 10)
+        self.pub_waypoint = self.create_publisher(JointState, '/cmd/waypoint', WAYPOINT_QOS)
         self.pub_latency = self.create_publisher(Float32, '/metrics/inference_ms', 10)
         self.pub_delay = self.create_publisher(Float32, '/metrics/delay_steps', 10)
 

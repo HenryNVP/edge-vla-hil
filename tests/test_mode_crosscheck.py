@@ -96,3 +96,70 @@ def test_plant_and_controller_agree_on_the_mode_topic_qos():
     assert plant_qos.durability == controller_qos.durability
     assert plant_qos.reliability == controller_qos.reliability
     assert plant_qos.depth == controller_qos.depth
+
+
+# --------------------------------------------------------- the command-path QoS
+@requires_ros2
+def test_all_three_packages_agree_on_the_waypoint_qos():
+    """/cmd/waypoint is published by evh_controller, consumed by evh_reactive, and measured by
+    evh_bringup's recorder. The profile is duplicated in all three (the packages deploy to
+    different machines and none may depend on another), so nothing but a test stops it drifting.
+
+    A drift here does not raise: DDS simply refuses to pair an incompatible reader with the
+    writer. The reactive layer would stop receiving commands, and the recorder would report
+    waypoint_hz = 0.0 — a number indistinguishable from 'this condition starved the policy'."""
+    from evh_bringup.benchmark import WAYPOINT_QOS as bringup_qos
+    from evh_controller.controller_node import WAYPOINT_QOS as controller_qos
+    from evh_reactive.reactive_node import WAYPOINT_QOS as reactive_qos
+
+    for name, qos in (('reactive', reactive_qos), ('bringup', bringup_qos)):
+        assert qos.reliability == controller_qos.reliability, f'{name} reliability differs'
+        assert qos.durability == controller_qos.durability, f'{name} durability differs'
+        assert qos.history == controller_qos.history, f'{name} history differs'
+        assert qos.depth == controller_qos.depth, f'{name} depth differs'
+
+
+@requires_ros2
+def test_the_command_path_is_newest_wins_not_reliable():
+    """Reliable delivery retransmits and delivers in order, so a stale waypoint lands after a
+    fresher one was available — commanding the arm backwards. A LOST waypoint is free here
+    because the target is absolute and latched; a LATE one is not."""
+    from rclpy.qos import QoSHistoryPolicy, QoSReliabilityPolicy
+
+    from evh_controller.controller_node import WAYPOINT_QOS
+
+    assert WAYPOINT_QOS.reliability == QoSReliabilityPolicy.BEST_EFFORT
+    assert WAYPOINT_QOS.history == QoSHistoryPolicy.KEEP_LAST
+    assert WAYPOINT_QOS.depth == 1, 'a deeper queue lets stale waypoints accumulate'
+
+
+@integration
+def test_a_waypoint_actually_crosses_between_the_two_profiles(ros):
+    """The compatibility assertions above compare fields; this one proves DDS pairs them."""
+    import rclpy
+    from sensor_msgs.msg import JointState
+
+    from evh_controller.controller_node import WAYPOINT_QOS as pub_qos
+    from evh_reactive.reactive_node import WAYPOINT_QOS as sub_qos
+
+    talker = rclpy.create_node('wp_talker')
+    listener = rclpy.create_node('wp_listener')
+    got: list = []
+    pub = talker.create_publisher(JointState, '/cmd/waypoint', pub_qos)
+    listener.create_subscription(
+        JointState, '/cmd/waypoint', lambda m: got.append(list(m.position)), sub_qos)
+
+    from rclpy.executors import SingleThreadedExecutor
+    ex = SingleThreadedExecutor()
+    ex.add_node(talker)
+    ex.add_node(listener)
+
+    import time
+    end = time.time() + 5.0
+    while time.time() < end and not got:
+        pub.publish(JointState(position=[0.1] * 7))
+        ex.spin_once(timeout_sec=0.05)
+
+    assert got, 'publisher and subscriber QoS did not pair — no waypoint crossed'
+    talker.destroy_node()
+    listener.destroy_node()

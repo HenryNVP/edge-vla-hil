@@ -46,11 +46,29 @@ import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import (
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+)
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Float32
 
-
 # --------------------------------------------------------------------- record
+# The command path, and the one topic that crosses the network in the split deployment. It is
+# BEST_EFFORT with a depth of 1 ON PURPOSE, and the three packages that touch it must agree or DDS
+# silently refuses to pair them.
+#
+# Reliable delivery is the wrong contract here. A waypoint is an ABSOLUTE target and the reactive
+# layer latches it, so a lost one costs nothing — it simply keeps tracking the previous target.
+# A LATE one costs plenty: reliable QoS retransmits and delivers in order, so a stale waypoint
+# arrives after a fresher one was already available and the arm is commanded backwards. That is
+# precisely the "re-apply an old command" behaviour the latched-absolute-target design exists to
+# prevent. Newest-wins, no retransmit, no head-of-line blocking.
+WAYPOINT_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                          history=QoSHistoryPolicy.KEEP_LAST)
+
+
 class Recorder(Node):
     def __init__(self) -> None:
         super().__init__('evh_benchmark_recorder')
@@ -63,7 +81,7 @@ class Recorder(Node):
 
         self.create_subscription(Bool, '/eval/success', self._on_success, 10)
         self.create_subscription(Float32, '/metrics/inference_ms', self._on_infer, 10)
-        self.create_subscription(JointState, '/cmd/waypoint', self._on_waypoint, 10)
+        self.create_subscription(JointState, '/cmd/waypoint', self._on_waypoint, WAYPOINT_QOS)
         self.create_subscription(JointState, '/cmd/action', self._on_action, 10)
 
     @property
@@ -256,7 +274,8 @@ def wait_until_ready(timeout_s: float) -> float:
     rclpy.init()
     probe = rclpy.create_node('evh_benchmark_probe')
     seen: list[int] = []
-    probe.create_subscription(JointState, '/cmd/waypoint', lambda _m: seen.append(1), 10)
+    probe.create_subscription(
+        JointState, '/cmd/waypoint', lambda _m: seen.append(1), WAYPOINT_QOS)
     t0 = time.perf_counter()
     try:
         while time.perf_counter() - t0 < timeout_s:

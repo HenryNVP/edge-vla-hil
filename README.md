@@ -117,16 +117,24 @@ docker pull dustynv/ros:humble-desktop-pytorch-l4t-r35.4.1
 
 docker build -f docker/Dockerfile.jetson -t edge-vla-hil:jetson .
 
+# Copy the checkpoint to the device first (~4.6 GB) — it is not baked into the image:
+#   scp checkpoints/dp_lift_ph_image_cnn.ckpt jetson:~/edge-vla-hil/checkpoints/
+
 # Controller only (pair with host.launch.py on the desktop; same ROS_DOMAIN_ID)
 docker run -it --rm --network host --runtime nvidia \
   -e ROS_DOMAIN_ID=42 \
   -v ~/edge-vla-hil:/ws \
   edge-vla-hil:jetson \
-  ros2 launch evh_bringup controller.launch.py backend:=pytorch strategy:=rtc
+  ros2 launch evh_bringup controller.launch.py strategy:=rtc \
+    backend:=dp weights:=/ws/checkpoints/dp_lift_ph_image_cnn.ckpt
 ```
 
-Build the TRT engine on-device from ONNX (`scripts/build_trt_engine.py`), then pass
-`backend:=tensorrt weights:=/ws/checkpoints/policy.engine`.
+`backend:=dp` runs the real policy on the L4T torch wheels in the base image. `pytorch` and
+`tensorrt` are stubs (zeros / unimplemented) and are only useful for plumbing smoke tests.
+
+First thing to measure on-device is **inference time per chunk** — the controller logs it and
+publishes it on `/metrics/inference_ms`. On an RTX 5060 it is ~262 ms (16 DDIM steps). That single
+number decides whether an Orin Nano is a viable controller or whether inference belongs elsewhere.
 
 ## Benchmark sweep (Wedge A)
 

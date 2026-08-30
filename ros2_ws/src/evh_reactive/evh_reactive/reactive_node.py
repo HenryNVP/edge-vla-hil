@@ -22,7 +22,12 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Empty
 
@@ -34,6 +39,19 @@ from evh_reactive.tracking import (
     normalize_waypoint,
 )
 from evh_reactive.transforms import quat_normalize
+
+# The command path, and the one topic that crosses the network in the split deployment. It is
+# BEST_EFFORT with a depth of 1 ON PURPOSE, and the three packages that touch it must agree or DDS
+# silently refuses to pair them.
+#
+# Reliable delivery is the wrong contract here. A waypoint is an ABSOLUTE target and the reactive
+# layer latches it, so a lost one costs nothing — it simply keeps tracking the previous target.
+# A LATE one costs plenty: reliable QoS retransmits and delivers in order, so a stale waypoint
+# arrives after a fresher one was already available and the arm is commanded backwards. That is
+# precisely the "re-apply an old command" behaviour the latched-absolute-target design exists to
+# prevent. Newest-wins, no retransmit, no head-of-line blocking.
+WAYPOINT_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                          history=QoSHistoryPolicy.KEEP_LAST)
 
 
 class ReactiveNode(Node):
@@ -58,7 +76,7 @@ class ReactiveNode(Node):
 
         self._ee: Pose | None = None   # local, zero-delay EE state
 
-        self.create_subscription(JointState, '/cmd/waypoint', self._on_waypoint, 10)
+        self.create_subscription(JointState, '/cmd/waypoint', self._on_waypoint, WAYPOINT_QOS)
         self.create_subscription(
             PoseStamped, '/obs/ee_pose', self._on_ee_pose, qos_profile_sensor_data)
         self.create_subscription(Empty, '/episode/reset', self._on_episode_reset, 10)

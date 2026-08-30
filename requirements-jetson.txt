@@ -3,5 +3,21 @@
 # them from here. TensorRT ships with JetPack. PyYAML comes with the dustynv ROS base image.
 numpy>=1.24,<2.0
 opencv-python>=4.8
-pycuda>=2024.1
+
+# diffusion_policy checkpoint support. Without these the Jetson controller can only run the
+# `pytorch` stub (returns zeros) or the `tensorrt` stub, so `backend:=dp` — the only backend that
+# loads the real policy — fails at import. robomimic is NOT here: it needs --no-deps (its
+# egl_probe build dep fails), so the Dockerfile installs it. See scripts/setup_dp_deps.sh.
+hydra-core
+omegaconf
+zarr<3
+h5py
+psutil
+termcolor
+tensorboardX
+
+# ONNX export only (no runtime). onnxruntime is deliberately absent: the pip arm64 wheel is
+# CPU-only, and the Jetson GPU build ships separately from NVIDIA. Running this policy through
+# CPU onnxruntime would be far slower than the torch CUDA path already in the base image.
 onnx>=1.15
+pycuda>=2024.1

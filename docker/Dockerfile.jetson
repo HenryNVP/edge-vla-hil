@@ -1,4 +1,4 @@
-# Jetson Orin Nano (arm64): ROS2 + TensorRT controller node only.
+# Jetson Orin Nano (arm64): ROS2 controller node.
 # Base image bundles CUDA, cuDNN, TensorRT, and the L4T PyTorch wheels for JetPack.
 # Tag: humble-desktop-pytorch-l4t-r35.4.1 (NOT humble-pytorch — that tag is not published).
 # Compatible with L4T R35.x including 35.6.4 / JetPack 5.1.6.
@@ -12,6 +12,15 @@ RUN chmod +x /ros_source.sh
 
 COPY requirements-jetson.txt /ws/
 RUN pip3 install --no-cache-dir -r requirements-jetson.txt
+
+# diffusion_policy-repo checkpoint support, mirroring Dockerfile.host so the same `backend:=dp`
+# works on both sides of the link. robomimic needs --no-deps (egl_probe will not build); the repo
+# clone is baked so a run does not depend on the host mount carrying external/.
+# The 4.6 GB checkpoint is NOT baked — mount it (see README).
+RUN pip3 install --no-cache-dir --no-deps robomimic==0.2.0 \
+    && git clone --depth 1 https://github.com/real-stanford/diffusion_policy /opt/diffusion_policy \
+    && python3 -c "import robomimic, hydra, zarr; print('dp deps ok')"
+ENV EVH_DP_REPO=/opt/diffusion_policy
 
 # Only the controller package (and its deps) need to build on the device.
 COPY ros2_ws /ws/ros2_ws
