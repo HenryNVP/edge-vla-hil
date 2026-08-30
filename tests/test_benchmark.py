@@ -10,6 +10,22 @@ import pytest
 from conftest import requires_ros2
 
 
+def _blank_recorder():
+    """A Recorder with no traffic recorded. Recorder.__init__ needs a live ROS context, so the
+    state is built directly — kept in ONE place so a new field in summary() breaks here rather
+    than in every test that happens to hand-roll a stub."""
+    from evh_bringup.benchmark import Recorder
+
+    rec = Recorder.__new__(Recorder)
+    rec._successes = 0
+    rec._trials = 0
+    rec._infer_ms = []
+    rec._action_stamps = []
+    rec._waypoint_stamps = []
+    rec._waypoints = []
+    return rec
+
+
 @requires_ros2
 def test_rate_is_zero_not_nan_when_nothing_arrives():
     from evh_bringup.benchmark import Recorder
@@ -44,15 +60,12 @@ def test_rate_nan_only_for_a_degenerate_window():
 def test_summary_reports_zero_throughput_without_traffic():
     from evh_bringup.benchmark import Recorder
 
-    # build the state directly: Recorder.__init__ needs a live ROS context
-    stub = Recorder.__new__(Recorder)
-    stub._successes, stub._trials = 0, 0
-    stub._infer_ms, stub._action_stamps, stub._waypoint_stamps = [], [], []
-    s = Recorder.summary(stub, 30.0)
+    s = Recorder.summary(_blank_recorder(), 30.0)
     assert s['waypoint_hz'] == 0.0
     assert s['loop_hz'] == 0.0
-    # a latency that was never observed has no value, unlike a throughput of zero
-    assert math.isnan(s['infer_ms_mean']) and math.isnan(s['infer_ms_p95'])
+    # a quantity that was never observed has no value, unlike a throughput of zero
+    for key in ('infer_ms_mean', 'infer_ms_p95', 'wp_step_mm', 'wp_jerk_mm', 'wp_gap_p95_ms'):
+        assert math.isnan(s[key]), f'{key} reported a value for a cell that saw no traffic'
 
 
 @requires_ros2
@@ -118,11 +131,7 @@ def test_mid_run_node_deaths_are_counted_from_the_launch_log(tmp_path):
 def test_recorder_exposes_the_episode_count_it_stops_on():
     from std_msgs.msg import Bool
 
-    from evh_bringup.benchmark import Recorder
-
-    rec = Recorder.__new__(Recorder)          # __init__ needs a live ROS context
-    rec._successes = rec._trials = 0
-    rec._infer_ms, rec._action_stamps, rec._waypoint_stamps = [], [], []
+    rec = _blank_recorder()
 
     assert rec.trials == 0
     for data in (True, False, True):
@@ -183,3 +192,73 @@ def test_every_degradation_knob_is_passed_even_when_it_is_not_swept():
         assert knobs[_AXIS_PARAM[axis]] == swept_value, 'swept knob did not take the value'
         held = {k: v for k, v in knobs.items() if k != _AXIS_PARAM[axis]}
         assert all(v is not None for v in held.values()), 'a held knob went unpassed'
+
+
+# ------------------------------------------------------- waypoint stream shape
+@requires_ros2
+def test_smoothness_separates_a_jittery_stream_from_a_fast_one():
+    """The metric that waypoint_hz cannot provide. Two streams travelling the same total distance
+    at the same rate: one advances steadily, one zig-zags. Equal step, very different jerk — and
+    the zig-zag is what the reactive layer's rate limiter absorbs."""
+    from evh_bringup.benchmark import Recorder
+
+    steady = [[0.001 * i, 0.0, 0.0] for i in range(60)]
+    zigzag = [[0.001 * i + (0.001 if i % 2 else -0.001), 0.0, 0.0] for i in range(60)]
+
+    step_s, jerk_s = Recorder._smoothness(steady)
+    step_z, jerk_z = Recorder._smoothness(zigzag)
+
+    assert step_s == pytest.approx(1.0, rel=0.05), 'steady stream: 1 mm per waypoint'
+    assert jerk_s == pytest.approx(0.0, abs=1e-6), 'a constant-velocity stream has no jerk'
+    assert jerk_z > 10 * max(jerk_s, 1e-9), 'zig-zag must register as high jerk'
+
+
+@requires_ros2
+def test_smoothness_is_nan_rather_than_zero_without_enough_waypoints():
+    """Jerk needs three points. Reporting 0.0 would read as 'perfectly smooth' for a cell that
+    was actually starved — the opposite of the truth."""
+    from evh_bringup.benchmark import Recorder
+
+    for waypoints in ([], [[0.0, 0.0, 0.0]], [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]]):
+        step, jerk = Recorder._smoothness(waypoints)
+        assert math.isnan(step) and math.isnan(jerk)
+
+
+@requires_ros2
+def test_gap_p95_exposes_a_pause_the_mean_rate_hides():
+    """A strategy that pauses to think keeps a respectable mean Hz while leaving the robot with
+    no fresh command for long stretches. p95 of the inter-arrival gaps is that stretch."""
+    from evh_bringup.benchmark import Recorder
+
+    # a chunking strategy that pauses once per chunk: ~9 fast commands then a long think.
+    # (p95 only registers a tail wider than 5% of samples — a rarer pause needs a higher
+    # percentile or the max, which is worth remembering when reading this column.)
+    stamps, t = [], 0.0
+    for i in range(100):
+        t += 0.5 if i % 10 == 9 else 0.05
+        stamps.append(t)
+
+    assert Recorder._gap_p95_ms(stamps) > 400.0, 'the pause tail was averaged away'
+    assert Recorder._rate(stamps, t) > 10.0, 'mean rate still looks healthy — that is the point'
+
+
+@requires_ros2
+def test_gap_p95_is_nan_for_a_stream_that_never_arrived():
+    from evh_bringup.benchmark import Recorder
+    assert math.isnan(Recorder._gap_p95_ms([]))
+    assert math.isnan(Recorder._gap_p95_ms([1.0]))
+
+
+@requires_ros2
+@pytest.mark.parametrize('baseline,cell,threshold,warns', [
+    (264.0, 265.0, 0.25, False),   # the measured spread across a clean 50-cell sweep
+    (264.0, 271.0, 0.25, False),   # worst clean cell observed
+    (264.0, 415.0, 0.25, True),    # measured after the GPU dropped to a power-capped clock
+    (264.0, 330.1, 0.25, True),    # just over the line
+])
+def test_inference_drift_flags_a_machine_that_changed_mid_sweep(baseline, cell, threshold, warns):
+    """A GPU that power-caps partway through a long unattended sweep makes every later cell look
+    worse for a reason unrelated to the strategy, and nothing else in the CSV shows it. Measured:
+    SM clock halved and inference went 262 -> 415 ms at only 48 C. The clean 50-cell run spread
+    just 12 ms, so 25% is far above the noise and well below the failure."""
+    assert (cell > baseline * (1.0 + threshold)) is warns

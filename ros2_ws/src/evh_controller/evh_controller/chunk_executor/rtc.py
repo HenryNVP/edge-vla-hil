@@ -17,6 +17,19 @@ import numpy as np
 
 from evh_controller.chunk_executor.base import ChunkExecutor
 
+# Shared by RTC and its Wedge-B subclass, and shared ON PURPOSE. These two differ only in the
+# STATISTIC they take over the delay history (max vs quantile); if they also differed in how much
+# history they look at, an observed effect could be the longer memory rather than the estimator,
+# and the comparison would prove nothing. They were 20 and 50 — a heavy-tail spike 30 samples old
+# sat inside one window and outside the other, which is how the quantile came out ABOVE the max.
+#
+# 50 and not 20 because delays are small INTEGERS (control steps), so the top few samples of a
+# short window are usually the same integer and ceil(p95) lands exactly on the max. Measured over
+# tight delay distributions, ceil(p95) == max for 88% of 20-sample windows, 27% at 50, 13% at 100.
+# A shorter window is therefore mostly RTC wearing a quantile; a longer one adapts more slowly to
+# a changing link. 50 is the compromise — raise it if the two strategies keep tying.
+DELAY_BUFFER = 50
+
 
 class RTCExecutor(ChunkExecutor):
     """Real-Time Chunking: freeze the executing overlap, inpaint the rest, splice time-aligned.
@@ -39,7 +52,7 @@ class RTCExecutor(ChunkExecutor):
     name = 'rtc'
 
     def __init__(self, worker, policy, exec_horizon_min: int = 1,
-                 delay_buffer: int = 20) -> None:
+                 delay_buffer: int = DELAY_BUFFER) -> None:
         self.s_min = exec_horizon_min
         self.delay_buffer = delay_buffer
         # delay history is a property of the SYSTEM (network + GPU), not of an episode:
@@ -120,13 +133,19 @@ class NetworkAwareExecutor(RTCExecutor):
     """Wedge B: RTC whose delay forecast uses the measured delay distribution.
 
     RTC's max-over-buffer assumes a reliable channel; under heavy-tailed jitter/loss a quantile
-    (later: loss-aware) estimate should dominate. Only the forecast differs — everything else is
-    inherited, which is exactly the point of the seam.
+    (later: loss-aware) estimate should dominate. Only the forecast differs — everything else,
+    including the buffer length (see DELAY_BUFFER), is inherited, so any measured difference is
+    attributable to the estimator and nothing else.
+
+    Note what this needs from the EXPERIMENT to be testable at all: with a light-tailed delay
+    distribution `ceil(p95) == max` for the integer step counts these forecasts produce, and the
+    two strategies compute byte-identical freeze horizons. Sweep `jitter_model:=lognormal` or a
+    non-zero `drop_prob`, or this reduces to running RTC twice.
     """
     name = 'network_aware'
 
     def __init__(self, worker, policy, quantile: float = 0.95,
-                 exec_horizon_min: int = 1, delay_buffer: int = 50) -> None:
+                 exec_horizon_min: int = 1, delay_buffer: int = DELAY_BUFFER) -> None:
         super().__init__(worker, policy, exec_horizon_min=exec_horizon_min,
                          delay_buffer=delay_buffer)
         self.quantile = quantile

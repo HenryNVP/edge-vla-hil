@@ -30,12 +30,13 @@ Two modes:
       silently contributing an empty row. --video_dir records an mp4 per cell.
 
 CSV columns: condition,strategy,latency_ms,jitter_ms,reactive,trials,success_rate,infer_ms_mean,
-             infer_ms_p95,waypoint_hz,loop_hz
+             infer_ms_p95,waypoint_hz,loop_hz,wp_step_mm,wp_jerk_mm,wp_gap_p95_ms,truncated
 """
 from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 import signal
 import subprocess
@@ -58,6 +59,7 @@ class Recorder(Node):
         self._infer_ms: list[float] = []
         self._action_stamps: list[float] = []
         self._waypoint_stamps: list[float] = []
+        self._waypoints: list[list[float]] = []   # commanded EE positions, for smoothness
 
         self.create_subscription(Bool, '/eval/success', self._on_success, 10)
         self.create_subscription(Float32, '/metrics/inference_ms', self._on_infer, 10)
@@ -76,11 +78,52 @@ class Recorder(Node):
     def _on_infer(self, msg: Float32) -> None:
         self._infer_ms.append(float(msg.data))
 
-    def _on_waypoint(self, _msg: JointState) -> None:
+    def _on_waypoint(self, msg: JointState) -> None:
         self._waypoint_stamps.append(time.perf_counter())
+        pos = list(msg.position[:3])
+        if len(pos) == 3:
+            self._waypoints.append(pos)
 
     def _on_action(self, _msg: JointState) -> None:
         self._action_stamps.append(time.perf_counter())
+
+    @staticmethod
+    def _smoothness(waypoints: list[list[float]]) -> tuple[float, float]:
+        """(mean step mm, mean jerk mm) of the commanded EE position stream.
+
+        Why both, and why they are not redundant:
+
+          step — mean |x[k] - x[k-1]|, how far the commanded target moves per new waypoint. Rises
+                 with latency for any strategy that jumps to a stale plan, because the target it
+                 jumps to was computed for a pose the arm has since left.
+          jerk — mean |x[k] - 2x[k-1] + x[k-2]|, the second difference. This is the one that
+                 separates a fast-but-smooth stream from a fast-but-JITTERY one. Throughput
+                 (waypoint_hz) cannot: temporal ensembling streams at ~19 Hz, the same rate as
+                 RTC, while averaging chunk predictions that disagree — so its target wobbles at
+                 full rate. That distinction is invisible in success rate and in Hz, and it is
+                 the leading candidate explanation for which strategies the reactive layer helps.
+
+        Millimetres because the numbers are otherwise 1e-4 and unreadable in a CSV.
+        """
+        if len(waypoints) < 3:
+            return (float('nan'), float('nan'))
+        x = np.asarray(waypoints, dtype=float)
+        step = np.linalg.norm(np.diff(x, axis=0), axis=1)
+        jerk = np.linalg.norm(np.diff(x, n=2, axis=0), axis=1)
+        return (float(np.mean(step)) * 1e3, float(np.mean(jerk)) * 1e3)
+
+    @staticmethod
+    def _gap_p95_ms(stamps: list[float]) -> float:
+        """p95 inter-arrival gap on /cmd/waypoint — how long the robot goes with no new command.
+
+        The mean rate hides this. A strategy that pauses to think has a fat upper tail here while
+        its average Hz still looks reasonable; that tail is what the reactive layer interpolates
+        across, so it is the direct measure of the 'sparse stream' the mean cannot show.
+        """
+        if len(stamps) < 2:
+            return float('nan')
+        gaps = np.diff(np.asarray(stamps))
+        return float(np.percentile(gaps, 95)) * 1e3
 
     @staticmethod
     def _rate(stamps: list[float], window_s: float) -> float:
@@ -110,6 +153,11 @@ class Recorder(Node):
             'waypoint_hz': self._rate(self._waypoint_stamps, window_s),
             # reactive layer output rate — ~constant by design, sanity check only
             'loop_hz': self._rate(self._action_stamps, window_s),
+            # shape of the cognitive stream, which waypoint_hz alone cannot show: how far the
+            # target moves per command, how much it wobbles, and how long it goes silent
+            'wp_step_mm': self._smoothness(self._waypoints)[0],
+            'wp_jerk_mm': self._smoothness(self._waypoints)[1],
+            'wp_gap_p95_ms': self._gap_p95_ms(self._waypoint_stamps),
         }
 
 
@@ -157,10 +205,11 @@ def _append_csv(path: str, args, s: dict) -> None:
         if new:
             w.writerow(['condition', 'strategy', 'latency_ms', 'jitter_ms', 'reactive', 'trials',
                         'success_rate', 'infer_ms_mean', 'infer_ms_p95', 'waypoint_hz', 'loop_hz',
-                        'truncated'])
+                        'wp_step_mm', 'wp_jerk_mm', 'wp_gap_p95_ms', 'truncated'])
         w.writerow([args.label, args.strategy, args.latency_ms, args.jitter_ms,
                     args.reactive, s['trials'], s['success_rate'], s['infer_ms_mean'],
                     s['infer_ms_p95'], s['waypoint_hz'], s['loop_hz'],
+                    s['wp_step_mm'], s['wp_jerk_mm'], s['wp_gap_p95_ms'],
                     s.get('truncated', False)])
 
 
@@ -260,6 +309,7 @@ def run_sweep(args) -> None:
           f'jitter_model={args.jitter_model} ({len(cells)} cells)')
 
     failures = []
+    baseline_infer = None    # first cell's inference time; see the drift check below
     for n, (strategy, reactive, lat) in enumerate(cells, 1):
         label = f'strat={strategy}_reactive={reactive}_{axis}={lat}'
         log_path = os.path.join(log_dir, f'{label}.log'.replace('/', '_'))
@@ -307,6 +357,21 @@ def run_sweep(args) -> None:
                     failures.append((label, f"hit the {args.duration:.0f}s cap at "
                                             f"{row['trials']}/{args.trials} episodes"))
                     print(f'[sweep]   WARNING — truncated at {row["trials"]}/{args.trials}')
+                # Inference time is a free health monitor for the machine under a long sweep.
+                # A GPU that drops into a power-capped state partway through (measured: SM clock
+                # halving, inference 262 -> 415 ms, at only 48 C) makes every later cell look
+                # worse for a reason that has nothing to do with the strategy — and nothing else
+                # in the CSV would reveal it. Compare against the first cell and say so.
+                infer = row.get('infer_ms_mean')
+                if infer and not math.isnan(infer):
+                    if baseline_infer is None:
+                        baseline_infer = infer
+                    elif infer > baseline_infer * (1.0 + args.infer_drift):
+                        failures.append((label, f'inference {infer:.0f} ms vs {baseline_infer:.0f} '
+                                                f'ms in the first cell — machine state changed'))
+                        print(f'[sweep]   WARNING — inference drifted to {infer:.0f} ms '
+                              f'(first cell {baseline_infer:.0f} ms); cells are not comparable')
+
                 # a node that died mid-window still produced a row; say so rather than let it pass
                 died = _deaths_so_far(log_path)
                 if died:
@@ -340,9 +405,11 @@ def main(argv=None) -> None:
                    help='comma-separated chunk-execution strategies to sweep (Wedge A)')
     p.add_argument('--duration', type=float, default=60.0,
                    help='record window seconds; with --trials this is the wall-clock cap')
-    p.add_argument('--trials', type=int, default=0,
-                   help='stop each cell after N episodes instead of a fixed window (recommended: '
-                        'degraded cells run longer episodes and a time window under-samples them)')
+    p.add_argument('--trials', type=int, default=10,
+                   help='stop each cell after N episodes instead of a fixed window (0 = pure time '
+                        'mode). Degraded cells run longer episodes, so a time window under-samples '
+                        'exactly the interesting end of the curve. 10 is a fast iteration default '
+                        'and is NOT enough to separate success rates — raise it for a real run.')
     p.add_argument('--warmup', type=float, default=90.0,
                    help='TIMEOUT (not a delay) on waiting for the first /cmd/waypoint')
     p.add_argument('--reactive_modes', choices=['both', 'on', 'off'], default='both',
@@ -351,6 +418,9 @@ def main(argv=None) -> None:
     p.add_argument('--video_duration', type=float, default=0.0,
                    help='seconds of video per cell (0 = the whole cell)')
     p.add_argument('--log_dir', default='', help='per-cell launch logs (default: <out dir>/logs)')
+    p.add_argument('--infer_drift', type=float, default=0.25,
+                   help='warn when a cell\'s mean inference time exceeds the first cell\'s by '
+                        'this fraction — catches a GPU that throttles partway through a long run')
     p.add_argument('--out', default='results/sweep.csv')
     p.add_argument('--backend', default='pytorch')
     p.add_argument('--weights', default='')

@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from evh_controller.chunk_executor import RTCExecutor
+from evh_controller.chunk_executor.rtc import DELAY_BUFFER
 from evh_controller.dp_repo_policy import (
     DiffusionPolicyRepoBackend,
     _axisangle_to_matrix,
@@ -184,3 +185,39 @@ def test_base_fallback_respects_weights_it_is_given():
 
     assert chunk.shape == (H, A)
     assert np.allclose(chunk[:4], 1.0), 'hard-frozen entries were not honoured'
+
+
+# --------------------------------------------------- Wedge B must be controlled
+def test_the_two_forecasts_look_at_the_same_history():
+    """RTC and NetworkAware differ only in the STATISTIC over the delay history. They used to
+    differ in the WINDOW too (20 vs 50), so a heavy-tail spike 30 samples old was inside one and
+    outside the other — which is how a p95 came out numerically ABOVE a max. With the windows
+    matched, any measured difference is attributable to the estimator."""
+    from evh_controller.chunk_executor.rtc import NetworkAwareExecutor, RTCExecutor
+
+    worker, policy = _CapturingWorker(), _Policy()
+    assert RTCExecutor(worker, policy).delay_buffer == DELAY_BUFFER
+    assert NetworkAwareExecutor(worker, policy).delay_buffer == DELAY_BUFFER
+
+
+def test_a_short_window_collapses_the_quantile_onto_the_max():
+    """Why DELAY_BUFFER is 50 and not 20. Delays are small integers, so the top few samples of a
+    short window are usually the SAME integer and ceil(p95) lands on the max — the quantile stops
+    being a distinct estimator and Wedge B silently reduces to running RTC twice. This is a rate,
+    not an absolute: it must simply be much worse at 20 than at 50."""
+    import numpy as np
+
+    rng = np.random.RandomState(0)
+
+    def collapse_rate(window):
+        hits = 0
+        for _ in range(1500):
+            d = list(map(int, np.round(rng.normal(21, 1.5, window))))
+            hits += int(np.ceil(np.quantile(d, 0.95))) == max(d)
+        return hits / 1500
+
+    short, chosen = collapse_rate(20), collapse_rate(DELAY_BUFFER)
+    assert short > 0.7, f'expected a short window to collapse most of the time, got {short:.0%}'
+    assert chosen < short / 2, (
+        f'DELAY_BUFFER={DELAY_BUFFER} collapses {chosen:.0%} vs {short:.0%} at 20 — '
+        'not enough of an improvement to make the quantile a distinct estimator')
