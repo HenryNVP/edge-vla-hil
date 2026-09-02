@@ -7,7 +7,13 @@ lands, these still hold and catch shape regressions.
 import numpy as np
 import pytest
 
-from evh_controller.policy import PyTorchBackend, TensorRTBackend, make_policy
+from evh_controller.policy import (
+    ACTBackend,
+    ONNXBackend,
+    PyTorchBackend,
+    TensorRTBackend,
+    make_policy,
+)
 
 
 def _dummy_obs():
@@ -20,6 +26,8 @@ def _dummy_obs():
 
 @pytest.mark.parametrize('backend,cls', [
     ('pytorch', PyTorchBackend),
+    ('act', ACTBackend),
+    ('onnx', ONNXBackend),
     ('tensorrt', TensorRTBackend),
 ])
 def test_make_policy_returns_backend(backend, cls):
@@ -29,6 +37,8 @@ def test_make_policy_returns_backend(backend, cls):
 
 def test_make_policy_aliases():
     assert isinstance(make_policy('torch', ''), PyTorchBackend)
+    assert isinstance(make_policy('act_lerobot', ''), ACTBackend)
+    assert isinstance(make_policy('act_onnx', ''), ONNXBackend)
     assert isinstance(make_policy('trt', ''), TensorRTBackend)
 
 
@@ -37,7 +47,7 @@ def test_make_policy_rejects_unknown():
         make_policy('jax', '')
 
 
-@pytest.mark.parametrize('backend', ['pytorch', 'tensorrt'])
+@pytest.mark.parametrize('backend', ['pytorch', 'act', 'onnx', 'tensorrt'])
 def test_predict_chunk_shape_and_dtype(backend):
     policy = make_policy(backend, '')
     chunk = policy.predict(_dummy_obs())

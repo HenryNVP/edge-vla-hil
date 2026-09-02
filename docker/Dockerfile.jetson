@@ -1,4 +1,12 @@
 # Jetson Orin Nano (arm64): ROS2 controller node.
+#
+# The pypi.jetson-ai-lab.io pip index (used by earlier revisions of this file for
+# onnxruntime-gpu) has dropped JetPack 5 (jp5/*) entirely -- it now serves jp6 only. There is no
+# working pip index for a JP5 CUDA onnxruntime wheel, so we pull the wheel dusty-nv already built
+# for this exact L4T tag out of the matching dustynv/onnxruntime image instead of pip-installing
+# it (verified: 1.16.1, cp38, providers include CUDAExecutionProvider + TensorrtExecutionProvider).
+FROM dustynv/onnxruntime:r35.4.1 AS onnxruntime_wheel
+
 # Base image bundles CUDA, cuDNN, TensorRT, and the L4T PyTorch wheels for JetPack.
 # Tag: humble-desktop-pytorch-l4t-r35.4.1 (NOT humble-pytorch — that tag is not published).
 # Compatible with L4T R35.x including 35.6.4 / JetPack 5.1.6.
@@ -11,7 +19,16 @@ COPY docker/ros_source.sh /ros_source.sh
 RUN chmod +x /ros_source.sh
 
 COPY requirements-jetson.txt /ws/
+# torchvision is not in the dustynv ROS+pytorch base; robomimic needs it at import time.
+# pip wheel is CPU-only but sufficient for model defs; --no-deps keeps the L4T torch wheel.
+RUN pip3 install --no-cache-dir 'torchvision==0.15.2' --no-deps
 RUN pip3 install --no-cache-dir -r requirements-jetson.txt
+
+# backend:=onnx (ACT fast path). See the FROM comment above for why this isn't a pip index install.
+COPY --from=onnxruntime_wheel /opt/onnxruntime_gpu-1.16.1-cp38-cp38-linux_aarch64.whl /tmp/
+RUN pip3 install --no-cache-dir /tmp/onnxruntime_gpu-1.16.1-cp38-cp38-linux_aarch64.whl \
+    && rm /tmp/onnxruntime_gpu-1.16.1-cp38-cp38-linux_aarch64.whl \
+    && python3 -c "import onnxruntime as ort; assert 'CUDAExecutionProvider' in ort.get_available_providers(), ort.get_available_providers(); print('onnxruntime ok', ort.__version__)"
 
 # diffusion_policy-repo checkpoint support, mirroring Dockerfile.host so the same `backend:=dp`
 # works on both sides of the link. robomimic needs --no-deps (egl_probe will not build); the repo
@@ -19,7 +36,7 @@ RUN pip3 install --no-cache-dir -r requirements-jetson.txt
 # The 4.6 GB checkpoint is NOT baked — mount it (see README).
 RUN pip3 install --no-cache-dir --no-deps robomimic==0.2.0 \
     && git clone --depth 1 https://github.com/real-stanford/diffusion_policy /opt/diffusion_policy \
-    && python3 -c "import robomimic, hydra, zarr; print('dp deps ok')"
+    && python3 -c "import robomimic, hydra, zarr, dill, einops, diffusers, torchvision; print('dp deps ok')"
 ENV EVH_DP_REPO=/opt/diffusion_policy
 
 # Only the controller package (and its deps) need to build on the device.

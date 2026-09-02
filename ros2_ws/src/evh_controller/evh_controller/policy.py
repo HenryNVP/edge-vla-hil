@@ -6,6 +6,14 @@ deterministic baseline elsewhere.
 
 Interchangeable inference paths behind one interface so the rest of the system never changes:
 
+  * ACTBackend      -- LeRobot ACT checkpoint (single forward per chunk). Needs LeRobot, which
+                       needs Python 3.10+ -- host/dev only. The Jetson controller image is
+                       Python 3.8 (dustynv ROS Humble base), so this backend cannot load there;
+                       use ONNXBackend on-device instead (see scripts/export_onnx.py).
+  * ONNXBackend     -- ACT exported to ONNX (scripts/export_onnx.py) and run with ONNX Runtime.
+                       No torch/lerobot at inference time, so it is the Jetson ACT fast path
+                       (onnxruntime-gpu, CUDA execution provider) where pytorch diffusion
+                       inference is too slow and lerobot's Python floor rules out ACTBackend.
   * PyTorchBackend  -- LeRobot diffusion checkpoint, runs anywhere (dev + Jetson fallback).
   * DiffusionPolicyRepoBackend (dp_repo_policy.py) -- real-stanford/diffusion_policy robomimic
                        image checkpoints (the project's actual Lift policy).
@@ -36,6 +44,24 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+def _import_act_policy():
+    """Load ACTPolicy across LeRobot 0.3.x package layouts."""
+    tried: list[str] = []
+    for modpath in (
+        'lerobot.policies.act.modeling_act',
+        'lerobot.common.policies.act.modeling_act',
+    ):
+        try:
+            return importlib.import_module(modpath).ACTPolicy
+        except Exception as exc:
+            tried.append(f'  {modpath}: {type(exc).__name__}: {exc}')
+    raise ImportError(
+        'Could not import LeRobot ACTPolicy. Tried:\n'
+        + '\n'.join(tried)
+        + '\nInstall lerobot==0.3.3 (Python 3.10+).'
+    )
 
 
 def _import_diffusion_policy():
@@ -104,6 +130,116 @@ def newest(obs_value: np.ndarray) -> np.ndarray:
     """Latest entry of a possibly history-stacked observation value."""
     arr = np.asarray(obs_value)
     return arr[-1] if arr.ndim in (2, 4) else arr
+
+
+class ACTBackend(ChunkPolicy):
+    """LeRobot ACT checkpoint — one transformer forward per chunk (no denoise loop)."""
+
+    def __init__(self, ckpt_path: str, device: str = 'cuda') -> None:
+        self.ckpt_path = ckpt_path
+        self.device = device
+        self.denoise_steps = 1
+        self.action_dim = 7
+        self.chunk_size = 16
+        self.n_obs_steps = 1
+        self._model = None
+        self._torch_device = 'cpu'
+        self._image_keys: list[str] = []
+        self._image_shapes: dict[str, tuple[int, ...]] = {}
+        self._state_key = 'observation.state'
+        self._state_dim = 7
+        self._load()
+
+    def _load(self) -> None:
+        if not self.ckpt_path:
+            self._model = None
+            return
+
+        ACTPolicy = _import_act_policy()
+        self._torch_device = _resolve_device(self.device)
+        logger.info('Loading ACT policy from %s on %s', self.ckpt_path, self._torch_device)
+        self._model = ACTPolicy.from_pretrained(self.ckpt_path)
+        self._model.to(self._torch_device).eval()
+
+        cfg = self._model.config
+        self.chunk_size = int(cfg.chunk_size)
+        self.n_obs_steps = int(getattr(cfg, 'n_obs_steps', 1))
+        if cfg.action_feature and cfg.action_feature.shape:
+            self.action_dim = int(cfg.action_feature.shape[0])
+
+        self._image_keys = list(cfg.image_features.keys()) if cfg.image_features else []
+        self._image_shapes = {
+            key: tuple(cfg.input_features[key].shape)
+            for key in self._image_keys
+        }
+
+        if self._state_key not in cfg.input_features:
+            for key, feat in cfg.input_features.items():
+                feat_type = getattr(feat, 'type', None)
+                if feat_type is not None and str(feat_type).endswith('STATE'):
+                    self._state_key = key
+                    break
+                if 'state' in key:
+                    self._state_key = key
+                    break
+
+        state_shape = cfg.input_features[self._state_key].shape
+        self._state_dim = int(state_shape[0]) if state_shape else self._state_dim
+        self.needs_wrist = len(self._image_keys) > 1
+
+        logger.info(
+            'Loaded ACT policy: chunk_size=%d action_dim=%d state_dim=%d image_keys=%s',
+            self.chunk_size,
+            self.action_dim,
+            self._state_dim,
+            self._image_keys or ['<none>'],
+        )
+
+    def _obs_to_batch(self, obs: dict) -> dict:
+        import torch
+        import torch.nn.functional as F
+
+        batch: dict[str, torch.Tensor] = {}
+        for key in self._image_keys:
+            if key == self._image_keys[0]:
+                image = np.asarray(newest(obs['agentview']), dtype=np.uint8)
+            elif len(self._image_keys) > 1 and key == self._image_keys[1]:
+                image = np.asarray(newest(obs.get('wrist', obs['agentview'])), dtype=np.uint8)
+            else:
+                image = np.asarray(newest(obs['agentview']), dtype=np.uint8)
+
+            if image.ndim != 3 or image.shape[2] != 3:
+                raise ValueError(f'expected HWC uint8 image, got shape {image.shape}')
+            img = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
+            c, h, w = self._image_shapes[key]
+            if (img.shape[0], img.shape[1], img.shape[2]) != (c, h, w):
+                img = F.interpolate(
+                    img.unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False,
+                )[0]
+            batch[key] = img.unsqueeze(0).to(self._torch_device)
+
+        state = newest(obs['proprio'])
+        state_vec = np.asarray(state, dtype=np.float32).reshape(-1)
+        if state_vec.size < self._state_dim:
+            state_vec = np.pad(state_vec, (0, self._state_dim - state_vec.size))
+        elif state_vec.size > self._state_dim:
+            state_vec = state_vec[:self._state_dim]
+        batch[self._state_key] = (
+            torch.from_numpy(state_vec).unsqueeze(0).to(self._torch_device)
+        )
+        return batch
+
+    def predict(self, obs: dict) -> np.ndarray:
+        if self._model is None:
+            return np.zeros((self.chunk_size, self.action_dim), dtype=np.float32)
+
+        import torch
+
+        batch = self._obs_to_batch(obs)
+        with torch.inference_mode():
+            chunk = self._model.predict_action_chunk(batch)[0].cpu().numpy()
+        n = min(self.chunk_size, chunk.shape[0])
+        return np.asarray(chunk[:n], dtype=np.float32)
 
 
 class PyTorchBackend(ChunkPolicy):
@@ -249,6 +385,102 @@ class TensorRTBackend(ChunkPolicy):
         raise NotImplementedError
 
 
+class ONNXBackend(ChunkPolicy):
+    """ACT exported to ONNX (scripts/export_onnx.py), run through ONNX Runtime.
+
+    Pure numpy + onnxruntime at inference time -- no torch, no lerobot -- so this is the
+    backend that actually loads on the Jetson controller's Python 3.8 image. Normalization and
+    unnormalization of image/state/action are baked into the graph by the exporter; this class
+    only resizes the raw HWC uint8 frame and feeds/reads the two named tensors ('image', 'state'
+    in, 'action_chunk' out). Sidecar `<onnx>.json` (written by the exporter) carries chunk_size /
+    action_dim / image_shape / state_dim so no checkpoint config needs to be read here.
+    """
+
+    def __init__(self, onnx_path: str, providers: list[str] | None = None) -> None:
+        self.onnx_path = onnx_path
+        self.action_dim = 7
+        self.chunk_size = 16
+        self.denoise_steps = 1
+        self._session = None
+        self._image_shape = (3, 96, 96)
+        self._state_dim = 7
+        self._providers = providers
+        self._load()
+
+    def _load(self) -> None:
+        if not self.onnx_path:
+            self._session = None
+            return
+
+        import json
+        from pathlib import Path
+
+        import onnxruntime as ort
+
+        onnx_path = Path(self.onnx_path)
+        meta_path = onnx_path.with_suffix('.json')
+        meta = json.loads(meta_path.read_text()) if meta_path.is_file() else {}
+
+        providers = self._providers
+        if not providers:
+            available = ort.get_available_providers()
+            providers = [p for p in ('CUDAExecutionProvider', 'CPUExecutionProvider')
+                        if p in available] or available[:1]
+
+        logger.info('Loading ONNX policy from %s (providers=%s)', onnx_path, providers)
+        self._session = ort.InferenceSession(str(onnx_path), providers=providers)
+        active = self._session.get_providers()
+        if 'CUDAExecutionProvider' not in active:
+            logger.warning(
+                'ONNX policy running on %s, not CUDA -- check the GPU wheel/providers '
+                '(see scripts/bench_onnx.py)', active,
+            )
+
+        self.chunk_size = int(meta.get('chunk_size', self.chunk_size))
+        self.action_dim = int(meta.get('action_dim', self.action_dim))
+        self._state_dim = int(meta.get('state_dim', self._state_dim))
+        image_shape = meta.get('image_shape')
+        if image_shape:
+            self._image_shape = tuple(int(v) for v in image_shape)
+
+        logger.info(
+            'Loaded ONNX policy: chunk_size=%d action_dim=%d state_dim=%d image_shape=%s',
+            self.chunk_size, self.action_dim, self._state_dim, self._image_shape,
+        )
+
+    def _feeds(self, obs: dict) -> dict:
+        image = np.asarray(newest(obs['agentview']), dtype=np.uint8)
+        if image.ndim != 3 or image.shape[2] != 3:
+            raise ValueError(f'expected HWC uint8 image, got shape {image.shape}')
+
+        c, h, w = self._image_shape
+        if (image.shape[0], image.shape[1]) != (h, w):
+            import cv2
+            image = cv2.resize(image, (w, h), interpolation=cv2.INTER_LINEAR)
+        img = image.astype(np.float32).transpose(2, 0, 1) / 255.0
+
+        state = newest(obs['proprio'])
+        state_vec = np.asarray(state, dtype=np.float32).reshape(-1)
+        if state_vec.size < self._state_dim:
+            state_vec = np.pad(state_vec, (0, self._state_dim - state_vec.size))
+        elif state_vec.size > self._state_dim:
+            state_vec = state_vec[:self._state_dim]
+
+        return {
+            'image': img[np.newaxis].astype(np.float32),
+            'state': state_vec[np.newaxis].astype(np.float32),
+        }
+
+    def predict(self, obs: dict) -> np.ndarray:
+        if self._session is None:
+            return np.zeros((self.chunk_size, self.action_dim), dtype=np.float32)
+
+        out_name = self._session.get_outputs()[0].name
+        chunk = self._session.run([out_name], self._feeds(obs))[0][0]
+        n = min(self.chunk_size, chunk.shape[0])
+        return np.asarray(chunk[:n], dtype=np.float32)
+
+
 def make_policy(backend: str, weights_path: str, denoise_steps: int = 16) -> ChunkPolicy:
     backend = backend.lower()
     if backend in ('pytorch', 'torch', 'fallback'):
@@ -256,6 +488,10 @@ def make_policy(backend: str, weights_path: str, denoise_steps: int = 16) -> Chu
     if backend in ('dp', 'diffusion_policy'):
         from evh_controller.dp_repo_policy import DiffusionPolicyRepoBackend
         return DiffusionPolicyRepoBackend(weights_path, denoise_steps=denoise_steps)
+    if backend in ('act', 'act_lerobot'):
+        return ACTBackend(weights_path)
+    if backend in ('onnx', 'act_onnx'):
+        return ONNXBackend(weights_path)
     if backend in ('tensorrt', 'trt'):
         return TensorRTBackend(weights_path)
     raise ValueError(f'unknown backend: {backend!r}')

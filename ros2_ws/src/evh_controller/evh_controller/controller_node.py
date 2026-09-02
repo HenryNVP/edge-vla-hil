@@ -69,8 +69,8 @@ class ControllerNode(Node):
     def __init__(self, **kwargs) -> None:
         super().__init__('evh_controller', **kwargs)
 
-        self.declare_parameter('backend', 'pytorch')        # pytorch | dp | tensorrt
-        self.declare_parameter('weights_path', '')           # ckpt (dir/.ckpt) or .engine
+        self.declare_parameter('backend', 'pytorch')        # pytorch | act | onnx | dp | tensorrt
+        self.declare_parameter('weights_path', '')           # ckpt (dir/.ckpt), .onnx, or .engine
         self.declare_parameter('strategy', 'synchronous')    # chunk-execution strategy
         self.declare_parameter('control_hz', 20.0)   # action stream rate = policy training rate
         self.declare_parameter('denoise_steps', 16)  # dp backend: DDIM steps (0=ckpt default)

@@ -11,8 +11,10 @@ Launch args:
   jitter_model : gaussian | uniform | lognormal. The first two are light-tailed, so a
                 delay forecast based on a quantile cannot differ from one based on a
                 max; lognormal supplies the heavy tail that separates them.
-  backend     : pytorch | dp | tensorrt   (dp = diffusion_policy-repo checkpoint, the real one)
-  weights     : checkpoint path (e.g. /ws/checkpoints/dp_lift_ph_image_cnn.ckpt) or .engine
+  backend     : pytorch | act | onnx | dp | tensorrt   (dp = diffusion_policy-repo checkpoint,
+                the real one; onnx = ACT exported via scripts/export_onnx.py, the Jetson fast
+                path -- see policy.py module docstring)
+  weights     : checkpoint path (e.g. /ws/checkpoints/dp_lift_ph_image_cnn.ckpt), .onnx, or .engine
   strategy    : synchronous | naive_async | temporal_ensemble | bid | rtc | network_aware
   denoise_steps : dp backend DDIM steps (0 = checkpoint default DDPM-100)
   absolute    : true -> abs-action policy: plant OSC control_delta=False, reactive latches

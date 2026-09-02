@@ -18,8 +18,8 @@
 
 /evh_controller:
   ros__parameters:
-    backend: "pytorch"      # pytorch (lerobot) | dp (diffusion_policy repo, the real one) | tensorrt
-    weights_path: ""        # e.g. /ws/checkpoints/dp_lift_ph_image_cnn.ckpt
+    backend: "pytorch"      # pytorch (lerobot) | act (lerobot, host/dev only) | onnx (ACT, Jetson) | dp (diffusion_policy repo, the real one) | tensorrt
+    weights_path: ""        # e.g. /ws/checkpoints/dp_lift_ph_image_cnn.ckpt, or an exported .onnx
     strategy: "synchronous" # synchronous | naive_async | temporal_ensemble | bid | rtc | network_aware
     control_hz: 20.0        # action stream rate; keep equal to the policy's training rate
     denoise_steps: 16       # dp backend: DDIM steps (0 = checkpoint default DDPM-100)

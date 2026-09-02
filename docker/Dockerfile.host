@@ -3,8 +3,14 @@
 FROM osrf/ros:humble-desktop
 
 ENV DEBIAN_FRONTEND=noninteractive
+# CycloneDDS, not the osrf/ros default rmw_fastrtps_cpp: the Jetson controller image
+# (dustynv/ros base) ships rmw_cyclonedds_cpp, and the true cross-machine HiL run (controller on
+# Jetson, this image on the desktop, see controller.launch.py) needs both ends on the same RMW to
+# use the unicast-peers discovery config (docker/cyclonedds-*.xml) -- multicast SPDP discovery
+# unreliably picks the wrong NIC on a multi-homed box (see those files' comments for why).
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3-pip libgl1 libosmesa6-dev libglfw3 \
+        python3-pip libgl1 libosmesa6-dev libglfw3 ros-humble-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ws

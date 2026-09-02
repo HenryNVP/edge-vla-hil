@@ -5,8 +5,8 @@ machines on the same ROS_DOMAIN_ID over Ethernet, DDS discovers the topics autom
 *physical* network replaces the software latency relay (or stacks with it).
 
 Args:
-  backend : pytorch | dp | tensorrt
-  weights : checkpoint path (dir/.ckpt) or .engine path
+  backend : pytorch | act | onnx | dp | tensorrt
+  weights : checkpoint path (dir/.ckpt), .onnx, or .engine path
   strategy, denoise_steps : see hil.launch.py
 """
 from launch import LaunchDescription

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+Cross-machine HiL (controller.launch.py on Jetson + host.launch.py on desktop) over a direct
+Ethernet link, bypassing multicast discovery entirely.
+
+Why: CycloneDDS's default SPDP discovery uses multicast (239.255.0.1), and on a box with more
+than one interface the kernel routes that multicast group via whatever has the default route
+(`ip route get 239.255.0.1`) -- typically the WiFi interface, not a newly-added direct link, even
+after `ip addr add <ip>/24 dev ethX` on both ends. The direct link then carries pings fine
+(unicast, has a specific route) but ROS2 nodes on the two machines never discover each other.
+Explicit unicast Peers sidesteps that: no multicast route needed, and it's why RTT over the direct
+link matters (sub-ms vs 80-330ms measured over WiFi between these two machines).
+
+Use: mount this repo at /ws (as the launch commands already do) and set on the Jetson side
+    -e CYCLONEDDS_URI=file:///ws/docker/cyclonedds-jetson.xml
+and on the desktop side, docker/cyclonedds-host.xml with the addresses swapped. Update the two
+<Peer address> entries below (and the matching file) if the direct-link IPs change.
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain>
+    <General>
+      <NetworkInterfaceAddress>10.10.10.1</NetworkInterfaceAddress>
+      <AllowMulticast>false</AllowMulticast>
+    </General>
+    <Discovery>
+      <Peers>
+        <Peer address="10.10.10.1"/>
+        <Peer address="10.10.10.2"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

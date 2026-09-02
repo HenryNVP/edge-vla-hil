@@ -129,12 +129,16 @@ docker run -it --rm --network host --runtime nvidia \
     backend:=dp weights:=/ws/checkpoints/dp_lift_ph_image_cnn.ckpt
 ```
 
-`backend:=dp` runs the real policy on the L4T torch wheels in the base image. `pytorch` and
-`tensorrt` are stubs (zeros / unimplemented) and are only useful for plumbing smoke tests.
+`backend:=dp` runs the real policy on the L4T torch wheels in the base image; `tensorrt` is a stub
+(zeros/unimplemented), only useful for plumbing smoke tests.
 
 First thing to measure on-device is **inference time per chunk** — the controller logs it and
 publishes it on `/metrics/inference_ms`. On an RTX 5060 it is ~262 ms (16 DDIM steps). That single
-number decides whether an Orin Nano is a viable controller or whether inference belongs elsewhere.
+number decides whether an Orin Nano is a viable controller or whether inference belongs elsewhere:
+on-device it was too slow, so the fast path is ACT (single forward, no denoise loop) exported to
+ONNX and run with `onnxruntime-gpu` (`backend:=onnx`, see `scripts/export_onnx.py` and
+`scripts/bench_onnx.py`) — not LeRobot's `act` backend directly, since that needs Python 3.10+ and
+the Jetson controller image is Python 3.8.
 
 ## Benchmark sweep (Wedge A)
 

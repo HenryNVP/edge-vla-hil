@@ -11,13 +11,22 @@ opencv-python>=4.8
 hydra-core
 omegaconf
 zarr<3
-h5py
+h5py==3.10.0  # 3.11+ has no aarch64/cp38 wheel; source build hits broken openmpi includes (mpi.h)
+dill==0.3.5.1
+einops==0.4.1
+diffusers==0.11.1
+huggingface_hub==0.19.4
+tqdm
 psutil
 termcolor
 tensorboardX
 
-# ONNX export only (no runtime). onnxruntime is deliberately absent: the pip arm64 wheel is
-# CPU-only, and the Jetson GPU build ships separately from NVIDIA. Running this policy through
-# CPU onnxruntime would be far slower than the torch CUDA path already in the base image.
+# backend:=onnx (ACT fast path -- pytorch diffusion inference is too slow on Jetson, and ACT's
+# own LeRobot backend needs Python 3.10+, which the Humble base image (Python 3.8) doesn't have).
+# onnxruntime-gpu is NOT listed here: the plain PyPI wheel is CPU-only, and the pypi.jetson-ai-lab
+# index that used to serve a JP5 CUDA build now serves jp6 only (checked 2026-09; JP5 dropped
+# entirely). Dockerfile.jetson instead copies the wheel dusty-nv built for this exact L4T tag out
+# of dustynv/onnxruntime:r35.4.1. See scripts/export_onnx.py (host-side export) and
+# scripts/bench_onnx.py (verify providers).
 onnx>=1.15
 pycuda>=2024.1
