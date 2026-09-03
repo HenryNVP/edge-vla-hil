@@ -122,11 +122,22 @@ class PlantNode(Node):
         self.pub_success = self.create_publisher(Bool, '/eval/success', 10)
         self.pub_reset = self.create_publisher(Empty, '/episode/reset', 10)
 
+        # separate callback groups: with a MultiThreadedExecutor(num_threads=2) the high-rate
+        # physics timer can never starve the obs publisher (observed under load with a single
+        # thread). _publish_observation only reads self._obs (replaced atomically) — no env calls.
+        # /cmd/action and /policy/absolute land on _cb_io too, not the implicit default group --
+        # a third group would compete with these two for only 2 threads, and with both timers
+        # continuously busy it can starve indefinitely: found via a real cross-machine run where
+        # /policy/absolute was confirmed received (`ros2 topic echo`/`topic info`) but
+        # _on_policy_mode never ran.
+        self._cb_physics = MutuallyExclusiveCallbackGroup()
+        self._cb_io = MutuallyExclusiveCallbackGroup()
+
         # --- subscribers ---
         self.sub_action = self.create_subscription(
-            JointState, '/cmd/action', self._on_action, 10)
+            JointState, '/cmd/action', self._on_action, 10, callback_group=self._cb_io)
         self.sub_policy_mode = self.create_subscription(
-            Bool, '/policy/absolute', self._on_policy_mode, MODE_QOS)
+            Bool, '/policy/absolute', self._on_policy_mode, MODE_QOS, callback_group=self._cb_io)
 
         self._env = None
         self._obs: dict | None = None
@@ -134,11 +145,6 @@ class PlantNode(Node):
         self._action_dim = 7
         self._build_env()
 
-        # separate callback groups: with a MultiThreadedExecutor the high-rate physics timer
-        # can never starve the obs publisher (observed under load with a single thread).
-        # _publish_observation only reads self._obs (replaced atomically) — no env calls.
-        self._cb_physics = MutuallyExclusiveCallbackGroup()
-        self._cb_io = MutuallyExclusiveCallbackGroup()
         self.create_timer(1.0 / self.control_hz, self._publish_observation,
                           callback_group=self._cb_io)
         self.create_timer(1.0 / self.action_hz, self._step_physics,
