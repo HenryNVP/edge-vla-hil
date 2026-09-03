@@ -106,8 +106,11 @@ docker run -it --rm --network host -e ROS_DOMAIN_ID=42 \
   ros2 launch evh_bringup host.launch.py latency_ms:=0.0
 ```
 
-If you mount the repo to `/ws`, the image's baked-in `ros2_ws/install/` is hidden — the
-entrypoint runs `colcon build` automatically when `install/setup.bash` is missing.
+If you mount the repo to `/ws`, the image's baked-in `ros2_ws/install/` is hidden — the entrypoint
+runs `colcon build` automatically when `install/setup.bash` is missing *or* when anything under
+`src/` is newer than it. The staleness half matters: `--symlink-install` symlinks the Python
+packages but copies everything under `share/`, so a leftover `install/` tree launches old launch
+files (old remappings, old params) against current node code, and says nothing about it.
 
 ## Jetson deployment
 
@@ -120,7 +123,8 @@ docker build -f docker/Dockerfile.jetson -t edge-vla-hil:jetson .
 # Copy the checkpoint to the device first (~4.6 GB) — it is not baked into the image:
 #   scp checkpoints/dp_lift_ph_image_cnn.ckpt jetson:~/edge-vla-hil/checkpoints/
 
-# Controller only (pair with host.launch.py on the desktop; same ROS_DOMAIN_ID)
+# Controller only (pair with host.launch.py on the desktop; same ROS_DOMAIN_ID).
+# For the real two-machine run add -e CYCLONEDDS_URI=... first: see "Cross-machine HiL" below.
 docker run -it --rm --network host --runtime nvidia \
   -e ROS_DOMAIN_ID=42 \
   -v ~/edge-vla-hil:/ws \
@@ -139,6 +143,54 @@ on-device it was too slow, so the fast path is ACT (single forward, no denoise l
 ONNX and run with `onnxruntime-gpu` (`backend:=onnx`, see `scripts/export_onnx.py` and
 `scripts/bench_onnx.py`) — not LeRobot's `act` backend directly, since that needs Python 3.10+ and
 the Jetson controller image is Python 3.8.
+
+## Cross-machine HiL over a direct link
+
+The real split — plant on the desktop, controller on the Jetson — needs the two DDS participants to
+find each other. Over WiFi they will not: RTT was 80–330 ms and multicast discovery never completed.
+Use a direct Ethernet cable between the two NICs and give it static addresses (there is no DHCP
+server on a cable):
+
+```bash
+sudo ip addr add 10.10.10.1/24 dev eth0 && sudo ip link set eth0 up   # on the Jetson
+sudo ip addr add 10.10.10.2/24 dev eno1 && sudo ip link set eno1 up   # on the desktop
+```
+
+Substitute your own interface names (`ip -br link`); the *addresses* are what the DDS configs below
+pin, so keep those. These commands do not survive a reboot — make them permanent in NetworkManager
+or netplan once the link is proven. Check the desktop NIC has no leftover `169.254.x.x` link-local
+address from a failed DHCP attempt (`ip -o addr show dev eno1`) and delete it if so: DDS will
+happily advertise it, and the other end cannot route to it.
+
+Then point each side at its own CycloneDDS config, which pins the link's interface, switches
+discovery to unicast peers, and caps the datagram size below the path MTU. All three matter; the
+long comment in `docker/cyclonedds-jetson.xml` records what each one fixes and how it fails without
+it (silently, in every case — the graph simply never connects).
+
+```bash
+# Desktop: plant + latency relay + reactive + recorder
+docker run -it --rm --gpus all --network host \
+  -e ROS_DOMAIN_ID=42 -e CYCLONEDDS_URI=file:///ws/docker/cyclonedds-host.xml \
+  -v ~/edge-vla-hil:/ws edge-vla-hil:host \
+  ros2 launch evh_bringup host.launch.py latency_ms:=0.0
+
+# Jetson: controller only (same ROS_DOMAIN_ID)
+docker run -it --rm --network host --runtime nvidia \
+  -e ROS_DOMAIN_ID=42 -e CYCLONEDDS_URI=file:///ws/docker/cyclonedds-jetson.xml \
+  -v ~/edge-vla-hil:/ws edge-vla-hil:jetson \
+  ros2 launch evh_bringup controller.launch.py strategy:=rtc backend:=onnx \
+    weights:=/ws/outputs/act_aloha.onnx
+```
+
+Both images use `rmw_cyclonedds_cpp` (the desktop image installs it explicitly — `osrf/ros` defaults
+to FastRTPS, and two different RMWs do not talk to each other). `--network host` is required.
+
+If the graph still does not connect, note that a node aborting at startup with `failed to initialize
+rcl node` is the *good* failure: it means the pinned address is missing on that machine, so fix the
+static IP. The silent failures are the ones to hunt, and the tool for it is the tracing overlay in
+`docker/cyclonedds-debug.xml` — layer it on (`CYCLONEDDS_URI="file://...-jetson.xml,file://...-debug.xml"`)
+and read the locators each side advertises in `outputs/cyclonedds-trace.log`. Also suspect a zombie
+container on the same `ROS_DOMAIN_ID`; a fresh domain is cheaper than a wrong metric.
 
 ## Benchmark sweep (Wedge A)
 

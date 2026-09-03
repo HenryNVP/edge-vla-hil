@@ -1,24 +1,58 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!--
-Cross-machine HiL (controller.launch.py on Jetson + host.launch.py on desktop) over a direct
-Ethernet link.
+CycloneDDS config for the cross-machine HiL run: controller.launch.py on the Jetson (10.10.10.1)
+plus host.launch.py on the desktop (10.10.10.2), over a direct Ethernet cable. Point each end at
+its own file with CYCLONEDDS_URI=file:///ws/docker/cyclonedds-jetson.xml (or ...-host.xml). See
+README "Cross-machine HiL over a direct link" for the static-IP setup this assumes.
 
-Root cause found by capture (`tcpdump -i eth0 port 17900`) + `netstat -s` on the Jetson: CycloneDDS's
-SPDP discovery payload is ~13.5KB (ROS2 nodes register a lot of parameter-service DDS endpoints),
-which is well over the ~1472-byte Ethernet MTU payload and so gets IP-fragmented into ~10 packets.
-`netstat -s` showed most fragment reassemblies failing (only ~12% succeeded) -- small single-packet
-tools (`ros2 multicast send/receive`, plain `nc`) never fragment and so never hit this, which is
-why they worked while real DDS discovery silently didn't. NIC offload (GRO/GSO/TSO) was a red
-herring, ruled out by disabling it on both ends with no change.
+Three things had to be pinned down; each one failed *silently*, with discovery simply never
+completing and no error on either side.
 
-Fix: cap CycloneDDS's own datagram size below the path MTU so it does its own reliable RTPS-level
-fragmentation (retried, reassembled within DDS) instead of relying on best-effort IP fragmentation.
-This is the standard fix for exactly this symptom on any lossy/unusual link.
+1. FragmentSize. CycloneDDS's SPDP discovery payload is ~13.5KB (ROS2 nodes register a lot of
+   parameter-service DDS endpoints), well over the ~1472-byte Ethernet MTU payload, so it gets
+   IP-fragmented into ~10 packets. "netstat -s" on the Jetson showed most fragment reassemblies
+   failing (only ~12% succeeded). Small single-packet tools ("ros2 multicast send/receive", plain
+   "nc") never fragment and so never hit this, which is why they worked while real DDS discovery
+   didn't. Capping the datagram below the path MTU makes CycloneDDS do its own reliable RTPS-level
+   fragmentation (retried and reassembled within DDS) instead of trusting best-effort IP
+   fragmentation. NIC offload (GRO/GSO/TSO) was a red herring, ruled out by disabling it on both
+   ends with no change.
+
+2. Interfaces. Both machines have several NICs (WiFi, docker0, tailscale0, and the direct link).
+   Left to itself CycloneDDS picks one by its own heuristic and advertises that address as the
+   participant's unicast locator. The desktop kept a leftover 169.254.x.x link-local address on
+   the Ethernet NIC (auto-assigned during an earlier failed DHCP attempt) and advertised that one;
+   the Jetson routes 169.254.0.0/16 out a down docker0, so every reply was black-holed. SPDP got
+   through on multicast and SEDP (endpoint discovery, unicast) never did, giving a graph where the
+   two sides see each other's participants but none of each other's topics. Pinning the interface
+   by address is what makes the advertised locator deterministic.
+
+3. Peers plus AllowMulticast. Multicast on this link needed a manual "ip route add 224.0.0.0/4 dev
+   IFACE" on both ends, because the default route (WiFi) otherwise wins for 239.0.0.0/8. With
+   exactly two known static peers there is no reason to depend on that: unicast SPDP to an
+   explicit peer list takes multicast out of the picture entirely. ParticipantIndex is part of the
+   same setting and not optional: it defaults to an ephemeral discovery port, which is unreachable
+   for a peer that only has an address to aim at, so with multicast off and no index the peer list
+   is useless and nothing discovers anything. "auto" gives each participant on a machine a
+   deterministic port derived from its index, and MaxAutoParticipantIndex is how many of those a
+   peer probes (one per node process, so 20 leaves room for the whole graph plus a stray shell).
 -->
 <CycloneDDS xmlns="https://cdds.io/config">
   <Domain>
     <General>
+      <Interfaces>
+        <NetworkInterface address="10.10.10.1"/>
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
       <FragmentSize>1344B</FragmentSize>
     </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>20</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="10.10.10.1"/>
+        <Peer address="10.10.10.2"/>
+      </Peers>
+    </Discovery>
   </Domain>
 </CycloneDDS>

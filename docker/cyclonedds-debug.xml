@@ -1,4 +1,14 @@
 <?xml version="1.0" encoding="UTF-8" ?>
+<!--
+Discovery-tracing overlay, for debugging a graph that will not connect. It carries no settings of
+its own: layer it on top of a side's real config by listing both, comma-separated, e.g.
+
+  CYCLONEDDS_URI="file:///ws/docker/cyclonedds-jetson.xml,file:///ws/docker/cyclonedds-debug.xml"
+
+The log names every locator the participant advertises and every one it talks to, which is how the
+link-local-address black hole described in cyclonedds-jetson.xml was found. It is verbose (~100KB
+per participant per minute), so use it for a single run, not for a benchmark sweep.
+-->
 <CycloneDDS xmlns="https://cdds.io/config">
   <Domain>
     <Tracing>

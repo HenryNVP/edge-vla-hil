@@ -1,9 +1,25 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<!-- Desktop-side counterpart of cyclonedds-jetson.xml -- see that file for why this exists. -->
+<!--
+Desktop-side counterpart of cyclonedds-jetson.xml, identical but for the pinned local interface
+address. See that file for why each setting is here; all three failure modes it describes are
+symmetric, so both ends need the same treatment.
+-->
 <CycloneDDS xmlns="https://cdds.io/config">
   <Domain>
     <General>
+      <Interfaces>
+        <NetworkInterface address="10.10.10.2"/>
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
       <FragmentSize>1344B</FragmentSize>
     </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>20</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="10.10.10.1"/>
+        <Peer address="10.10.10.2"/>
+      </Peers>
+    </Discovery>
   </Domain>
 </CycloneDDS>
