@@ -185,6 +185,23 @@ docker run -it --rm --network host --runtime nvidia \
 Both images use `rmw_cyclonedds_cpp` (the desktop image installs it explicitly — `osrf/ros` defaults
 to FastRTPS, and two different RMWs do not talk to each other). `--network host` is required.
 
+With both sides up, check the graph from a third shell on either machine rather than reading
+`ros2 node list` by eye — a half-formed graph starts cleanly, prints no error, and produces a CSV
+of plausible numbers with no policy in the loop:
+
+```bash
+docker run --rm --network host -v ~/edge-vla-hil:/ws \
+  -e ROS_DOMAIN_ID=42 -e CYCLONEDDS_URI=file:///ws/docker/cyclonedds-jetson.xml \
+  --entrypoint bash edge-vla-hil:jetson -lc \
+  'source /ros_source.sh && python3 /ws/scripts/check_hil_link.py'
+```
+
+It names every expected node per machine and whether the latched `/policy/absolute` crossed the
+link. Exit 0 is a full graph; exit 2 is the abs/delta cross-check firing (the graph formed and
+`evh_plant` then exited — a working link, a mismatched config); exit 1 is a real discovery
+failure. Note that when `evh_plant` aborts, `ros2 launch` tears down the rest of the desktop side
+with it, so a stale check run a minute later reports the whole machine missing.
+
 If the graph still does not connect, note that a node aborting at startup with `failed to initialize
 rcl node` is the *good* failure: it means the pinned address is missing on that machine, so fix the
 static IP. The silent failures are the ones to hunt, and the tool for it is the tracing overlay in
