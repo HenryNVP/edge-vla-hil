@@ -31,6 +31,9 @@ dependencies = [
     "torch>=2.2.1,<2.8.0",
     "lerobot==0.3.3",
     "opencv-python>=4.8",
+    # >=10.4: the apt python3-pil in the host image is 9.0.1, which HF datasets'
+    # image decoder (LeRobotDataset image features) trips over — PIL.Image.ExifTags.
+    "pillow>=10.4",
     "onnx>=1.15",
     "onnxruntime>=1.17",
     "pyyaml>=6.0",
@@ -135,6 +138,8 @@ known-first-party = [
     "evh_reactive",
     "evh_latency",
     "evh_bringup",
+    "robomimic_to_lerobot",   # scripts/ modules are ours too; tests import them by module name
+    "stamp_act_checkpoint",
 ]
 
 [tool.mypy]

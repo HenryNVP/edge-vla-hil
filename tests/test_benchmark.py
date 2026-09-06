@@ -262,3 +262,25 @@ def test_inference_drift_flags_a_machine_that_changed_mid_sweep(baseline, cell, 
     SM clock halved and inference went 262 -> 415 ms at only 48 C. The clean 50-cell run spread
     just 12 ms, so 25% is far above the noise and well below the failure."""
     assert (cell > baseline * (1.0 + threshold)) is warns
+
+
+@requires_ros2
+def test_auto_absolute_reads_an_act_checkpoints_stamp(tmp_path):
+    """`auto` must not guess from the backend name when the checkpoint says so itself: an
+    abs-action ACT checkpoint guessed as delta launches the plant in the wrong mode."""
+    from evh_bringup.benchmark import resolve_absolute
+
+    (tmp_path / 'evh_policy.json').write_text('{"absolute_actions": true}')
+    assert resolve_absolute('auto', 'act', str(tmp_path)) == 'true'
+    assert resolve_absolute('auto', 'act', '') == 'false'          # unstamped -> the old guess
+    assert resolve_absolute('false', 'act', str(tmp_path)) == 'false'   # explicit still wins
+
+
+@requires_ros2
+def test_auto_absolute_reads_an_onnx_sidecar(tmp_path):
+    from evh_bringup.benchmark import resolve_absolute
+
+    onnx = tmp_path / 'act_lift.onnx'
+    onnx.write_bytes(b'')
+    (tmp_path / 'act_lift.json').write_text('{"absolute_actions": true, "chunk_size": 16}')
+    assert resolve_absolute('auto', 'onnx', str(onnx)) == 'true'

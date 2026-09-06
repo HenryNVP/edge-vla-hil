@@ -18,12 +18,18 @@ import pytest
 
 from evh_controller.chunk_executor import RTCExecutor
 from evh_controller.chunk_executor.rtc import DELAY_BUFFER
-from evh_controller.dp_repo_policy import (
-    DiffusionPolicyRepoBackend,
-    _axisangle_to_matrix,
-    _matrix_to_axisangle,
-    _matrix_to_rotation_6d,
-    _rotation_6d_to_matrix,
+from evh_controller.dp_repo_policy import DiffusionPolicyRepoBackend
+from evh_controller.rotation import (
+    axisangle_to_matrix as _axisangle_to_matrix,
+)
+from evh_controller.rotation import (
+    matrix_to_axisangle as _matrix_to_axisangle,
+)
+from evh_controller.rotation import (
+    matrix_to_rotation_6d as _matrix_to_rotation_6d,
+)
+from evh_controller.rotation import (
+    rotation_6d_to_matrix as _rotation_6d_to_matrix,
 )
 
 ROTATIONS = [

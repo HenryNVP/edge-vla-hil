@@ -14,6 +14,9 @@ mujoco==2.3.7  # robosuite 1.4.x targets mujoco 2.3
 torch>=2.2.1,<2.8.0
 lerobot==0.3.3
 opencv-python>=4.8
+# >=10.4: apt python3-pil (9.0.1) predates PIL.Image.ExifTags, which HF datasets needs to
+# decode LeRobotDataset image features — pip installs into /usr/local, shadowing the apt one.
+pillow>=10.4
 onnx>=1.15
 onnxruntime>=1.17
 pyyaml>=6.0

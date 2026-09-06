@@ -18,6 +18,11 @@ COPY requirements-host.txt /ws/
 RUN pip install --no-cache-dir torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128 \
     && pip install --no-cache-dir -r requirements-host.txt
 
+# ACT training/inference pulls the ImageNet ResNet18 backbone at policy-construction time;
+# bake it so training runs and ACTBackend loads need no network (and no per-run 45 MB fetch).
+ENV TORCH_HOME=/opt/torch
+RUN python3 -c "import torchvision.models as m; m.resnet18(weights=m.ResNet18_Weights.IMAGENET1K_V1)"
+
 # diffusion_policy-repo checkpoint support (see evh_controller/dp_repo_policy.py):
 # deps + a baked clone of the repo; a mounted /ws/external copy is used if EVH_DP_REPO unset.
 COPY scripts/setup_dp_deps.sh /tmp/setup_dp_deps.sh

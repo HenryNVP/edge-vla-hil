@@ -22,8 +22,8 @@ executor out of the degenerate d >= H regime under real inference latency.
 Actions: the published robomimic image checkpoints are the ABS-ACTION variant — 10-dim
 [pos(3), rot_6d(6), gripper(1)] absolute EE pose targets, executed with OSC_POSE in
 control_delta=False mode. This backend converts to the project's 7-dim convention
-[pos(3), axis-angle(3), gripper] (porting their pytorch3d RotationTransformer inverse in
-numpy) and sets `absolute_actions=True` so the plant/reactive layer switch OSC to absolute.
+[pos(3), axis-angle(3), gripper] (the conversions live in `rotation.py`, shared with the ACT
+backend) and sets `absolute_actions=True` so the plant/reactive layer switch OSC to absolute.
 
 Inference speed: the checkpoint was trained with DDPM(100); `denoise_steps` < 100 swaps in a
 DDIM scheduler with the same noise schedule (the standard DP eval trick) so the Jetson/host can
@@ -38,6 +38,7 @@ import sys
 import numpy as np
 
 from evh_controller.policy import ChunkPolicy
+from evh_controller.rotation import abs7_to_abs10, abs10_to_abs7
 
 logger = logging.getLogger(__name__)
 
@@ -107,59 +108,6 @@ def _swap_to_ddim(policy, num_steps: int) -> None:
         steps_offset=0,
     )
     policy.num_inference_steps = int(num_steps)
-
-
-def _rotation_6d_to_matrix(d6: np.ndarray) -> np.ndarray:
-    """pytorch3d convention: d6 = first two ROWS of R; Gram-Schmidt the third."""
-    a1, a2 = d6[..., :3], d6[..., 3:6]
-    b1 = a1 / np.linalg.norm(a1, axis=-1, keepdims=True)
-    a2p = a2 - np.sum(b1 * a2, axis=-1, keepdims=True) * b1
-    b2 = a2p / np.linalg.norm(a2p, axis=-1, keepdims=True)
-    b3 = np.cross(b1, b2)
-    return np.stack([b1, b2, b3], axis=-2)
-
-
-def _matrix_to_axisangle(R: np.ndarray) -> np.ndarray:
-    """Rotation matrix -> axis-angle, robust near 0 and pi (via quaternion, xyzw)."""
-    R = np.asarray(R, dtype=np.float64)
-    tr = np.trace(R)
-    if tr > 0.0:
-        s = np.sqrt(tr + 1.0) * 2.0
-        q = np.array([(R[2, 1] - R[1, 2]) / s, (R[0, 2] - R[2, 0]) / s,
-                      (R[1, 0] - R[0, 1]) / s, 0.25 * s])
-    else:
-        i = int(np.argmax(np.diag(R)))
-        j, k = (i + 1) % 3, (i + 2) % 3
-        s = np.sqrt(max(1.0 + R[i, i] - R[j, j] - R[k, k], 0.0)) * 2.0
-        q = np.zeros(4)
-        q[i] = 0.25 * s
-        q[j] = (R[j, i] + R[i, j]) / s
-        q[k] = (R[k, i] + R[i, k]) / s
-        q[3] = (R[k, j] - R[j, k]) / s
-    if q[3] < 0.0:
-        q = -q
-    v = np.linalg.norm(q[:3])
-    if v < 1e-12:
-        return np.zeros(3)
-    return (q[:3] / v) * (2.0 * np.arctan2(v, q[3]))
-
-
-def _axisangle_to_matrix(v: np.ndarray) -> np.ndarray:
-    """Axis-angle (axis * angle) -> rotation matrix. Rodrigues; identity at zero rotation."""
-    v = np.asarray(v, dtype=np.float64)
-    theta = float(np.linalg.norm(v))
-    if theta < 1e-12:
-        return np.eye(3)
-    k = v / theta
-    K = np.array([[0.0, -k[2], k[1]],
-                  [k[2], 0.0, -k[0]],
-                  [-k[1], k[0], 0.0]])
-    return np.eye(3) + np.sin(theta) * K + (1.0 - np.cos(theta)) * (K @ K)
-
-
-def _matrix_to_rotation_6d(R: np.ndarray) -> np.ndarray:
-    """Rotation matrix -> pytorch3d 6D: the first two ROWS, matching _rotation_6d_to_matrix."""
-    return np.asarray(R, dtype=np.float64)[..., :2, :].reshape(*np.shape(R)[:-2], 6)
 
 
 class DiffusionPolicyRepoBackend(ChunkPolicy):
@@ -310,30 +258,6 @@ class DiffusionPolicyRepoBackend(ChunkPolicy):
         chunk = np.asarray(action_pred[start:], dtype=np.float32)
         return self._undo_abs_transform(chunk) if self.absolute_actions else chunk
 
-    @staticmethod
-    def _undo_abs_transform(chunk10: np.ndarray) -> np.ndarray:
-        """[H, 10] abs [pos, rot_6d, gripper] -> [H, 7] abs [pos, axis-angle, gripper]."""
-        out = np.empty((chunk10.shape[0], 7), dtype=np.float32)
-        out[:, :3] = chunk10[:, :3]
-        R = _rotation_6d_to_matrix(chunk10[:, 3:9].astype(np.float64))
-        for i in range(chunk10.shape[0]):
-            out[i, 3:6] = _matrix_to_axisangle(R[i])
-        out[:, 6] = chunk10[:, 9]
-        return out
+    _undo_abs_transform = staticmethod(abs10_to_abs7)
 
-    @staticmethod
-    def _redo_abs_transform(chunk7: np.ndarray) -> np.ndarray:
-        """[H, 7] abs [pos, axis-angle, gripper] -> [H, 10] abs [pos, rot_6d, gripper].
-
-        Inverse of _undo_abs_transform. Needed because guidance arrives in the 7-dim action
-        contract the rest of the graph speaks, but the diffusion trajectory lives in the
-        checkpoint's native 10-dim space — guiding in the wrong space would steer the sample
-        toward nonsense while looking perfectly well-formed.
-        """
-        chunk7 = np.asarray(chunk7, dtype=np.float64)
-        out = np.empty((chunk7.shape[0], 10), dtype=np.float32)
-        out[:, :3] = chunk7[:, :3]
-        for i in range(chunk7.shape[0]):
-            out[i, 3:9] = _matrix_to_rotation_6d(_axisangle_to_matrix(chunk7[i, 3:6]))
-        out[:, 9] = chunk7[:, 6]
-        return out
+    _redo_abs_transform = staticmethod(abs7_to_abs10)

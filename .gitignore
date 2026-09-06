@@ -8,6 +8,8 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv-local/
+.local/
 venv/
 .pytest_cache/
 .ruff_cache/

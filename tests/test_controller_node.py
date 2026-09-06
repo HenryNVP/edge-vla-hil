@@ -229,3 +229,17 @@ def test_proprio_callback_keeps_the_nine_dim_layout():
 
     assert stub.obs.proprio.shape == (9,)
     assert stub.obs.proprio.dtype == np.float32
+
+
+@requires_ros2
+def test_policy_absolute_parses_auto_and_the_forced_settings():
+    """`auto` means "ask the checkpoint"; the forced values are for deliberate mismatches."""
+    from evh_controller.controller_node import _parse_absolute
+
+    assert _parse_absolute('auto') is None
+    assert _parse_absolute('') is None
+    assert _parse_absolute('true') is True
+    assert _parse_absolute('False') is False
+    assert _parse_absolute('1') is True
+    with pytest.raises(ValueError):
+        _parse_absolute('maybe')

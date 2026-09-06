@@ -25,6 +25,11 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+_REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_REPO / 'ros2_ws' / 'src' / 'evh_controller'))
+
+from evh_controller.policy import POLICY_SIDECAR, sidecar_absolute  # noqa: E402
+
 
 def _import_act_policy():
     tried: list[str] = []
@@ -158,8 +163,16 @@ def main() -> None:
 
     image_key = list(policy.config.input_features.keys())[0]
     state_key = _state_key(policy)
+    # Carry the action convention across the export: the ONNX graph is 7-dim either way, so
+    # without this the Jetson backend cannot tell absolute targets from deltas (invariant 1).
+    absolute = sidecar_absolute(args.repo)
+    if absolute is None:
+        print(f'WARNING: {args.repo} carries no {POLICY_SIDECAR} — recording absolute_actions '
+              'false; stamp the checkpoint and re-export if it is an abs-action policy')
+        absolute = False
     meta = {
         'repo': args.repo,
+        'absolute_actions': bool(absolute),
         'image_key': image_key,
         'state_key': state_key,
         'image_shape': list(policy.config.input_features[image_key].shape),

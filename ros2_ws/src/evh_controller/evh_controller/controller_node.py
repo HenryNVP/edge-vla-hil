@@ -65,6 +65,23 @@ WAYPOINT_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
                           history=QoSHistoryPolicy.KEEP_LAST)
 
 
+def _parse_absolute(value: str) -> bool | None:
+    """`auto` lets the backend derive its action convention; true/false forces it.
+
+    The forced settings exist for deliberately mismatched runs (pair with the plant's
+    `strict_mode_check:=false`) and for checkpoints predating the mode stamp — not for routine
+    use, where guessing is exactly what invariant 1 is about.
+    """
+    text = str(value).strip().lower()
+    if text in ('', 'auto'):
+        return None
+    if text in ('true', '1', 'yes'):
+        return True
+    if text in ('false', '0', 'no'):
+        return False
+    raise ValueError(f"policy_absolute must be auto|true|false, got {value!r}")
+
+
 class ControllerNode(Node):
     def __init__(self, **kwargs) -> None:
         super().__init__('evh_controller', **kwargs)
@@ -75,14 +92,17 @@ class ControllerNode(Node):
         self.declare_parameter('control_hz', 20.0)   # action stream rate = policy training rate
         self.declare_parameter('denoise_steps', 16)  # dp backend: DDIM steps (0=ckpt default)
         self.declare_parameter('prompt', 'pick up the block')
+        self.declare_parameter('policy_absolute', 'auto')    # auto (from checkpoint) | true | false
 
         backend = self.get_parameter('backend').value
         weights = self.get_parameter('weights_path').value
         strategy = self.get_parameter('strategy').value
         self.control_hz = self.get_parameter('control_hz').value
         denoise_steps = int(self.get_parameter('denoise_steps').value)
+        absolute = _parse_absolute(self.get_parameter('policy_absolute').value)
 
-        self.policy = make_policy(backend, weights, denoise_steps=denoise_steps)
+        self.policy = make_policy(backend, weights, denoise_steps=denoise_steps,
+                                  absolute=absolute)
         self.worker = InferenceWorker(self.policy)
         self.chunk_executor = make_executor(strategy, self.worker, self.policy)
         self.get_logger().info(

@@ -19,6 +19,11 @@ for _pkg in ('evh_plant', 'evh_controller', 'evh_reactive', 'evh_latency', 'evh_
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
+# scripts/ holds one-off tooling, not packages, but the logic in it is testable the same way.
+_SCRIPTS = os.path.join(_REPO, 'scripts')
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
+
 
 def _ros2_available() -> bool:
     try:

@@ -24,6 +24,7 @@
     control_hz: 20.0        # action stream rate; keep equal to the policy's training rate
     denoise_steps: 16       # dp backend: DDIM steps (0 = checkpoint default DDPM-100)
     prompt: "pick up the block"
+    policy_absolute: "auto" # auto = read the checkpoint's stamp; true/false forces the convention
 
 /evh_reactive:
   ros__parameters:

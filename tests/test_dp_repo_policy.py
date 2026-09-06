@@ -6,10 +6,12 @@ axis-angle exactly like the repo's pytorch3d RotationTransformer, including near
 """
 import numpy as np
 
-from evh_controller.dp_repo_policy import (
-    DiffusionPolicyRepoBackend,
-    _matrix_to_axisangle,
-    _rotation_6d_to_matrix,
+from evh_controller.dp_repo_policy import DiffusionPolicyRepoBackend
+from evh_controller.rotation import (
+    matrix_to_axisangle as _matrix_to_axisangle,
+)
+from evh_controller.rotation import (
+    rotation_6d_to_matrix as _rotation_6d_to_matrix,
 )
 from evh_reactive.transforms import axisangle_to_quat
 

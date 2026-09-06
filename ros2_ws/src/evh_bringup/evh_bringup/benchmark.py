@@ -54,6 +54,8 @@ from rclpy.qos import (
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Float32
 
+from evh_controller.policy import stamped_absolute
+
 # --------------------------------------------------------------------- record
 # The command path, and the one topic that crosses the network in the split deployment. It is
 # BEST_EFFORT with a depth of 1 ON PURPOSE, and the three packages that touch it must agree or DDS
@@ -121,7 +123,10 @@ class Recorder(Node):
                  full rate. That distinction is invisible in success rate and in Hz, and it is
                  the leading candidate explanation for which strategies the reactive layer helps.
 
-        Millimetres because the numbers are otherwise 1e-4 and unreadable in a CSV.
+        Millimetres because the numbers are otherwise 1e-4 and unreadable in a CSV — which holds
+        only in ABSOLUTE mode, where a waypoint's first three numbers are a world-frame position.
+        In delta mode they are unitless OSC deltas, so both columns are still comparable across
+        cells but are not millimetres of anything; do not read them across the two modes.
         """
         if len(waypoints) < 3:
             return (float('nan'), float('nan'))
@@ -288,17 +293,21 @@ def wait_until_ready(timeout_s: float) -> float:
         rclpy.shutdown()
 
 
-def resolve_absolute(choice: str, backend: str) -> str:
+def resolve_absolute(choice: str, backend: str, weights: str = '') -> str:
     """Pick the launch's `absolute` value, as the lowercase string ros2 launch wants.
 
     The sweep must pass this EXPLICITLY. hil.launch.py defaults `absolute` to true (it is written
     for the abs-action DP checkpoint), so a sweep that leaves it alone while running the
     `pytorch` backend — whose policies emit deltas — silently produces a full CSV of garbage.
-    'auto' derives it from the backend; the plant cross-checks the result against the loaded
-    checkpoint and aborts on a mismatch, so a wrong guess here is loud rather than silent.
+    'auto' asks the checkpoint first (ACT/ONNX carry a stamp, see `stamped_absolute`) and only
+    falls back to guessing from the backend name; the plant cross-checks the result against the
+    loaded checkpoint and aborts on a mismatch, so a wrong guess here is loud rather than silent.
     """
     if choice != 'auto':
         return choice
+    stamped = stamped_absolute(backend, weights)
+    if stamped is not None:
+        return 'true' if stamped else 'false'
     return 'true' if backend == 'dp' else 'false'
 
 
@@ -316,7 +325,7 @@ def run_sweep(args) -> None:
     axis = args.sweep      # which knob --values walks; the others stay at their flags
     reactive_modes = (True, False) if args.reactive_modes == 'both' else (
         (True,) if args.reactive_modes == 'on' else (False,))
-    absolute = resolve_absolute(args.absolute, args.backend)
+    absolute = resolve_absolute(args.absolute, args.backend, args.weights)
 
     log_dir = args.log_dir or os.path.join(os.path.dirname(args.out) or '.', 'logs')
     os.makedirs(log_dir, exist_ok=True)
