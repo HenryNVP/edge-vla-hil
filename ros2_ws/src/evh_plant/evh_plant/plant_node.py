@@ -4,7 +4,9 @@ Responsibilities (HiL "Plant" side):
   * step the physics at a fixed control frequency (wall-clock throttled),
   * publish observations  -> /obs/image (sensor_msgs/Image), /obs/joint_state (JointState),
                              /obs/ee_pose (PoseStamped; the reactive layer's zero-delay anchor),
-  * apply incoming low-level actions <- /cmd/action (JointState) from the reactive layer,
+  * apply incoming low-level actions <- /cmd/action (JointState) from the reactive layer, and
+    fall back to a hold when that stream goes stale (deadline QoS) or was computed for the
+    episode that just ended (post-reset blanking),
   * manage episodes: on task success OR horizon timeout, publish the outcome on /eval/success
     (std_msgs/Bool, True/False — the recorder needs BOTH for an honest success rate), reset the
     env, and announce the boundary on /episode/reset so downstream nodes clear their state,
@@ -23,9 +25,16 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+from rclpy.qos import (
+    QoSDurabilityPolicy,
+    QoSHistoryPolicy,
+    QoSProfile,
+    QoSReliabilityPolicy,
+)
+from rclpy.qos_event import SubscriptionEventCallbacks
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Bool, Empty
 
@@ -37,6 +46,25 @@ from evh_plant.video import VideoRecorder
 # at startup, and the plant is usually already running by then.
 MODE_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
                       durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+
+# must match evh_reactive.reactive_node.ACTION_QOS, which carries the rationale: the DEADLINE is
+# how the plant learns the reactive layer has gone quiet instead of re-applying its last command
+# forever. Both sides must carry it — DDS never pairs a reader requesting a deadline with a writer
+# that does not offer one — so a drift here silences /cmd/action entirely rather than degrading it.
+ACTION_DEADLINE_S = 0.05
+ACTION_QOS = QoSProfile(depth=10, reliability=QoSReliabilityPolicy.RELIABLE,
+                        history=QoSHistoryPolicy.KEEP_LAST,
+                        deadline=Duration(seconds=ACTION_DEADLINE_S))
+
+# How long after an /episode/reset to ignore /cmd/action. The reactive layer stops commanding as
+# soon as it processes the reset, but it learns about it one DDS delivery plus up to one of its own
+# ticks late (~4 ms at the default 250 Hz), and anything it emits in that window was computed for
+# the episode that just ended — a target somewhere in the old scene, applied to a freshly reset arm
+# until the first real command of the new episode arrives an inference latency later.
+# 20 ms is ~5x that reaction time and well inside the time to a genuinely new command (a controller
+# tick, up to 50 ms, plus inference). Blanking is close to free: /cmd/action is a 250 Hz stream, so
+# discarding a legitimate command merely waits 4 ms for the next one.
+RESET_BLANKING_S = 0.02
 
 
 def _quat_to_axisangle(q: np.ndarray) -> np.ndarray:
@@ -134,14 +162,19 @@ class PlantNode(Node):
         self._cb_io = MutuallyExclusiveCallbackGroup()
 
         # --- subscribers ---
+        # the deadline event handler inherits this callback group, so it lands on _cb_io with the
+        # message callback rather than opening a third group these 2 threads cannot serve
         self.sub_action = self.create_subscription(
-            JointState, '/cmd/action', self._on_action, 10, callback_group=self._cb_io)
+            JointState, '/cmd/action', self._on_action, ACTION_QOS,
+            callback_group=self._cb_io,
+            event_callbacks=SubscriptionEventCallbacks(deadline=self._on_action_deadline))
         self.sub_policy_mode = self.create_subscription(
             Bool, '/policy/absolute', self._on_policy_mode, MODE_QOS, callback_group=self._cb_io)
 
         self._env = None
         self._obs: dict | None = None
         self._last_action: np.ndarray | None = None
+        self._accept_actions_after_ns = 0   # reset blanking window; see RESET_BLANKING_S
         self._action_dim = 7
         self._build_env()
 
@@ -183,8 +216,33 @@ class PlantNode(Node):
 
     # ------------------------------------------------------------- callbacks
     def _on_action(self, msg: JointState) -> None:
-        """Cache the latest low-level action from the reactive layer."""
+        """Cache the latest low-level action from the reactive layer.
+
+        Dropped inside the post-reset blanking window: the reactive layer cannot yet have seen the
+        /episode/reset, so what it is sending was computed for the episode that just ended. Arrival
+        time, not header.stamp — this needs no clock agreement between the two nodes.
+        """
+        if self.get_clock().now().nanoseconds < self._accept_actions_after_ns:
+            return
         self._last_action = np.asarray(msg.position, dtype=np.float32)
+
+    def _on_action_deadline(self, _event) -> None:
+        """No /cmd/action within ACTION_DEADLINE_S: the reactive layer is gone, so stop obeying it.
+
+        Dropping the cached command falls through to `_hold_action`, which is already the right
+        answer for "nothing is commanding us" in both modes. Without this the plant re-applies the
+        last action at action_hz forever — a freeze in absolute mode, but in delta mode a standing
+        velocity command that walks the arm off the table while the episode still closes as an
+        ordinary timeout.
+
+        DDS re-raises this every deadline period while the stream is silent, so the log is gated on
+        there being something to drop; the assignment itself is idempotent.
+        """
+        if self._last_action is not None:
+            self.get_logger().warn(
+                f'no /cmd/action for {ACTION_DEADLINE_S * 1e3:.0f}ms — holding position '
+                '(is evh_reactive alive?)')
+        self._last_action = None
 
     def _on_policy_mode(self, msg: Bool) -> None:
         """Cross-check the policy's action mode against ours — invariant: they MUST agree.
@@ -214,9 +272,12 @@ class PlantNode(Node):
 
     # ---------------------------------------------------------------- actions
     def _current_action(self) -> np.ndarray:
-        if self._last_action is None:
+        # read ONCE: this runs on the physics thread while _on_action_deadline may clear the
+        # cache from the io thread, so re-reading the attribute could return None mid-call
+        action = self._last_action
+        if action is None:
             return self._hold_action()
-        action = self._last_action.reshape(-1)
+        action = action.reshape(-1)
         if action.size < self._action_dim:
             action = np.pad(action, (0, self._action_dim - action.size))
         return action[:self._action_dim].astype(np.float32)
@@ -263,6 +324,10 @@ class PlantNode(Node):
         self._obs = self._env.reset()
         self._last_action = None   # don't carry the last command into the new episode
         self.pub_reset.publish(Empty())
+        # ...and don't let the reactive layer carry one in either, in the window before it has
+        # seen the reset we just published
+        self._accept_actions_after_ns = (
+            self.get_clock().now().nanoseconds + int(RESET_BLANKING_S * 1e9))
 
     # ----------------------------------------------------------- observations
     def _publish_observation(self) -> None:

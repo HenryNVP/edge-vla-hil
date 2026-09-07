@@ -163,3 +163,102 @@ def test_a_waypoint_actually_crosses_between_the_two_profiles(ros):
     assert got, 'publisher and subscriber QoS did not pair — no waypoint crossed'
     talker.destroy_node()
     listener.destroy_node()
+
+
+# ------------------------------------------------------- the /cmd/action deadline
+@requires_ros2
+def test_plant_and_reactive_agree_on_the_action_qos():
+    """Duplicated in both packages (they deploy to different machines), so only a test holds them
+    together — and a deadline drift is not a degradation, it is silence: DDS refuses to pair a
+    reader requesting a deadline with a writer that offers a longer one or none."""
+    from evh_plant.plant_node import ACTION_QOS as plant_qos
+    from evh_reactive.reactive_node import ACTION_QOS as reactive_qos
+
+    assert plant_qos.deadline == reactive_qos.deadline
+    assert plant_qos.reliability == reactive_qos.reliability
+    assert plant_qos.history == reactive_qos.history
+    assert plant_qos.depth == reactive_qos.depth
+
+
+@requires_ros2
+def test_the_action_deadline_is_actually_set_on_both_sides():
+    """The default deadline is infinite, which raises no event and pairs with anything — so a
+    profile that lost its deadline would leave the watchdog permanently quiet and look fine."""
+    from evh_plant.plant_node import ACTION_DEADLINE_S, ACTION_QOS
+
+    assert ACTION_QOS.deadline.nanoseconds == int(ACTION_DEADLINE_S * 1e9)
+    assert 0 < ACTION_QOS.deadline.nanoseconds < 10 ** 9
+
+
+@integration
+def test_the_recorder_still_pairs_with_the_deadline_publisher(ros):
+    """The benchmark recorder subscribes to /cmd/action with a plain depth-10 profile — no
+    deadline, i.e. an infinite requested one, which must stay compatible with the finite offer.
+    If it ever stops pairing, `loop_hz` reads 0.0 and looks like a starved condition."""
+    import time
+
+    import rclpy
+    from rclpy.executors import SingleThreadedExecutor
+    from sensor_msgs.msg import JointState
+
+    from evh_reactive.reactive_node import ACTION_QOS
+
+    talker = rclpy.create_node('action_talker')
+    listener = rclpy.create_node('action_listener')
+    got: list = []
+    pub = talker.create_publisher(JointState, '/cmd/action', ACTION_QOS)
+    listener.create_subscription(JointState, '/cmd/action', lambda _m: got.append(1), 10)
+
+    ex = SingleThreadedExecutor()
+    ex.add_node(talker)
+    ex.add_node(listener)
+    end = time.time() + 5.0
+    while time.time() < end and not got:
+        pub.publish(JointState(position=[0.1] * 7))
+        ex.spin_once(timeout_sec=0.05)
+
+    assert got, 'the recorder profile no longer pairs with the deadline-carrying publisher'
+    talker.destroy_node()
+    listener.destroy_node()
+
+
+@integration
+def test_a_silent_publisher_raises_the_deadline_on_the_subscriber(ros):
+    """The watchdog itself, over the wire. Everything above compares fields; this proves the
+    middleware actually delivers requested_deadline_missed, which is what clears the plant's
+    cached command. No rmw guarantees it by inspection."""
+    import time
+
+    import rclpy
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.qos_event import SubscriptionEventCallbacks
+    from sensor_msgs.msg import JointState
+
+    from evh_plant.plant_node import ACTION_DEADLINE_S, ACTION_QOS
+
+    talker = rclpy.create_node('deadline_talker')
+    listener = rclpy.create_node('deadline_listener')
+    missed: list = []
+    pub = talker.create_publisher(JointState, '/cmd/action', ACTION_QOS)
+    listener.create_subscription(
+        JointState, '/cmd/action', lambda _m: None, ACTION_QOS,
+        event_callbacks=SubscriptionEventCallbacks(deadline=lambda ev: missed.append(ev)))
+
+    ex = SingleThreadedExecutor()
+    ex.add_node(talker)
+    ex.add_node(listener)
+
+    # talk briefly so the pair is matched and the deadline clock is running...
+    end = time.time() + 1.0
+    while time.time() < end:
+        pub.publish(JointState(position=[0.1] * 7))
+        ex.spin_once(timeout_sec=0.005)
+
+    # ...then go silent, as a dead reactive layer would
+    end = time.time() + 10 * ACTION_DEADLINE_S
+    while time.time() < end and not missed:
+        ex.spin_once(timeout_sec=0.01)
+
+    assert missed, 'a silent /cmd/action publisher raised no deadline event — no watchdog'
+    talker.destroy_node()
+    listener.destroy_node()

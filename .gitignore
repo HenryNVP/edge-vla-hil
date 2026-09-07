@@ -40,3 +40,6 @@ results/*.png
 experiments/pusht_sanity/results/
 *.mp4
 external/
+
+# rendered on demand by docs/diagrams/render.sh; the SVGs are the committed form
+docs/diagrams/

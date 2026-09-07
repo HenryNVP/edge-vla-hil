@@ -25,22 +25,45 @@ import pytest
 from conftest import requires_ros2
 
 
+class FakeClock:
+    """A settable ROS clock: the blanking window is a comparison against it, not a sleep."""
+
+    def __init__(self, ns: int = 0) -> None:
+        self.ns = ns
+
+    def now(self):
+        return types.SimpleNamespace(nanoseconds=self.ns)
+
+
 def _stub_plant(**overrides):
     """A PlantNode-shaped stub carrying only what the method under test touches."""
     published: list[bool] = []
     resets: list[int] = []
+    warns: list[str] = []
+    clock = FakeClock()
     stub = types.SimpleNamespace(
         _action_dim=7,
         _last_action=None,
+        _accept_actions_after_ns=0,
         _obs={'robot0_eef_pos': np.zeros(3), 'robot0_eef_quat': np.array([0.0, 0.0, 0.0, 1.0])},
         absolute_actions=False,
         pub_success=types.SimpleNamespace(publish=lambda m: published.append(bool(m.data))),
         pub_reset=types.SimpleNamespace(publish=lambda _m: resets.append(1)),
+        get_clock=lambda: clock,
+        get_logger=lambda: types.SimpleNamespace(warn=warns.append),
+        clock=clock,
         published=published,
         resets=resets,
+        warns=warns,
     )
     stub.__dict__.update(overrides)
     return stub
+
+
+def _action_msg(position):
+    from sensor_msgs.msg import JointState
+
+    return JointState(position=[float(v) for v in position])
 
 
 class FakeEnv:
@@ -209,3 +232,104 @@ def test_quat_to_axisangle_matches_reactive_transforms():
     for aa in ([0.3, -0.1, 0.7], [np.pi / 2, 0.0, 0.0], [0.0, 2.5, 0.0]):
         q = axisangle_to_quat(np.asarray(aa))
         assert np.allclose(_quat_to_axisangle(q), quat_to_axisangle(q), atol=1e-9)
+
+
+# ------------------------------------------------------- the /cmd/action watchdog
+@requires_ros2
+def test_a_missed_action_deadline_drops_the_cached_command():
+    """The runaway guard. The plant re-applies its cached action at action_hz, so a reactive layer
+    that dies leaves a DELTA standing — robosuite's OSC re-derives goal = eef + delta*output_max
+    every step, i.e. a velocity command that walks the arm off the table while the episode still
+    closes as an ordinary timeout."""
+    from evh_plant.plant_node import PlantNode
+
+    stub = _stub_plant(_last_action=np.ones(7, np.float32))
+    PlantNode._on_action_deadline(stub, None)
+
+    assert stub._last_action is None
+    assert stub.warns, 'a dead reactive layer must be visible in the log, not just handled'
+
+
+@requires_ros2
+def test_a_missed_deadline_falls_through_to_the_hold_not_to_zeros():
+    """Dropping the cache is only safe because `_hold_action` is mode-aware: in absolute mode a
+    zero action is a world-origin target, which is a lurch, not a hold."""
+    from evh_plant.plant_node import PlantNode
+
+    stub = _stub_plant(absolute_actions=True,
+                       _last_action=np.ones(7, np.float32),
+                       _obs={'robot0_eef_pos': np.array([0.1, 0.2, 0.3]),
+                             'robot0_eef_quat': np.array([0.0, 0.0, 0.0, 1.0])})
+    PlantNode._on_action_deadline(stub, None)
+    stub._hold_action = lambda: PlantNode._hold_action(stub)
+
+    assert np.allclose(PlantNode._current_action(stub)[:3], [0.1, 0.2, 0.3])
+
+
+@requires_ros2
+def test_repeated_deadlines_log_once_per_silence():
+    """DDS re-raises the event every deadline period while the stream is quiet; the log is gated
+    on there being something to drop so a stalled run does not fill the log at 20 Hz."""
+    from evh_plant.plant_node import PlantNode
+
+    stub = _stub_plant(_last_action=np.ones(7, np.float32))
+    for _ in range(5):
+        PlantNode._on_action_deadline(stub, None)
+
+    assert len(stub.warns) == 1
+
+
+# ------------------------------------------------------- the post-reset blanking window
+@requires_ros2
+def test_reset_opens_the_blanking_window():
+    from evh_plant.plant_node import RESET_BLANKING_S, PlantNode
+
+    stub = _stub_plant(_env=FakeEnv())
+    stub.clock.ns = 1_000_000_000
+    PlantNode._reset_episode(stub)
+
+    assert stub._accept_actions_after_ns == 1_000_000_000 + int(RESET_BLANKING_S * 1e9)
+
+
+@requires_ros2
+def test_an_action_from_the_previous_episode_is_ignored():
+    """THE race: the reactive layer learns about /episode/reset one DDS delivery plus up to one of
+    its own ticks late, so it can emit once more from the old episode's target. That lands AFTER
+    `_reset_episode` cleared the cache, and the plant would then drive a freshly reset arm at the
+    old scene until the first real command arrives an inference latency later."""
+    from evh_plant.plant_node import PlantNode
+
+    stub = _stub_plant(_env=FakeEnv())
+    stub.clock.ns = 1_000_000_000
+    PlantNode._reset_episode(stub)
+
+    stub.clock.ns += 3_000_000            # 3 ms later: inside the window
+    PlantNode._on_action(stub, _action_msg(np.ones(7)))
+
+    assert stub._last_action is None, 'a pre-reset command reached the new episode'
+
+
+@requires_ros2
+def test_an_action_after_the_window_is_accepted():
+    """The window has to close, and close well before the first genuine command of the episode."""
+    from evh_plant.plant_node import RESET_BLANKING_S, PlantNode
+
+    stub = _stub_plant(_env=FakeEnv())
+    stub.clock.ns = 1_000_000_000
+    PlantNode._reset_episode(stub)
+
+    stub.clock.ns += int(RESET_BLANKING_S * 1e9) + 1
+    PlantNode._on_action(stub, _action_msg(np.arange(7)))
+
+    assert stub._last_action is not None
+    assert np.allclose(stub._last_action, np.arange(7))
+
+
+@requires_ros2
+def test_the_blanking_window_is_shorter_than_the_fastest_possible_command():
+    """It must cover the reactive layer's reaction to a reset (~4 ms at 250 Hz) without ever
+    swallowing a real one: the earliest a new command can exist is one inference (6.5 ms for the
+    ACT backend, the fastest measured) after a controller tick."""
+    from evh_plant.plant_node import RESET_BLANKING_S
+
+    assert 0.005 < RESET_BLANKING_S < 0.05

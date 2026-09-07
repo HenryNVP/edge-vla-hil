@@ -13,6 +13,10 @@ tracker from the parameters and moves messages in and out of it:
     /episode/reset --> tracker.reset()
     tick (rate_hz) --> tracker.step() --> /cmd/action
 
+`/cmd/action` carries a DEADLINE (see ACTION_QOS): the plant needs to tell "this layer is
+commanding a hold" from "this layer is gone", because it re-applies whatever it last received at
+action_hz until something replaces it.
+
 `absolute_waypoints` must match the plant's `absolute_actions`; every launch file feeds both the
 same argument, and the plant aborts if the loaded policy disagrees (invariant 1).
 """
@@ -21,6 +25,7 @@ from __future__ import annotations
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
+from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import (
     QoSHistoryPolicy,
@@ -53,6 +58,27 @@ from evh_reactive.transforms import quat_normalize
 WAYPOINT_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
                           history=QoSHistoryPolicy.KEEP_LAST)
 
+# /cmd/action is a CONTINUOUS stream, not an event: the plant re-applies whichever action it holds
+# at action_hz until another arrives, so a reactive layer that dies or stalls is invisible to it.
+# In DELTA mode that is not a freeze but a runaway — robosuite's OSC re-derives
+# goal = eef + delta * output_max every step, so a cached non-zero delta is a velocity command and
+# the arm drifts until it hits a limit, while the episode closes as an ordinary timeout.
+#
+# The DEADLINE is what makes the silence observable: DDS tells the plant when no message arrived
+# within it and the plant drops the stale command (see PlantNode._on_action_deadline). It is part
+# of the QoS CONTRACT, not a local setting — a subscriber requesting a deadline the publisher does
+# not offer is never paired at all, and /cmd/action would go quiet altogether — so it is duplicated
+# in evh_plant (the two deploy to different machines and neither may depend on the other) and
+# test_mode_crosscheck.py pins the agreement.
+#
+# 50 ms = one control period, ~12 reactive ticks at the default 250 Hz: far enough above ordinary
+# scheduling jitter never to fire spuriously, and short enough to cap a delta runaway at ten
+# physics steps instead of a whole episode.
+ACTION_DEADLINE_S = 0.05
+ACTION_QOS = QoSProfile(depth=10, reliability=QoSReliabilityPolicy.RELIABLE,
+                        history=QoSHistoryPolicy.KEEP_LAST,
+                        deadline=Duration(seconds=ACTION_DEADLINE_S))
+
 
 class ReactiveNode(Node):
     def __init__(self, **kwargs) -> None:
@@ -81,8 +107,14 @@ class ReactiveNode(Node):
             PoseStamped, '/obs/ee_pose', self._on_ee_pose, qos_profile_sensor_data)
         self.create_subscription(Empty, '/episode/reset', self._on_episode_reset, 10)
 
-        self.pub_action = self.create_publisher(JointState, '/cmd/action', 10)
+        self.pub_action = self.create_publisher(JointState, '/cmd/action', ACTION_QOS)
         self.create_timer(1.0 / self.rate_hz, self._tick)
+
+        if 1.0 / self.rate_hz > ACTION_DEADLINE_S:
+            self.get_logger().warn(
+                f'rate_hz={self.rate_hz} is slower than the /cmd/action deadline '
+                f'({ACTION_DEADLINE_S * 1e3:.0f}ms): the plant will read the gaps between ticks '
+                'as a dead reactive layer and hold')
 
         mode = 'PASSTHROUGH (baseline)' if self.passthrough else 'tracking'
         self.get_logger().info(

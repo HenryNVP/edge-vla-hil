@@ -53,13 +53,25 @@ the delayed waypoints using zero-delay local state.
 | `/obs/joint_state`   | `sensor_msgs/JointState`      | plant → (debug)        | sim rate   |
 | `/obs/ee_pose`       | `geometry_msgs/PoseStamped`   | plant → reactive (local, zero-delay) | sim rate |
 | `/cmd/waypoint`      | `sensor_msgs/JointState` — `position` = 7-dim action `[pos(3), axis-angle(3), gripper]`; absolute EE target with the DP policy (`absolute:=true`), OSC delta otherwise | controller → reactive | ~20 Hz |
-| `/cmd/action`        | `sensor_msgs/JointState`      | reactive → plant       | ~200-500 Hz|
+| `/cmd/action`        | `sensor_msgs/JointState` — carries a 50 ms **deadline QoS**: the plant re-applies the last action at `action_hz`, so it needs DDS to tell it when this layer has gone silent (it then holds instead) | reactive → plant       | ~200-500 Hz|
 | `/eval/success`      | `std_msgs/Bool` (True/False)  | plant → benchmark      | episode end|
 | `/episode/reset`     | `std_msgs/Empty`              | plant → controller, reactive | episode end|
 | `/metrics/inference_ms`, `/metrics/delay_steps` | `std_msgs/Float32` | controller → benchmark | per chunk |
 
 Topics are remapped through `evh_latency` (e.g. `/obs/image` → `/obs/image/delayed`) via launch
 arguments; nodes themselves are unaware of the injected delay.
+
+UML diagrams of all of this — deployment, the node graph with its QoS, per-package internals, and
+sequence diagrams for the control cycle, async chunk execution, the episode boundary and bringup —
+live in [`docs/diagrams/`](docs/diagrams/README.md).
+
+The plant only conditionally trusts `/cmd/action`, because it re-applies whichever action it holds
+until another arrives. It drops the cached command when the deadline above is missed, and ignores
+the stream for 20 ms after an `/episode/reset` (the reactive layer learns about a reset up to one
+of its own ticks late, and what it sends in that window was computed for the episode that just
+ended). Both fall through to a mode-aware hold. Killing `evh_reactive` mid-episode in delta mode
+moved the arm 189 mm in 4 s without the deadline and 8 mm with it — a cached delta is a *velocity*
+command, since OSC re-derives `goal = eef + delta * output_max` every step.
 
 ## Quick start (PC host, simulation only)
 
