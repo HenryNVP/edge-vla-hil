@@ -156,6 +156,46 @@ ONNX and run with `onnxruntime-gpu` (`backend:=onnx`, see `scripts/export_onnx.p
 `scripts/bench_onnx.py`) — not LeRobot's `act` backend directly, since that needs Python 3.10+ and
 the Jetson controller image is Python 3.8.
 
+### Diffusion Policy through ONNX (`backend:=dp_onnx`)
+
+DP can also take the ONNX path, which is worth doing before concluding that torch was the problem.
+It is not one graph: a prediction is an encoder pass plus `num_inference_steps` UNet passes with a
+DDIM update between them, so `scripts/export_dp_onnx.py` writes **two** graphs and leaves the loop
+in numpy (`evh_controller/dp_onnx_policy.py`). Unrolling the loop into a single graph would also
+break RTC, whose guidance is applied *between* denoising steps.
+
+```bash
+# host: export (needs torch + the diffusion_policy repo), verify against torch, then benchmark
+python scripts/export_dp_onnx.py --ckpt checkpoints/dp_lift_ph_image_cnn.ckpt \
+  --out outputs/dp_lift_onnx --steps 16 --check
+python scripts/bench_onnx.py outputs/dp_lift_onnx
+
+# Jetson: numpy + onnxruntime only, no torch
+ros2 launch evh_bringup controller.launch.py backend:=dp_onnx weights:=/ws/outputs/dp_lift_onnx
+```
+
+`--check` re-runs the whole sampler through ONNX Runtime against torch **from the same initial
+noise** and fails the export if they diverge; anything less proves nothing, because the sampler
+starts from `randn` and two correct implementations disagree completely on independent draws.
+Measured for the Lift checkpoint: encoder output exact, final action within 0.099% of full scale.
+
+What it buys, on an RTX 5060 at 16 DDIM steps. Both rows are `eval_dp_colocated.py --episodes 5
+--seed 0`, so it is the same harness, protocol and seed on both sides:
+
+| backend | success | per action (steady state) |
+|---|---|---|
+| `dp` (torch) | 5/5 | 252 ms |
+| `dp_onnx` | 5/5 | **210 ms** |
+
+Same behaviour (episode lengths within a few steps of each other), ~1.2x faster. Isolated,
+`bench_onnx.py` puts the split at encoder 2.8 ms + UNet 12.3 ms x 16 steps = 200 ms; the first
+call is ~4.9 s of ORT/CUDA warmup, so read the steady state, not the mean the eval prints.
+
+Still 4x over the 50 ms budget at `control_hz=20`, on a 5060, before any Orin Nano penalty. The
+UNet is 98% of it and scales linearly with `--steps`, so step count is the only lever with real
+leverage; ONNX alone does not make a 16-step diffusion policy a 20 Hz controller. The exported
+UNet is 1.0 GB fp32 (encoder 90 MB), which fits an 8 GB Orin but argues for fp16 first.
+
 ## Cross-machine HiL over a direct link
 
 The real split — plant on the desktop, controller on the Jetson — needs the two DDS participants to

@@ -267,3 +267,75 @@ def test_arrival_metrics_reported_once():
     assert len(seen) == 1              # exactly one arrival in this window
     compute_ms, delay_steps = seen[0]
     assert delay_steps == 2
+
+
+# ------------------------------------------------- the guided-resampling capability check
+class _Deterministic:
+    """A backend with no guided generation — ACT, ONNX-ACT and the PyTorch fallback all are."""
+    chunk_size = 16
+    action_dim = 7
+    n_obs_steps = 1
+    guided_resampling = False
+
+
+class _Generative(_Deterministic):
+    guided_resampling = True
+
+
+def test_rtc_on_a_deterministic_backend_is_flagged():
+    """THE silent one: the run completes and writes a full CSV row labelled `rtc`, but
+    predict_inpaint fell back to a post-hoc soft blend — which is what RTC exists to beat."""
+    from evh_controller.chunk_executor import RTCExecutor, guidance_warning
+
+    msg = guidance_warning(RTCExecutor, _Deterministic())
+
+    assert msg is not None
+    assert 'SOFT BLEND' in msg
+    assert 'rtc' in msg
+    assert 'dp_onnx' in msg, 'the warning should name a backend that would work'
+
+
+def test_bid_is_flagged_too():
+    from evh_controller.chunk_executor import BIDExecutor, guidance_warning
+
+    assert guidance_warning(BIDExecutor, _Deterministic()) is not None
+
+
+def test_network_aware_inherits_the_requirement_from_rtc():
+    """Wedge B is RTC with a different forecast; it needs the same guidance and must not slip
+    through by virtue of being a subclass."""
+    from evh_controller.chunk_executor import NetworkAwareExecutor, guidance_warning
+
+    assert guidance_warning(NetworkAwareExecutor, _Deterministic()) is not None
+
+
+def test_a_generative_backend_is_not_flagged():
+    from evh_controller.chunk_executor import RTCExecutor, guidance_warning
+
+    assert guidance_warning(RTCExecutor, _Generative()) is None
+
+
+@pytest.mark.parametrize('strategy', ['synchronous', 'naive_async', 'temporal_ensemble'])
+def test_strategies_that_do_not_resample_are_never_flagged(strategy):
+    """These splice actions they already have; a deterministic backend is a legitimate pairing
+    and warning about it would train people to ignore the warning."""
+    from evh_controller.chunk_executor import _REGISTRY, guidance_warning
+
+    assert guidance_warning(_REGISTRY[strategy], _Deterministic()) is None
+
+
+def test_the_diffusion_backends_declare_the_capability():
+    """The flag is only worth having if the backends that DO guide actually set it."""
+    from evh_controller.dp_onnx_policy import DiffusionONNXBackend
+    from evh_controller.dp_repo_policy import DiffusionPolicyRepoBackend
+
+    assert DiffusionPolicyRepoBackend.guided_resampling is True
+    assert DiffusionONNXBackend.guided_resampling is True
+
+
+def test_the_base_policy_does_not_claim_the_capability():
+    from evh_controller.policy import ACTBackend, ChunkPolicy, ONNXBackend
+
+    assert ChunkPolicy.guided_resampling is False
+    assert ACTBackend.guided_resampling is False
+    assert ONNXBackend.guided_resampling is False

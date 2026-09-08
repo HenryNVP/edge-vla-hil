@@ -104,6 +104,9 @@ class ChunkPolicy(ABC):
     n_obs_steps: int = 1            # history depth the controller must maintain
     needs_wrist: bool = False       # whether obs['wrist'] is required
     absolute_actions: bool = False  # actions are absolute EE pose targets, not deltas
+    # True only when predict_inpaint is REAL guided generation. The base implementation below is
+    # a post-hoc soft blend, which is not what RTC or BID measure — see make_executor's check.
+    guided_resampling: bool = False
 
     @abstractmethod
     def predict(self, obs: dict) -> np.ndarray:
@@ -113,9 +116,14 @@ class ChunkPolicy(ABC):
                         weights: np.ndarray) -> np.ndarray:
         """Guided generation with a soft-masked prefix (for RTC).
 
-        Default: plain predict then soft-blend the frozen prefix. A real diffusion backend
+        Default: plain predict then soft-blend the frozen prefix. A real diffusion/flow backend
         should instead inject `prefix`/`weights` into the denoising guidance (see RTCExecutor
-        and the RTC paper's W_i masking). Override per backend.
+        and the RTC paper's W_i masking). Override per backend, and set `guided_resampling`.
+
+        This fallback keeps a deterministic backend runnable under RTC, but the result is NOT
+        RTC: the model never saw the prefix, so the actions after the frozen region carry on
+        from a plan generated as if the arm were elsewhere — the discontinuity RTC exists to
+        remove. `make_executor` warns when a strategy that needs guidance gets a backend without.
         """
         chunk = self.predict(obs)
         if prefix is None or len(prefix) == 0:
@@ -182,7 +190,9 @@ def stamped_absolute(backend: str, weights_path: str) -> bool | None:
 
     Lets a caller that only orchestrates — the sweep driver picking `absolute:=` for a launch —
     ask the checkpoint the same question the backend will, instead of guessing from the backend
-    name. `dp` is absent on purpose: it derives its mode from the head width at load time.
+    name. `dp` is absent on purpose: it derives its mode from the head width at load time, and
+    loading it to ask would cost 278M parameters. `dp_onnx` IS here — the exporter already wrote
+    the answer into meta.json, so reading it is free.
     """
     backend = backend.lower()
     if backend in ('act', 'act_lerobot'):
@@ -196,6 +206,15 @@ def stamped_absolute(backend: str, weights_path: str) -> bool | None:
 
         meta_path = os.path.splitext(weights_path)[0] + '.json'
         if not weights_path or not os.path.isfile(meta_path):
+            return None
+        value = json.loads(open(meta_path).read()).get('absolute_actions')
+        return None if value is None else bool(value)
+    if backend in ('dp_onnx', 'diffusion_onnx'):
+        import json
+        import os
+
+        meta_path = os.path.join(weights_path or '', 'meta.json')
+        if not os.path.isfile(meta_path):
             return None
         value = json.loads(open(meta_path).read()).get('absolute_actions')
         return None if value is None else bool(value)
@@ -615,6 +634,10 @@ def make_policy(backend: str, weights_path: str, denoise_steps: int = 16,
         return ACTBackend(weights_path, absolute=absolute)
     if backend in ('onnx', 'act_onnx'):
         return ONNXBackend(weights_path, absolute=absolute)
+    if backend in ('dp_onnx', 'diffusion_onnx'):
+        from evh_controller.dp_onnx_policy import DiffusionONNXBackend
+        return DiffusionONNXBackend(weights_path, absolute=absolute,
+                                    denoise_steps=denoise_steps)
     if backend in ('tensorrt', 'trt'):
         return TensorRTBackend(weights_path)
     raise ValueError(f'unknown backend: {backend!r}')

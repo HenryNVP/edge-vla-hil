@@ -50,6 +50,7 @@ class RTCExecutor(ChunkExecutor):
     denoising is Step 4).
     """
     name = 'rtc'
+    needs_guided_resampling = True
 
     def __init__(self, worker, policy, exec_horizon_min: int = 1,
                  delay_buffer: int = DELAY_BUFFER) -> None:

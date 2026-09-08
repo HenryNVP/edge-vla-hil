@@ -114,6 +114,7 @@ class DiffusionPolicyRepoBackend(ChunkPolicy):
     """ChunkPolicy over a diffusion_policy-repo image checkpoint (dict obs, see module doc)."""
 
     needs_wrist = True
+    guided_resampling = True   # predict_inpaint steers inside the denoising loop
 
     def __init__(self, ckpt_path: str, device: str = 'cuda',
                  denoise_steps: int = 16) -> None:

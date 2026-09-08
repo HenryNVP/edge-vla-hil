@@ -31,6 +31,10 @@ class ChunkExecutor(ABC):
     """Base: owns the request/poll bookkeeping; subclasses own the splice policy."""
 
     name: str = 'base'
+    # True for strategies whose contribution IS the guided resample (RTC, BID). Paired with a
+    # policy whose `guided_resampling` is False they still run, but on the soft-blend fallback —
+    # which is the thing they are supposed to beat. make_executor warns; nothing else would.
+    needs_guided_resampling: bool = False
 
     def __init__(self, worker: InferenceWorker, policy: ChunkPolicy) -> None:
         self.worker = worker

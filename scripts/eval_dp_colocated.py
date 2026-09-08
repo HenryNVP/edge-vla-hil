@@ -12,6 +12,13 @@ Usage (inside the host container):
     MUJOCO_GL=egl python3 scripts/eval_dp_colocated.py --episodes 10
     # faster sampler (what the HiL loop will use):
     MUJOCO_GL=egl python3 scripts/eval_dp_colocated.py --episodes 10 --denoise-steps 16
+    # the Jetson's ONNX path, against the same env and protocol:
+    MUJOCO_GL=egl python3 scripts/eval_dp_colocated.py --backend dp_onnx \
+        --weights outputs/dp_lift_onnx --episodes 5
+
+`run_episode` only ever touches `policy.n_obs_steps` and `policy.predict()`, so any ChunkPolicy
+backend runs here — which is the point of `--backend`: it isolates "does this backend produce good
+actions" from every question about ROS, the network and the executor.
 """
 from __future__ import annotations
 
@@ -29,6 +36,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_REPO, 'ros2_ws', 'src', 'evh_controller'))
 
 from evh_controller.dp_repo_policy import DiffusionPolicyRepoBackend  # noqa: E402
+from evh_controller.policy import make_policy  # noqa: E402
 
 
 def make_controller_config():
@@ -134,6 +142,10 @@ def run_episode(env, policy, args, writer=None):
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--ckpt', default=os.path.join(_REPO, 'checkpoints', 'dp_lift_ph_image_cnn.ckpt'))
+    p.add_argument('--backend', default='dp',
+                   help='dp (torch checkpoint) | dp_onnx (export dir) | any make_policy backend')
+    p.add_argument('--weights', default='',
+                   help='path for --backend other than dp; defaults to --ckpt')
     p.add_argument('--env', default='Lift')
     p.add_argument('--episodes', type=int, default=10)
     p.add_argument('--horizon', type=int, default=400)
@@ -146,12 +158,21 @@ def main():
     p.add_argument('--video', default='', help='record the first episode (agentview mp4)')
     args = p.parse_args()
 
-    policy = DiffusionPolicyRepoBackend(
-        args.ckpt, device=args.device,
-        denoise_steps=args.denoise_steps if args.denoise_steps > 0 else None)
-    print(f'[eval] policy: chunk_size={policy.chunk_size} action_dim={policy.action_dim} '
-          f'n_obs_steps={policy.n_obs_steps} denoise={policy._policy.num_inference_steps} '
-          f'absolute_actions={policy.absolute_actions}')
+    weights = args.weights or args.ckpt
+    if args.backend in ('dp', 'diffusion_policy'):
+        # kept on the direct constructor so `--denoise-steps 0` still means "the checkpoint's own
+        # sampler (DDPM-100)", which make_policy's int default cannot express
+        policy = DiffusionPolicyRepoBackend(
+            weights, device=args.device,
+            denoise_steps=args.denoise_steps if args.denoise_steps > 0 else None)
+    else:
+        policy = make_policy(args.backend, weights,
+                             denoise_steps=args.denoise_steps or 16)
+    steps = getattr(getattr(policy, '_policy', None), 'num_inference_steps',
+                    policy.denoise_steps)
+    print(f'[eval] policy: backend={args.backend} chunk_size={policy.chunk_size} '
+          f'action_dim={policy.action_dim} n_obs_steps={policy.n_obs_steps} denoise={steps} '
+          f'absolute_actions={policy.absolute_actions} guided={policy.guided_resampling}')
 
     env = build_env(args, absolute_actions=policy.absolute_actions)
     np.random.seed(args.seed)

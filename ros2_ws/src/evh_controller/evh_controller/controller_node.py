@@ -108,7 +108,8 @@ class ControllerNode(Node):
         self.get_logger().info(
             f'evh_controller: backend={backend} strategy={strategy} ctrl={self.control_hz}Hz '
             f'chunk={self.policy.chunk_size} n_obs={self.policy.n_obs_steps} '
-            f'absolute={self.policy.absolute_actions}')
+            f'absolute={self.policy.absolute_actions} '
+            f'guided={self.policy.guided_resampling}')
 
         # latest observations (overwritten by callbacks) + per-tick history for the policy
         self.obs = ObsBuffer(self.policy.n_obs_steps, self.policy.needs_wrist)

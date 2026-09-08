@@ -19,6 +19,7 @@ class BIDExecutor(NaiveAsyncExecutor):
     per-chunk cadence; the ctor reserves the BID knobs so launch files don't change later.
     """
     name = 'bid'
+    needs_guided_resampling = True
 
     def __init__(self, worker, policy, num_samples: int = 32, keep: int = 3,
                  replan_every: int = 8) -> None:

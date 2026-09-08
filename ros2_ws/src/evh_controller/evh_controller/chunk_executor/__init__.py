@@ -19,6 +19,8 @@ Import path is unchanged from when this was a single module:
 """
 from __future__ import annotations
 
+import logging
+
 from evh_controller.chunk_executor.base import ChunkExecutor
 from evh_controller.chunk_executor.baselines import (
     NaiveAsyncExecutor,
@@ -30,6 +32,8 @@ from evh_controller.chunk_executor.rtc import NetworkAwareExecutor, RTCExecutor
 from evh_controller.inference_worker import InferenceWorker
 from evh_controller.policy import ChunkPolicy
 
+logger = logging.getLogger(__name__)
+
 _REGISTRY = {
     cls.name: cls for cls in (
         SynchronousExecutor, NaiveAsyncExecutor, TemporalEnsembleExecutor,
@@ -38,11 +42,36 @@ _REGISTRY = {
 }
 
 
+def guidance_warning(strategy_cls, policy: ChunkPolicy) -> str | None:
+    """Warn when a strategy's whole mechanism is unavailable on this backend, else None.
+
+    RTC and BID are defined by the guided resample. On a deterministic backend (ACT, ONNX-ACT,
+    the PyTorch fallback) `predict_inpaint` degrades to a post-hoc soft blend, and the run then
+    produces a full, plausible-looking CSV row under a label claiming RTC. Nothing else in the
+    graph notices; this is the one place both capabilities meet.
+
+    Split out of make_executor so the wording is testable without constructing a worker.
+    """
+    if not getattr(strategy_cls, 'needs_guided_resampling', False):
+        return None
+    if getattr(policy, 'guided_resampling', False):
+        return None
+    return (f'strategy {strategy_cls.name!r} needs guided resampling, but the '
+            f'{type(policy).__name__} backend does not implement it — predict_inpaint will fall '
+            f'back to a post-hoc SOFT BLEND. The run will complete and the numbers will look '
+            f'reasonable, but they are not {strategy_cls.name}. Use a diffusion/flow backend '
+            f'(dp, dp_onnx) for this strategy, or report the row as soft-blend.')
+
+
 def make_executor(strategy: str, worker: InferenceWorker, policy: ChunkPolicy) -> ChunkExecutor:
     key = strategy.lower()
     if key not in _REGISTRY:
         raise ValueError(f'unknown strategy {strategy!r}; options: {sorted(_REGISTRY)}')
-    return _REGISTRY[key](worker, policy)
+    cls = _REGISTRY[key]
+    problem = guidance_warning(cls, policy)
+    if problem is not None:
+        logger.warning(problem)
+    return cls(worker, policy)
 
 
 __all__ = [
@@ -53,5 +82,6 @@ __all__ = [
     'RTCExecutor',
     'SynchronousExecutor',
     'TemporalEnsembleExecutor',
+    'guidance_warning',
     'make_executor',
 ]
