@@ -2,13 +2,25 @@
 
 **Benchmarking latency-robust action chunking over a real edge-network boundary.**
 
-A Hardware-in-the-Loop (HiL) testbed that physically decouples a robosuite/MuJoCo physics
-simulation (Plant, x86 host) from a small diffusion/flow policy inference engine (Controller,
-NVIDIA Jetson Orin Nano) across a real ROS2 / Gigabit Ethernet boundary. We reproduce SOTA
+A testbed that runs the policy on the deployment hardware and puts a real network inside the
+control loop: a robosuite/MuJoCo physics simulation (Plant, x86 host) is decoupled from a small
+diffusion/flow policy inference engine (Controller, NVIDIA Jetson Orin Nano) across a real ROS2 /
+Gigabit Ethernet boundary. We reproduce SOTA
 latency-robust chunk-execution strategies (synchronous, naive-async, Temporal Ensembling, BID,
 **RTC**) and measure how each holds up under *physically-injected* latency, jitter, and packet
 loss — the stochastic regime that inference-time methods like RTC explicitly do not model — then
 show a high-rate local reactive layer recovers task success they lose. See `proposal.md`.
+
+**What is real here, and what is not.** The controller is real target hardware running the real
+deployment artifact, and the observation/action path crosses a real wire. In the usual V-model
+taxonomy that is **processor-in-the-loop**, plus network-in-the-loop — not hardware-in-the-loop,
+which would need the *plant* to be a physical robot or a real-time plant emulator rather than
+MuJoCo in Python. `HiL` stays in the project name; the claim made in the results is the narrower,
+checkable one. The loop is likewise soft real-time by construction: `_step_physics` advances the
+simulator once per ROS wall-clock timer fire, with no catch-up and no deadline accounting, so
+simulated time is *defined* by when the timer happens to fire. That is only acceptable because the
+timing floor is small next to the effect under study — see [Timing floor](#timing-floor), where it
+is measured rather than assumed.
 
 ## Repository layout
 
@@ -237,12 +249,61 @@ docker run -it --rm --network host --runtime nvidia \
 Both images use `rmw_cyclonedds_cpp` (the desktop image installs it explicitly — `osrf/ros` defaults
 to FastRTPS, and two different RMWs do not talk to each other). `--network host` is required.
 
+With both sides up, check the graph from a third shell on either machine rather than reading
+`ros2 node list` by eye — a half-formed graph starts cleanly, prints no error, and produces a CSV
+of plausible numbers with no policy in the loop:
+
+```bash
+docker run --rm --network host -v ~/edge-vla-hil:/ws \
+  -e ROS_DOMAIN_ID=42 -e CYCLONEDDS_URI=file:///ws/docker/cyclonedds-jetson.xml \
+  --entrypoint bash edge-vla-hil:jetson -lc \
+  'source /ros_source.sh && python3 /ws/scripts/check_hil_link.py'
+```
+
+It names every expected node per machine and whether the latched `/policy/absolute` crossed the
+link. Exit 0 is a full graph; exit 2 is the abs/delta cross-check firing (the graph formed and
+`evh_plant` then exited — a working link, a mismatched config); exit 1 is a real discovery
+failure. Note that when `evh_plant` aborts, `ros2 launch` tears down the rest of the desktop side
+with it, so a stale check run a minute later reports the whole machine missing.
+
 If the graph still does not connect, note that a node aborting at startup with `failed to initialize
 rcl node` is the *good* failure: it means the pinned address is missing on that machine, so fix the
 static IP. The silent failures are the ones to hunt, and the tool for it is the tracing overlay in
 `docker/cyclonedds-debug.xml` — layer it on (`CYCLONEDDS_URI="file://...-jetson.xml,file://...-debug.xml"`)
 and read the locators each side advertises in `outputs/cyclonedds-trace.log`. Also suspect a zombie
 container on the same `ROS_DOMAIN_ID`; a fresh domain is cheaper than a wrong metric.
+
+## Timing floor
+
+The headline curves are success rate vs *injected* latency, so the testbed's own jitter has to be
+small next to the smallest condition being resolved. Measured on the live cross-machine loop —
+60 s window, observer on the Jetson, `latency_ms:=0`, ONNX ACT controller at `control_hz=20`:
+
+| topic (publisher) | nominal | p50 | p99 | jitter @ p99 | skipped periods |
+|---|---|---|---|---|---|
+| `/obs/proprio` (plant, desktop) | 50.0 ms | 50.00 | 50.31 | +0.31 ms | 0.42% |
+| `/cmd/action` (reactive, desktop) | 4.0 ms | 4.00 | 4.15 | +0.15 ms | 0.03% |
+| `/cmd/waypoint` (controller, Jetson) | 50.0 ms | 50.00 | 50.34 | +0.34 ms | 1.27% |
+
+Relay cost at `latency_ms=0` is **p50 0.97 ms, p99 1.23 ms, max 1.90 ms** — the floor sitting under
+every value the sweep injects on top.
+
+So timer jitter is sub-millisecond at p99, on the order of 1% of the smallest 25 ms sweep step: the
+injected-latency axis is safe. **The skipped periods are the number to watch, and they are not
+noise.** `/cmd/waypoint` is published and observed on the same machine, so its 1.27% is a real
+missed deadline inside the controller rather than wire loss — in-loop inference measures 50–68 ms
+against a 50 ms tick budget at `control_hz=20`, so roughly one tick in eighty has nothing new to
+send. Harmless while a chunk covers 100 steps; it would dominate at a short chunk, and it is the
+first thing to re-measure after changing the policy or the chunk length. The desktop-published rows
+are observed across the wire, so their skip rates are an upper bound that includes best-effort
+loss; run the script on the desktop to separate the two.
+
+```bash
+docker run --rm --network host -v ~/edge-vla-hil:/ws \
+  -e ROS_DOMAIN_ID=42 -e CYCLONEDDS_URI=file:///ws/docker/cyclonedds-jetson.xml \
+  --entrypoint bash edge-vla-hil:jetson -lc \
+  'source /ros_source.sh && python3 /ws/scripts/measure_timing_floor.py --seconds 60'
+```
 
 ## ACT training data (robomimic -> LeRobot)
 

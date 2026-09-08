@@ -1,7 +1,8 @@
 # EdgeVLA-HiL: Benchmarking Latency-Robust Action Chunking over a Real Edge-Network Boundary
 
 GitHub Repository Name: edge-vla-hil
-Project Name: EdgeVLA-HiL (Edge Vision-Language-Action Hardware-in-the-Loop)
+Project Name: EdgeVLA-HiL (Edge Vision-Language-Action Hardware-in-the-Loop) — see §1 for
+what is literally hardware in this loop and what is not.
 
 ## 1. Executive Summary
 
@@ -13,10 +14,10 @@ communication channel**: RTC, for example, explicitly states it does not model s
 delays, stochastic jitter, packet loss, or out-of-order delivery. Real edge deployments — a policy
 on a Jetson talking to a robot over a network — violate every one of those assumptions.
 
-This project builds a **Hardware-in-the-Loop (HiL)** testbed that physically decouples the physics
-simulation (Plant, x86 host) from the policy inference engine (Controller, NVIDIA Jetson Orin
-Nano) across a real ROS2 / Ethernet boundary, with a programmable harness that injects
-**latency, jitter, packet loss, and reordering** at the DDS layer. On this testbed we deliver:
+This project builds a testbed that physically decouples the physics simulation (Plant, x86 host)
+from the policy inference engine (Controller, NVIDIA Jetson Orin Nano) across a real ROS2 /
+Ethernet boundary, with a programmable harness that injects **latency, jitter, packet loss, and
+reordering** at the DDS layer. On this testbed we deliver:
 
 1. **The first edge-network benchmark** of SOTA latency-robust chunking strategies
    (synchronous, naive-async, Temporal Ensembling, BID, **RTC**) under *physically realistic*
@@ -28,6 +29,26 @@ Nano) across a real ROS2 / Ethernet boundary, with a programmable harness that i
 The contribution is a systems + empirical one, and it positions RTC/BID as **baselines we
 reproduce and characterize**, not competitors. (A natural algorithmic extension — *network-aware
 chunking* — is scoped as follow-on work in Section 7.)
+
+**Scope of the "hardware in the loop" claim.** What is physically real is the *controller* and the
+*channel*: the policy runs on the deployment target, compiled the way it would ship, and its
+observations and actions cross a real wire with a real DDS stack under it. The plant is simulated
+— MuJoCo in Python, not a physical robot and not a real-time plant emulator — which in the V-model
+taxonomy makes this **processor-in-the-loop plus network-in-the-loop** rather than HiL proper. We
+keep `EdgeVLA-HiL` as a name and make the narrower claim in the results, because the narrower
+claim is the one that carries the contribution: the failure modes under study (stochastic delay,
+jitter, loss, reorder) live in the channel and the controller, both of which are real here, and
+none of them are made more faithful by a physical plant.
+
+The loop is also soft real-time by construction: the simulator advances one step per ROS
+wall-clock timer fire, with no catch-up and no deadline accounting, so simulated time is defined by
+when that timer happens to fire. This is sound only if the testbed's own jitter is small next to
+the injected latencies it is used to measure, so we characterize it rather than assert it —
+measured p99 timer jitter is sub-millisecond (+0.15 to +0.34 ms across the 20 Hz and 250 Hz loops)
+against a smallest sweep step of 25 ms, with a ~1 ms relay floor under every injected value. The
+one timing effect that is *not* negligible is the controller's own missed deadlines when inference
+overruns a control tick, which is a property of the system under test rather than of the testbed,
+and is reported as such.
 
 ## 2. Motivation & Relevance
 
@@ -43,7 +64,7 @@ This project targets that gap directly:
 
 - **Edge AI deployment:** compile and run a small diffusion/flow policy natively on a Jetson Orin
   Nano (ONNX → TensorRT) and report the honest achievable inference rate.
-- **HiL validation:** reproduce latency-robust chunking strategies and measure where each breaks
+- **Testbed validation:** reproduce latency-robust chunking strategies and measure where each breaks
   under injected jitter/loss/reorder — reproducibly, with a seeded harness.
 - **Async hierarchical control:** show a fast local reactive layer recovers performance the
   cognitive loop loses, and complements RTC-style execution.
