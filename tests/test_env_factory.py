@@ -39,7 +39,7 @@ def test_set_control_delta_tolerates_a_config_it_does_not_recognise():
 def test_horizon_is_episode_seconds_in_action_steps():
     """robosuite counts the horizon in control steps, and hitting it is a recorded timeout —
     an off-by-a-factor here silently changes every episode length in the sweep."""
-    assert EnvSpec(max_episode_s=20.0, action_hz=200.0).horizon == 4000
+    assert EnvSpec(max_episode_s=20.0, action_hz=250.0).horizon == 5000
     assert EnvSpec(max_episode_s=2.5, action_hz=20.0).horizon == 50
 
 
@@ -48,3 +48,24 @@ def test_spec_defaults_match_the_dp_lift_checkpoint():
     assert spec.image_size == 84, 'DP checkpoints are trained at 84x84'
     assert spec.absolute_actions is True
     assert spec.cameras[0] == 'agentview'
+
+
+# ------------------------------------------------------------------- timebase
+@pytest.mark.parametrize('hz,substeps', [(250.0, 2), (100.0, 5), (20.0, 25), (500.0, 1)])
+def test_rates_that_divide_the_timestep_are_accepted(hz, substeps):
+    from evh_plant.env_factory import check_timebase
+    assert check_timebase(hz, 0.002) == substeps
+
+
+@pytest.mark.parametrize('hz', [200.0, 300.0, 1000.0])
+def test_a_rate_that_would_drop_part_of_a_substep_is_refused(hz):
+    """200 Hz asked robosuite for 2.5 substeps and got 2: simulated time ran at 80% of wall
+    time and the policy acted every 40 ms of sim time instead of 50."""
+    from evh_plant.env_factory import TimebaseError, check_timebase
+    with pytest.raises(TimebaseError, match='simulated time would drift'):
+        check_timebase(hz, 0.002)
+
+
+def test_the_default_plant_rate_is_exact():
+    from evh_plant.env_factory import EnvSpec, check_timebase
+    assert check_timebase(EnvSpec().action_hz, 0.002) == 2

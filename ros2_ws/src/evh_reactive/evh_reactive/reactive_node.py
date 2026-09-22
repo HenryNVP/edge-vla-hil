@@ -95,7 +95,7 @@ class ReactiveNode(Node):
         self.declare_parameter('pos_scale', 0.05)        # m per unit action (OSC output_max)
         self.declare_parameter('rot_scale', 0.5)         # rad per unit action
         self.declare_parameter('passthrough', False)     # True -> monolithic baseline
-        self.declare_parameter('passthrough_scale', 0.1)  # ~ controller_hz / plant action_hz
+        self.declare_parameter('passthrough_scale', 0.08)  # controller_hz / plant action_hz
         self.declare_parameter('absolute_waypoints', True)  # abs-action policy (see tracking.py)
         self.declare_parameter('max_step_pos', 0.004)    # m per tick toward the target (abs)
         self.declare_parameter('max_step_rot', 0.02)     # rad per tick toward the target (abs)

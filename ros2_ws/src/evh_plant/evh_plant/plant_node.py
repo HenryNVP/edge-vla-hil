@@ -17,7 +17,9 @@ evh_latency via topic remapping. If robosuite is unavailable it degrades to synt
 observations (no physics, no episodes) so the graph and tests still run.
 
 Sibling modules hold what is not HiL logic: `env_factory` (robosuite construction and its
-version quirks), `messages` (the observation contract and ROS packing), `video` (mp4 recording).
+version quirks), `messages` (the observation contract and ROS packing), `video` (mp4 recording),
+`sim_thread` (the ONE thread allowed to touch the env: robosuite renders inside env.step through a
+thread-bound EGL context, and stepping from executor threads fed the policy corrupted frames).
 """
 from __future__ import annotations
 
@@ -40,6 +42,7 @@ from std_msgs.msg import Bool, Empty
 
 from evh_plant.env_factory import EnvSpec, build_env, eef_to_control_quat
 from evh_plant.messages import PlantObservation
+from evh_plant.sim_thread import SimThread
 from evh_plant.video import VideoRecorder
 
 # must match the controller's publisher QoS (latched) — the controller announces its mode once,
@@ -111,7 +114,7 @@ class PlantNode(Node):
         self.declare_parameter('env_name', 'Lift')          # robosuite task
         self.declare_parameter('robot', 'Panda')
         self.declare_parameter('control_hz', 20.0)          # observation publish rate
-        self.declare_parameter('action_hz', 200.0)          # physics / action apply rate
+        self.declare_parameter('action_hz', 250.0)  # physics rate; must divide the 2 ms timestep
         # comma-separated; first camera -> /obs/image, second (if any) -> /obs/image_wrist
         self.declare_parameter('camera', 'agentview,robot0_eye_in_hand')
         self.declare_parameter('image_size', 84)       # DP checkpoints are trained at 84x84
@@ -150,15 +153,13 @@ class PlantNode(Node):
         self.pub_success = self.create_publisher(Bool, '/eval/success', 10)
         self.pub_reset = self.create_publisher(Empty, '/episode/reset', 10)
 
-        # separate callback groups: with a MultiThreadedExecutor(num_threads=2) the high-rate
-        # physics timer can never starve the obs publisher (observed under load with a single
-        # thread). _publish_observation only reads self._obs (replaced atomically) — no env calls.
-        # /cmd/action and /policy/absolute land on _cb_io too, not the implicit default group --
-        # a third group would compete with these two for only 2 threads, and with both timers
-        # continuously busy it can starve indefinitely: found via a real cross-machine run where
-        # /policy/absolute was confirmed received (`ros2 topic echo`/`topic info`) but
-        # _on_policy_mode never ran.
-        self._cb_physics = MutuallyExclusiveCallbackGroup()
+        # Physics does not run on the executor at all: it has its own thread (SimThread, below),
+        # because the env may only be touched from the thread that built it. Everything ROS-side
+        # shares one callback group; _publish_observation only reads self._obs (replaced
+        # atomically) — no env calls. /cmd/action and /policy/absolute land on _cb_io too, not the
+        # implicit default group: a second group competing for the executor's threads once
+        # starved _on_policy_mode indefinitely (a real cross-machine run where /policy/absolute
+        # was confirmed received but never handled).
         self._cb_io = MutuallyExclusiveCallbackGroup()
 
         # --- subscribers ---
@@ -176,12 +177,15 @@ class PlantNode(Node):
         self._last_action: np.ndarray | None = None
         self._accept_actions_after_ns = 0   # reset blanking window; see RESET_BLANKING_S
         self._action_dim = 7
-        self._build_env()
+        self._sim = SimThread(build=self._build_env, step=self._step_physics,
+                              close=self._close_env, period_s=1.0 / self.action_hz).start()
+        # the env exists (or has definitively failed) before the node reports itself up
+        self._sim.ready.wait(timeout=120.0)
+        if self._sim.error is not None:
+            raise self._sim.error
 
         self.create_timer(1.0 / self.control_hz, self._publish_observation,
                           callback_group=self._cb_io)
-        self.create_timer(1.0 / self.action_hz, self._step_physics,
-                          callback_group=self._cb_physics)
 
         self.get_logger().info(
             f'evh_plant up: env={self.get_parameter("env_name").value} '
@@ -358,11 +362,19 @@ class PlantNode(Node):
         self.pub_proprio.publish(obs.proprio_msg(now))
         self.pub_ee_pose.publish(obs.ee_pose_msg(now))
 
-    def destroy_node(self) -> None:
-        self.recorder.close()
+    def _close_env(self) -> None:
+        """Runs on the sim thread, like every other env call."""
         if self._env is not None:
             self._env.close()
             self._env = None
+
+    def destroy_node(self) -> None:
+        self._sim.stop()          # closes the env on its own thread
+        if self._sim.overruns:
+            self.get_logger().info(
+                f'evh_plant: {self._sim.overruns} of {self._sim.steps} physics steps overran '
+                f'{1e3 / self.action_hz:.1f} ms')
+        self.recorder.close()
         super().destroy_node()
 
 

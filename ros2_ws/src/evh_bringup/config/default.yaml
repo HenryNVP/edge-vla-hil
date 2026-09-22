@@ -6,7 +6,7 @@
     env_name: "Lift"        # robosuite task (single task, fully characterized)
     robot: "Panda"
     control_hz: 20.0        # observation publish rate (cognitive-relevant)
-    action_hz: 200.0        # physics / action apply rate
+    action_hz: 250.0        # physics / action apply rate; must divide MuJoCo's 2 ms timestep
     camera: "agentview,robot0_eye_in_hand"  # first -> /obs/image, second -> /obs/image_wrist
     image_size: 84          # DP checkpoints are trained at 84x84
     seed: 0
@@ -47,7 +47,7 @@
     pos_scale: 0.05         # delta mode: m per unit action — sync with plant OSC output_max
     rot_scale: 0.5          # delta mode: rad per unit action
     passthrough: false      # true -> monolithic baseline (no reactive layer)
-    passthrough_scale: 0.1  # delta mode: ~ controller_hz / plant action_hz
+    passthrough_scale: 0.08 # delta mode: controller_hz / plant action_hz (20 / 250)
 
 # Latency relays are parameterized per-instance in the launch files; these are the sweep defaults.
 /latency_defaults:

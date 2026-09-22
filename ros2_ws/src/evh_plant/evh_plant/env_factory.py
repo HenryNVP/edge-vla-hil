@@ -45,7 +45,7 @@ class EnvSpec:
     robot: str = 'Panda'
     cameras: tuple[str, ...] = ('agentview', 'robot0_eye_in_hand')
     image_size: int = 84            # DP checkpoints are trained at 84x84
-    action_hz: float = 200.0
+    action_hz: float = 250.0         # must divide the physics timestep evenly: check_timebase
     max_episode_s: float = 20.0     # horizon; hitting it = timeout = recorded failure
     seed: int = 0
     absolute_actions: bool = True
@@ -63,6 +63,31 @@ class BuiltEnv:
     obs: dict
     action_dim: int
     notes: list[str] = field(default_factory=list)   # things the node should log
+
+
+class TimebaseError(ValueError):
+    """The plant's step rate does not map onto a whole number of physics substeps."""
+
+
+def check_timebase(action_hz: float, model_timestep: float) -> int:
+    """Physics substeps per env.step, refusing a rate that does not divide the timestep evenly.
+
+    robosuite runs `int(control_timestep / model_timestep)` substeps per env.step and silently
+    drops the remainder. With MuJoCo's 2 ms timestep, action_hz=200 asks for 2.5 and gets 2, so
+    each 5 ms wall-clock step advanced the simulation 4 ms: simulated time ran at 80% of real
+    time, the 20 Hz policy acted every 40 ms of simulated time instead of the 50 ms it was
+    trained at, and a "20 s" episode lasted 16 s of simulation. Every in-loop result was taken
+    under that until 2026-09-22. 250 Hz (2 substeps) and 100 Hz (5) are exact.
+    """
+    ratio = (1.0 / action_hz) / model_timestep
+    substeps = round(ratio)
+    if substeps < 1 or abs(ratio - substeps) > 1e-6:
+        raise TimebaseError(
+            f'action_hz={action_hz:g} is {ratio:.3f} physics steps of {model_timestep * 1e3:g} ms; '
+            f'robosuite would run {int(ratio)} and simulated time would drift from wall time. '
+            f'Use a rate whose period is a whole multiple of the timestep, e.g. '
+            f'{1.0 / (max(1, int(ratio)) * model_timestep):g} Hz.')
+    return substeps
 
 
 def make_controller_config():
@@ -127,6 +152,11 @@ def build_env(spec: EnvSpec) -> BuiltEnv:
         kwargs.pop('seed', None)
         env = suite.make(**kwargs)
 
+    try:
+        check_timebase(spec.action_hz, float(env.model_timestep))
+    except TimebaseError:
+        env.close()
+        raise
     obs = env.reset()
     low, _high = env.action_spec
     return BuiltEnv(env=env, obs=obs, action_dim=len(low), notes=notes)
