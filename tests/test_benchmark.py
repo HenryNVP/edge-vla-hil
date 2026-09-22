@@ -438,3 +438,39 @@ def test_the_recorder_numbers_episodes_as_they_close():
     for outcome in (True, False, True):
         Recorder._on_success(rec, Bool(data=outcome))
     assert [(k, ok) for k, ok, _ in rec._episodes] == [(0, True), (1, False), (2, True)]
+
+
+# -------------------------------------------------------------------- resume
+def _sweep_args(**kw):
+    import argparse
+    base = {'placement': 'act', 'executor': 'robot', 'jitter_model': 'gaussian', 'jitter_ms': 0.0,
+                'loss_model': 'iid', 'drop_prob': 0.0, 'burst_ms': 100.0, 'latency_ms': 0.0}
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+@requires_ros2
+def test_cell_labels_distinguish_the_held_channel_knobs():
+    """Two sweeps over the same axis at different held settings must not share labels, or
+    --resume would skip the second as already done."""
+    from evh_bringup.benchmark import cell_label
+
+    a = cell_label('rtc', True, _sweep_args(jitter_model='gaussian'), 'latency', 100.0)
+    b = cell_label('rtc', True, _sweep_args(jitter_model='lognormal'), 'latency', 100.0)
+    c = cell_label('rtc', True, _sweep_args(burst_ms=2000.0), 'latency', 100.0)
+    assert len({a, b, c}) == 3
+
+
+@requires_ros2
+def test_resume_skips_complete_rows_and_reruns_truncated_ones(tmp_path):
+    import argparse
+
+    from evh_bringup.benchmark import _append_csv, completed_labels
+
+    out = str(tmp_path / 's.csv')
+    tags = {'strategy': 'rtc', 'latency_ms': 0.0, 'jitter_ms': 0.0, 'placement': 'act',
+                'executor': 'robot', 'reactive': True}
+    _append_csv(out, argparse.Namespace(label='done', **tags), {'trials': 60, 'truncated': False})
+    _append_csv(out, argparse.Namespace(label='cut', **tags), {'trials': 12, 'truncated': True})
+    assert completed_labels(out) == {'done'}
+    assert completed_labels(str(tmp_path / 'missing.csv')) == set()

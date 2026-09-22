@@ -435,6 +435,32 @@ def resolve_absolute(choice: str, backend: str, weights: str = '') -> str:
 
 _AXIS_PARAM = {'latency': 'latency_ms', 'jitter': 'jitter_ms', 'drop': 'drop_prob'}
 
+
+def cell_label(strategy: str, reactive: bool, args, axis: str, value: float) -> str:
+    """The CSV `condition` of one cell: every factor that distinguishes it from its neighbours.
+
+    It must include the held (not swept) channel knobs too: a sweep over latency at two jitter
+    models writes two sets of rows, and --resume would otherwise take the second set as already
+    done because its labels matched the first.
+    """
+    return (f'strat={strategy}_reactive={reactive}_place={args.placement}_'
+            f'exec={args.executor}_jit={args.jitter_model}:{args.jitter_ms:g}_'
+            f'loss={args.loss_model}:{args.drop_prob:g}:{args.burst_ms:g}_'
+            f'lat={args.latency_ms:g}_{axis}={value:g}')
+
+
+def completed_labels(out: str) -> set[str]:
+    """Conditions already in the summary CSV that reached their episode target.
+
+    What --resume skips. A truncated row does not count as done: it is rerun, and the new row
+    sits next to the old one for the analysis to prefer.
+    """
+    if not os.path.exists(out):
+        return set()
+    with open(out, newline='') as fh:
+        return {row['condition'] for row in csv.DictReader(fh)
+                if str(row.get('truncated', 'False')) != 'True'}
+
 # which relays a placement degrades -> (delay_obs, delay_act) launch args
 PLACEMENTS = {'obs': ('true', 'false'), 'act': ('false', 'true'), 'both': ('true', 'true')}
 
@@ -464,9 +490,12 @@ def run_sweep(args) -> None:
 
     failures = []
     baseline_infer = None    # first cell's inference time; see the drift check below
+    done = completed_labels(args.out) if args.resume else set()
     for n, (strategy, reactive, lat) in enumerate(cells, 1):
-        label = (f'strat={strategy}_reactive={reactive}_place={args.placement}_'
-                 f'exec={args.executor}_{axis}={lat}')
+        label = cell_label(strategy, reactive, args, axis, lat)
+        if label in done:
+            print(f'[sweep] {n}/{len(cells)} {label} already recorded, skipping (--resume)')
+            continue
         log_path = os.path.join(log_dir, f'{label}.log'.replace('/', '_'))
         # every degradation knob is passed EXPLICITLY, swept or not. drop_prob used to be
         # omitted entirely, so it silently stayed at the launch default of 0.0 and no sweep
@@ -571,6 +600,9 @@ def main(argv=None) -> None:
     p.add_argument('--executor', choices=['policy', 'robot'], default='policy',
                    help='where chunks are executed: policy (streamed per tick, the default and '
                         'the original design) or robot (buffered next to the robot)')
+    p.add_argument('--resume', action='store_true',
+                   help='skip cells already recorded (untruncated) in --out, so a long sweep '
+                        'can be restarted after an interruption')
     p.add_argument('--values', default='0,25,50,100,200', help='comma-separated latency_ms values')
     p.add_argument('--strategies', default='synchronous,temporal_ensemble,rtc',
                    help='comma-separated chunk-execution strategies to sweep (Wedge A)')
