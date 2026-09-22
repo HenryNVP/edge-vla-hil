@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+CycloneDDS config for running the robot side and the policy server over WiFi (experiment W, and
+live-WiFi runs later). One file for both machines; each sets its own address and its peer's:
+
+    -e EVH_SELF_IP=192.168.0.73 -e EVH_PEER_IP=192.168.0.50 \
+    -e CYCLONEDDS_URI=file:///ws/docker/cyclonedds-wifi.xml
+
+It keeps all three fixes the direct-cable configs needed (see cyclonedds-jetson.xml for the long
+story of each), and each matters more on WiFi, not less:
+
+  * the interface is pinned by address: both machines also have docker0 and tailscale0, and
+    CycloneDDS advertising the wrong one fails silently;
+  * discovery is unicast to the one known peer: multicast over WiFi is unreliable by design
+    (sent at the lowest basic rate, often filtered by access points), and the first WiFi attempt
+    never completed discovery at all;
+  * FragmentSize stays below the MTU so large messages are fragmented by DDS, not by IP. Losing
+    one IP fragment loses the whole datagram; on a lossy radio that turns every 21 KB camera frame
+    into ~16 chances to lose it.
+
+Leave the addresses static for a session (a DHCP lease change mid-run is indistinguishable from an
+outage).
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain>
+    <General>
+      <Interfaces>
+        <NetworkInterface address="${EVH_SELF_IP}"/>
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+      <FragmentSize>1344B</FragmentSize>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>20</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="${EVH_SELF_IP}"/>
+        <Peer address="${EVH_PEER_IP}"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
