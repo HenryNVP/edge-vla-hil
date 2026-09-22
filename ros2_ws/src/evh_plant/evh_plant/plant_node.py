@@ -23,6 +23,8 @@ thread-bound EGL context, and stepping from executor threads fed the policy corr
 """
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
@@ -42,6 +44,7 @@ from std_msgs.msg import Bool, Empty
 
 from evh_plant.env_factory import EnvSpec, build_env, eef_to_control_quat
 from evh_plant.messages import PlantObservation
+from evh_plant.phase import seconds_to_phase
 from evh_plant.sim_thread import SimThread
 from evh_plant.video import VideoRecorder
 
@@ -184,6 +187,9 @@ class PlantNode(Node):
         if self._sim.error is not None:
             raise self._sim.error
 
+        # observations go out on the wall-clock grid (phase 0), so the controller can tick a
+        # fixed few ms after them instead of at a random phase (see phase.py)
+        time.sleep(seconds_to_phase(time.time(), 1.0 / self.control_hz))
         self.create_timer(1.0 / self.control_hz, self._publish_observation,
                           callback_group=self._cb_io)
 

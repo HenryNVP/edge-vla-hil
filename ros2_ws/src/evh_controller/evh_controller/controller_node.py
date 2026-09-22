@@ -41,6 +41,8 @@ measured where the waypoint lands, by the reactive layer.
 """
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -59,6 +61,7 @@ from evh_controller.chunk_executor import make_executor
 from evh_controller.chunk_server import ChunkServer
 from evh_controller.inference_worker import InferenceWorker
 from evh_controller.obs_buffer import ObsBuffer
+from evh_controller.phase import seconds_to_phase
 from evh_controller.policy import make_policy
 
 # Latched: published once at startup, but the plant must receive it whenever it joins — the
@@ -122,6 +125,7 @@ class ControllerNode(Node):
         self.declare_parameter('prompt', 'pick up the block')
         self.declare_parameter('policy_absolute', 'auto')    # auto (from checkpoint) | true | false
         self.declare_parameter('executor', 'policy')         # policy | robot (see docstring)
+        self.declare_parameter('tick_phase_ms', 10.0)  # tick this long after the plant publishes
 
         backend = self.get_parameter('backend').value
         weights = self.get_parameter('weights_path').value
@@ -182,6 +186,10 @@ class ControllerNode(Node):
             # faster than the control tick so a finished chunk is not held back up to 50 ms
             self.create_timer(1.0 / SERVE_HZ, self._serve)
 
+        # tick a fixed few ms after the plant's observations go out (phase.py), not at whatever
+        # phase this node happened to start at
+        time.sleep(seconds_to_phase(time.time(), 1.0 / self.control_hz,
+                                    float(self.get_parameter('tick_phase_ms').value) / 1e3))
         self.create_timer(1.0 / self.control_hz, self._tick)
 
     # ------------------------------------------------------------- callbacks
@@ -201,7 +209,8 @@ class ControllerNode(Node):
             self.chunk_executor.reset()
         if self.server is not None:
             self.server.reset()
-        self.obs.clear()
+        # frames captured before the reset show the previous episode's scene; only newer ones count
+        self.obs.clear(since_s=self.get_clock().now().nanoseconds / 1e9)
         self._latest_obs = None
         self._t = 0
 

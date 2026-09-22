@@ -53,7 +53,7 @@ def _stub_controller(obs_sample=None, action=None, metrics=None, obs_age_s=None)
     cleared = []
     stub = types.SimpleNamespace(
         obs=types.SimpleNamespace(sample=lambda: obs_sample,
-                                  clear=lambda: cleared.append(1),
+                                  clear=lambda **_kw: cleared.append(1),
                                   age=lambda now_s: obs_age_s),
         chunk_executor=FakeExecutor(action=action, metrics=metrics),
         server=None,

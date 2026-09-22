@@ -276,3 +276,14 @@ def test_every_copy_of_the_controller_frame_offset_agrees():
     from robomimic_to_lerobot import EEF_TO_CONTROL_QUAT as converter
 
     assert np.allclose(plant, reactive) and np.allclose(plant, converter)
+
+
+def test_the_plant_and_controller_share_one_phase_grid():
+    """Duplicated in two deployables; if they disagreed the controller would tick at a different
+    phase from the one the plant publishes on, and observation age would drift back to random."""
+    from evh_controller.phase import seconds_to_phase as controller
+    from evh_plant.phase import seconds_to_phase as plant
+
+    for now in (0.0, 3.21, 1790000000.0371, 77.7777):
+        for offset in (0.0, 0.01, 0.049):
+            assert plant(now, 0.05, offset) == controller(now, 0.05, offset)

@@ -174,3 +174,26 @@ def test_age_is_never_negative_under_clock_skew():
     buf.put('image', _img(1), stamp_s=5.0)
     buf.put('proprio', _prop(1), stamp_s=5.0)
     assert buf.age(4.9) == 0.0
+
+
+# ------------------------------------------------------------- episode boundary
+def test_a_reset_refuses_frames_captured_before_it():
+    """Those frames show the scene that just ended; under observation delay they keep arriving
+    after the reset, and the first chunk of the new episode used to be planned from them."""
+    buf = ObsBuffer(1, needs_wrist=False)
+    buf.put('image', _img(1), stamp_s=9.0)
+    buf.put('proprio', _prop(1), stamp_s=9.0)
+    buf.clear(since_s=10.0)
+
+    assert not buf.ready(), 'old-episode slots still counted as an observation'
+    assert not buf.put('image', _img(2), stamp_s=9.9), 'pre-reset capture accepted'
+    assert buf.put('image', _img(3), stamp_s=10.1)
+    assert buf.put('proprio', _prop(3), stamp_s=10.1)
+    assert buf.ready() and buf.sample()['agentview'][0, 0, 0, 0] == 3
+
+
+def test_a_plain_clear_keeps_the_latest_slots():
+    buf = _filled(n_obs_steps=2)
+    buf.sample()
+    buf.clear()
+    assert buf.ready()

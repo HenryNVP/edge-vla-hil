@@ -26,6 +26,7 @@
     prompt: "pick up the block"
     policy_absolute: "auto" # auto = read the checkpoint's stamp; true/false forces the convention
     executor: "policy"      # policy = execute + stream waypoints here; robot = serve chunks only
+    tick_phase_ms: 10.0     # tick this long after the plant publishes on the 50 ms grid (phase.py)
 
 # Robot-side chunk executor (only with executor:=robot).
 /evh_executor:
@@ -35,6 +36,7 @@
     timeout_factor: 2.0     # a request times out after this x the slowest recent round trip
     min_timeout_s: 0.25
     first_timeout_s: 10.0   # before the first reply (model warm-up)
+    tick_phase_ms: 10.0
 
 /evh_reactive:
   ros__parameters:

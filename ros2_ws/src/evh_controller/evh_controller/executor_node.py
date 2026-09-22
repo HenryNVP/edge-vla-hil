@@ -18,6 +18,8 @@ Metrics, named as in the policy-side placement so the recorder reads both the sa
 """
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -32,6 +34,7 @@ from std_msgs.msg import Empty, Float32
 
 from evh_controller.chunk_codec import CodecError, Request, decode_chunk, encode_request
 from evh_controller.chunk_executor import make_executor
+from evh_controller.phase import seconds_to_phase
 from evh_controller.remote_worker import PolicyInfo, RemoteWorker
 
 # Must match controller_node's profiles: DDS pairs nothing across mismatched QoS, silently.
@@ -59,6 +62,7 @@ class ExecutorNode(Node):
         self.declare_parameter('timeout_factor', 2.0)    # x slowest recent round trip
         self.declare_parameter('min_timeout_s', 0.25)
         self.declare_parameter('first_timeout_s', 10.0)  # before any reply (model warm-up)
+        self.declare_parameter('tick_phase_ms', 10.0)    # same grid as controller_node (phase.py)
 
         self.strategy = self.get_parameter('strategy').value
         self.control_hz = float(self.get_parameter('control_hz').value)
@@ -78,6 +82,8 @@ class ExecutorNode(Node):
         self.pub_chunk_age = self.create_publisher(Float32, '/metrics/chunk_age_ms', 10)
         self.pub_lost = self.create_publisher(Float32, '/metrics/request_lost', 10)
 
+        time.sleep(seconds_to_phase(time.time(), 1.0 / self.control_hz,
+                                    float(self.get_parameter('tick_phase_ms').value) / 1e3))
         self.create_timer(1.0 / self.control_hz, self._tick)
         self.get_logger().info(
             f'evh_executor up (robot side): strategy={self.strategy} ctrl={self.control_hz}Hz; '

@@ -47,6 +47,7 @@ class ObsBuffer:
         self.proprio: np.ndarray | None = None
         self._history: collections.deque = collections.deque(maxlen=max(1, n_obs_steps))
         self._stamps: dict[str, float] = {}    # capture time (s) of each slot's current message
+        self._since = float('-inf')            # captures before this belong to an old episode
         self.stale_drops = 0
 
     def put(self, stream: str, value: np.ndarray, stamp_s: float | None = None) -> bool:
@@ -58,6 +59,9 @@ class ObsBuffer:
         if stream not in _STREAMS:
             raise ValueError(f'unknown observation stream {stream!r}')
         if stamp_s is not None:
+            if stamp_s < self._since:
+                self.stale_drops += 1
+                return False
             held = self._stamps.get(stream)
             if held is not None and stamp_s < held:
                 self.stale_drops += 1
@@ -74,9 +78,20 @@ class ObsBuffer:
             return None
         return max(0.0, now_s - min(stamps))
 
-    def clear(self) -> None:
-        """Drop the history at an episode boundary; the latest-message slots stay valid."""
+    def clear(self, since_s: float | None = None) -> None:
+        """Drop the history at an episode boundary.
+
+        With `since_s` (the reset time), the latest-message slots are emptied too and anything
+        captured before it is refused: those frames show the previous episode's scene, and under
+        injected observation delay they keep arriving after the reset. Sampling them made the
+        first chunk of every episode a plan for the scene that had just ended. Without it the
+        slots stay valid (the old behaviour).
+        """
         self._history.clear()
+        if since_s is not None:
+            self._since = since_s
+            self.image = self.wrist = self.proprio = None
+            self._stamps.clear()
 
     def ready(self) -> bool:
         return (self.image is not None and self.proprio is not None

@@ -107,6 +107,11 @@ class Recorder(Node):
         self._d_act_ms: list[float] = []
         self._chunk_age_ms: list[float] = []
         self._req_lost = 0
+        # per-episode outcomes, in order. Every cell restarts the plant with the same seed, so
+        # episode k is the same scene in every cell: that pairing is what makes cell-to-cell
+        # comparisons sensitive (see _append_episodes)
+        self._episodes: list[tuple[int, bool, float]] = []
+        self._episode_start = time.perf_counter()
 
         self.create_subscription(Bool, '/eval/success', self._on_success, 10)
         self.create_subscription(Float32, '/metrics/inference_ms', self._on_infer, 10)
@@ -126,6 +131,11 @@ class Recorder(Node):
         self.create_subscription(Float32, '/metrics/request_lost', self._on_lost, 10)
 
     @property
+    def episodes(self) -> list[tuple[int, bool, float]]:
+        """(scene index, success, wall seconds) per closed episode, in order."""
+        return list(self._episodes)
+
+    @property
     def trials(self) -> int:
         """Episodes closed so far — the recorder's stopping condition in trial mode."""
         return self._trials
@@ -133,6 +143,9 @@ class Recorder(Node):
     def _on_success(self, msg: Bool) -> None:
         self._trials += 1
         self._successes += int(msg.data)
+        now = time.perf_counter()
+        self._episodes.append((self._trials - 1, bool(msg.data), now - self._episode_start))
+        self._episode_start = now
 
     def _on_infer(self, msg: Float32) -> None:
         self._infer_ms.append(float(msg.data))
@@ -284,6 +297,7 @@ def run_record(args) -> dict:
         node.destroy_node()
         rclpy.shutdown()
         _append_csv(args.out, args, s)
+        _append_episodes(_episodes_path(args.out), args.label, node.episodes)
         print(f'[record] label={args.label} {s}')
     return s
 
@@ -294,6 +308,33 @@ _METRIC_COLUMNS = ['trials', 'success_rate', 'infer_ms_mean', 'infer_ms_p95', 'w
                    'loop_hz', 'wp_step_mm', 'wp_jerk_mm', 'wp_gap_p95_ms',
                    'd_obs_ms_p50', 'd_obs_ms_p95', 'd_chunk_steps_p50', 'd_chunk_steps_p95',
                    'd_act_ms_p50', 'd_act_ms_p95', 'wp_rx_hz', 'wp_rx_gap_p95_ms', 'req_lost']
+
+
+def _episodes_path(out: str) -> str:
+    """The per-episode file that sits next to a summary CSV: x.csv -> x.episodes.csv."""
+    root, ext = os.path.splitext(out)
+    return f'{root}.episodes{ext or ".csv"}'
+
+
+def _append_episodes(path: str, label: str, episodes) -> None:
+    """One row per episode: the condition, the scene index, the outcome, its wall duration.
+
+    Scene k is identical across every cell of a sweep (same plant seed, fresh plant per cell),
+    so two conditions can be compared episode by episode (McNemar) instead of only by their
+    rates, which at 10-60 episodes per cell is the difference between seeing an effect and not.
+    The first episode is measured from recorder start, not from its own reset, so its duration
+    is an upper bound.
+    """
+    if not episodes:
+        return
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    new = not os.path.exists(path)
+    with open(path, 'a', newline='') as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(['condition', 'scene', 'success', 'wall_s'])
+        for scene, success, wall_s in episodes:
+            w.writerow([label, scene, int(success), f'{wall_s:.2f}'])
 
 
 def _append_csv(path: str, args, s: dict) -> None:

@@ -29,6 +29,8 @@ def _blank_recorder():
     rec._chunk_age_ms = []
     rec._req_lost = 0
     rec._d_act_ms = []
+    rec._episodes = []
+    rec._episode_start = 0.0
     return rec
 
 
@@ -405,3 +407,34 @@ def test_rows_record_their_executor_placement(tmp_path):
     with open(out) as fh:
         row = next(csv.DictReader(fh))
     assert row['executor'] == 'robot' and row['req_lost'] == '3'
+
+
+@requires_ros2
+def test_episodes_are_logged_in_scene_order_next_to_the_summary(tmp_path):
+    """Scene k is the same scene in every cell; the per-episode file is what lets two cells be
+    compared episode by episode."""
+    import csv
+
+    from evh_bringup.benchmark import _append_episodes, _episodes_path
+
+    out = str(tmp_path / 'sweep.csv')
+    path = _episodes_path(out)
+    assert path.endswith('sweep.episodes.csv')
+    _append_episodes(path, 'a', [(0, True, 9.5), (1, False, 20.1)])
+    _append_episodes(path, 'b', [(0, False, 20.0)])
+    with open(path) as fh:
+        rows = list(csv.DictReader(fh))
+    assert [(r['condition'], r['scene'], r['success']) for r in rows] == [
+        ('a', '0', '1'), ('a', '1', '0'), ('b', '0', '0')]
+
+
+@requires_ros2
+def test_the_recorder_numbers_episodes_as_they_close():
+    from std_msgs.msg import Bool
+
+    from evh_bringup.benchmark import Recorder
+
+    rec = _blank_recorder()
+    for outcome in (True, False, True):
+        Recorder._on_success(rec, Bool(data=outcome))
+    assert [(k, ok) for k, ok, _ in rec._episodes] == [(0, True), (1, False), (2, True)]
