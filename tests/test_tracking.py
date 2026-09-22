@@ -9,19 +9,27 @@ import pytest
 
 from evh_reactive.tracking import (
     ACTION_DIM,
+    EEF_TO_CONTROL_QUAT,
     AbsoluteTracker,
     DeltaTracker,
     PassthroughTracker,
     Pose,
     normalize_waypoint,
 )
-from evh_reactive.transforms import axisangle_to_quat, quat_to_axisangle
+from evh_reactive.transforms import axisangle_to_quat, quat_mul, quat_to_axisangle
 
 IDENTITY = np.array([0.0, 0.0, 0.0, 1.0])
 
 
 def _pose(pos=(0.0, 0.0, 0.0), quat=IDENTITY):
     return Pose(pos=np.asarray(pos, dtype=float), quat=np.asarray(quat, dtype=float))
+
+
+def _abs(**kw):
+    """An AbsoluteTracker whose reported and controller frames coincide, so the setpoint math
+    can be checked on its own; the frame offset has its own tests below."""
+    kw.setdefault('ee_to_control_quat', IDENTITY)
+    return AbsoluteTracker(**kw)
 
 
 def _waypoint(pos=(0.0, 0.0, 0.0), rot=(0.0, 0.0, 0.0), gripper=0.0):
@@ -94,13 +102,13 @@ def test_delta_reset_drops_the_target():
 # ------------------------------------------------------------------ absolute mode
 def test_absolute_target_is_the_waypoint_itself():
     """No anchoring: the abs-action policy already emits a world-frame target."""
-    tracker = AbsoluteTracker()
+    tracker = _abs()
     tracker.set_waypoint(_waypoint(pos=(0.4, 0.1, 0.9)), ee=None)
     assert tracker.target.pos == pytest.approx([0.4, 0.1, 0.9])
 
 
 def test_absolute_setpoint_is_rate_limited_per_tick():
-    tracker = AbsoluteTracker(max_step_pos=0.004)
+    tracker = _abs(max_step_pos=0.004)
     tracker.set_waypoint(_waypoint(pos=(1.0, 0.0, 0.0)), ee=None)
     action = tracker.step(_pose(pos=(0.0, 0.0, 0.0)))
 
@@ -111,7 +119,7 @@ def test_absolute_setpoint_marches_from_itself_not_from_the_measured_pose():
     """The documented subtlety: re-anchoring the setpoint at the measured EE pose each tick would
     keep the OSC goal exactly one step ahead of the arm, so the proportional force never grows and
     the motion crawls. With the arm held still, the setpoint must keep advancing anyway."""
-    tracker = AbsoluteTracker(max_step_pos=0.004)
+    tracker = _abs(max_step_pos=0.004)
     tracker.set_waypoint(_waypoint(pos=(1.0, 0.0, 0.0)), ee=None)
 
     stuck = _pose(pos=(0.0, 0.0, 0.0))     # arm does not move at all
@@ -121,7 +129,7 @@ def test_absolute_setpoint_marches_from_itself_not_from_the_measured_pose():
 
 
 def test_absolute_setpoint_converges_and_then_holds_the_target():
-    tracker = AbsoluteTracker(max_step_pos=0.004)
+    tracker = _abs(max_step_pos=0.004)
     tracker.set_waypoint(_waypoint(pos=(0.02, 0.0, 0.0)), ee=None)
 
     stuck = _pose()
@@ -133,7 +141,7 @@ def test_absolute_setpoint_converges_and_then_holds_the_target():
 
 
 def test_absolute_rotation_is_rate_limited_too():
-    tracker = AbsoluteTracker(max_step_rot=0.02)
+    tracker = _abs(max_step_rot=0.02)
     tracker.set_waypoint(_waypoint(rot=(0.0, 0.0, 1.0)), ee=None)   # 1 rad about z
     action = tracker.step(_pose())
 
@@ -143,7 +151,7 @@ def test_absolute_rotation_is_rate_limited_too():
 def test_absolute_setpoint_starts_at_the_arm_pose_each_episode():
     """First tick after a reset anchors at wherever the arm actually is, so the new episode does
     not begin by marching from the previous episode's setpoint."""
-    tracker = AbsoluteTracker(max_step_pos=0.004)
+    tracker = _abs(max_step_pos=0.004)
     tracker.set_waypoint(_waypoint(pos=(1.0, 0.0, 0.0)), ee=None)
     tracker.step(_pose(pos=(0.0, 0.0, 0.0)))
 
@@ -157,7 +165,7 @@ def test_absolute_setpoint_starts_at_the_arm_pose_each_episode():
 
 def test_absolute_holds_the_last_target_when_waypoints_stop():
     """The whole point under packet loss: no new waypoint means keep going to the last target."""
-    tracker = AbsoluteTracker(max_step_pos=0.004)
+    tracker = _abs(max_step_pos=0.004)
     tracker.set_waypoint(_waypoint(pos=(0.1, 0.0, 0.0)), ee=None)
 
     stuck = _pose()
@@ -202,9 +210,41 @@ def test_waypoints_are_normalized_to_the_seven_dim_contract(width):
 def test_absolute_rotation_round_trips_through_the_action():
     """action[3:6] is an axis-angle the plant feeds straight to OSC — it must come back out the
     way it went in when the setpoint has reached the target."""
-    tracker = AbsoluteTracker(max_step_rot=10.0)   # no rate limit, converge in one tick
+    tracker = _abs(max_step_rot=10.0)   # no rate limit, converge in one tick
     rot = np.array([0.0, 0.0, 0.3])
     tracker.set_waypoint(_waypoint(rot=rot), ee=None)
     action = tracker.step(_pose())
 
     assert action[3:6] == pytest.approx(quat_to_axisangle(axisangle_to_quat(rot)), abs=1e-9)
+
+
+# ----------------------------------------------------------- invariant 7: frames
+def test_the_first_setpoint_is_the_arm_pose_in_the_controller_frame():
+    """/obs/ee_pose reports robot0_eef_quat, 90 degrees about z off the frame OSC controls.
+    Starting the setpoint there made every episode open with a twist toward the target."""
+    tracker = AbsoluteTracker(max_step_rot=0.02)
+    reported = axisangle_to_quat(np.array([0.3, -0.2, 0.1]))
+    in_controller_frame = quat_mul(reported, EEF_TO_CONTROL_QUAT)
+    tracker.set_waypoint(_waypoint(rot=quat_to_axisangle(in_controller_frame)), ee=None)
+
+    action = tracker.step(_pose(quat=reported))
+
+    assert action[3:6] == pytest.approx(quat_to_axisangle(in_controller_frame), abs=1e-9), (
+        'a target equal to where the arm already is must not command any rotation')
+
+
+def test_holding_still_needs_no_rotation_ticks_at_all():
+    """The transient in numbers: the old anchor spent pi/2 / max_step_rot ticks rotating before
+    it could track anything. Now the setpoint is on the target from the first tick."""
+    tracker = AbsoluteTracker(max_step_rot=0.02)
+    reported = np.array([1.0, 0.0, 0.0, 0.0])     # gripper pointing down, as on Lift
+    target = quat_mul(reported, EEF_TO_CONTROL_QUAT)
+    tracker.set_waypoint(_waypoint(rot=quat_to_axisangle(target)), ee=None)
+
+    first = tracker.step(_pose(quat=reported))
+    later = tracker.step(_pose(quat=reported))
+    assert first[3:6] == pytest.approx(later[3:6], abs=1e-9)
+
+
+def test_the_default_frame_offset_is_minus_ninety_degrees_about_z():
+    assert quat_to_axisangle(EEF_TO_CONTROL_QUAT) == pytest.approx([0.0, 0.0, -np.pi / 2])

@@ -176,6 +176,7 @@ def test_current_action_is_reshaped_to_the_env_action_dim(width):
 @requires_ros2
 def test_hold_action_absolute_commands_current_pose_not_origin():
     """The regression guard: a zero here is a world-origin target, not 'stay put'."""
+    from evh_plant.env_factory import eef_to_control_quat
     from evh_plant.plant_node import PlantNode, _quat_to_axisangle
 
     ee_pos = np.array([0.4, -0.1, 1.05])
@@ -187,9 +188,29 @@ def test_hold_action_absolute_commands_current_pose_not_origin():
 
     assert hold.shape == (7,)
     assert np.allclose(hold[:3], ee_pos)                      # NOT the origin
-    assert np.allclose(hold[3:6], _quat_to_axisangle(ee_quat))
+    assert np.allclose(hold[3:6], _quat_to_axisangle(eef_to_control_quat(ee_quat)))
     assert hold[6] == 0.0                                     # gripper neutral
     assert not np.allclose(hold[:3], 0.0)                     # the actual regression guard
+
+
+@requires_ros2
+def test_hold_action_absolute_holds_the_orientation_in_the_controller_frame():
+    """Commanding the reported orientation twists the arm ~90 degrees (invariant 7); the hold
+    must command the orientation the controller already has."""
+    from evh_plant.env_factory import EEF_TO_CONTROL_QUAT
+    from evh_plant.plant_node import PlantNode, _quat_to_axisangle
+
+    down = np.array([1.0, 0.0, 0.0, 0.0])      # gripper pointing down, as on Lift
+    stub = _stub_plant(absolute_actions=True,
+                       _obs={'robot0_eef_pos': np.zeros(3) + 0.5, 'robot0_eef_quat': down})
+    hold = PlantNode._hold_action(stub)
+
+    assert not np.allclose(hold[3:6], _quat_to_axisangle(down)), 'held the reported frame'
+    x, y, z, w = down
+    cx, cy, cz, cw = EEF_TO_CONTROL_QUAT
+    expected = np.array([w * cx + x * cw + y * cz - z * cy, w * cy - x * cz + y * cw + z * cx,
+                         w * cz + x * cy - y * cx + z * cw, w * cw - x * cx - y * cy - z * cz])
+    assert np.allclose(hold[3:6], _quat_to_axisangle(expected), atol=1e-6)
 
 
 @requires_ros2

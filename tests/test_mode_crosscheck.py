@@ -262,3 +262,17 @@ def test_a_silent_publisher_raises_the_deadline_on_the_subscriber(ros):
     assert missed, 'a silent /cmd/action publisher raised no deadline event — no watchdog'
     talker.destroy_node()
     listener.destroy_node()
+
+
+# ------------------------------------------------- invariant 7: the controller frame
+def test_every_copy_of_the_controller_frame_offset_agrees():
+    """Three deployables need the reported-frame -> OSC-frame offset: the plant (its hold), the
+    reactive layer (its first setpoint) and the dataset converter (its targets). A drift in any
+    one is a silent 90-degree-class error in that component only."""
+    import numpy as np
+
+    from evh_plant.env_factory import EEF_TO_CONTROL_QUAT as plant
+    from evh_reactive.tracking import EEF_TO_CONTROL_QUAT as reactive
+    from robomimic_to_lerobot import EEF_TO_CONTROL_QUAT as converter
+
+    assert np.allclose(plant, reactive) and np.allclose(plant, converter)

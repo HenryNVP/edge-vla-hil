@@ -16,6 +16,13 @@ Effects (composable):
   * drop_prob   : probability a message is dropped entirely (packet loss).
   * reorder     : if False (default), enforce monotonic release ordering even when jitter would
                   otherwise reorder messages (TCP-like); if True, allow reordering (UDP-like).
+  * enabled     : if False, forward every message immediately and ignore all of the above.
+
+`enabled` is how delay PLACEMENT is swept (observation path vs action path vs both) without
+changing the graph: every link keeps its relay, so every condition pays the same ~1 ms relay
+floor and the same extra DDS hop, and only the links under test are degraded. Removing a relay
+instead would make "no delay on this path" also mean "one hop fewer", a confound in exactly the
+comparison placement is about.
 
 Determinism: every run is seeded so a benchmark sweep is exactly reproducible.
 
@@ -27,9 +34,9 @@ grid — ~0.5 ms of extra mean delay at 1 kHz, on top of the latency actually be
 Messages whose delay has already elapsed (latency_ms=0) are published straight from the
 subscription callback, so the zero-latency baseline adds no scheduling delay at all.
 
-Usage (per topic): launch one relay per link you want to degrade, e.g. the observation path
-  /obs/image -> /obs/image/delayed and /obs/joint_state -> /obs/joint_state/delayed.
-The controller subscribes to the /delayed topics via remap; it is unaware of the relay.
+Usage (per topic): launch one relay per networked link, e.g. the observation path
+  /obs/image -> /obs/image/delayed, and the action path /cmd/waypoint -> /cmd/waypoint/delayed.
+Consumers subscribe to the /delayed topics via remap; they are unaware of the relay.
 """
 from __future__ import annotations
 
@@ -60,6 +67,7 @@ class LatencyNode(Node):
         self.declare_parameter('drop_prob', 0.0)
         self.declare_parameter('reorder', False)
         self.declare_parameter('seed', 0)
+        self.declare_parameter('enabled', True)
 
         in_topic = self.get_parameter('input_topic').value
         out_topic = self.get_parameter('output_topic').value
@@ -70,6 +78,7 @@ class LatencyNode(Node):
         self.jitter_model = self.get_parameter('jitter_model').value
         self.drop_prob = float(self.get_parameter('drop_prob').value)
         self.reorder = bool(self.get_parameter('reorder').value)
+        self.enabled = bool(self.get_parameter('enabled').value)
 
         self._rng = random.Random(int(self.get_parameter('seed').value))
         self._heap: list[tuple[float, int, object]] = []     # (release_t, seq, msg)
@@ -86,10 +95,14 @@ class LatencyNode(Node):
 
         self.get_logger().info(
             f'evh_latency: {in_topic} -> {out_topic} [{type_str}] '
-            f'lat={self.latency_ms}ms jitter={self.jitter_ms}ms drop={self.drop_prob}')
+            + (f'lat={self.latency_ms}ms jitter={self.jitter_ms}ms drop={self.drop_prob}'
+               if self.enabled else 'DISABLED (pass-through)'))
 
     # --------------------------------------------------------------- ingest
     def _on_msg(self, msg) -> None:
+        if not self.enabled:
+            self.pub.publish(msg)
+            return
         if self.drop_prob > 0.0 and self._rng.random() < self.drop_prob:
             return  # dropped
 

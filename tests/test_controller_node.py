@@ -41,11 +41,11 @@ class FakeExecutor:
         self.resets += 1
 
 
-def _stub_controller(obs_sample=None, action=None, metrics=None):
+def _stub_controller(obs_sample=None, action=None, metrics=None, obs_age_s=None):
     """A ControllerNode-shaped stub carrying only what the tick touches."""
     from builtin_interfaces.msg import Time
 
-    published = {'waypoint': [], 'latency': [], 'delay': []}
+    published = {'waypoint': [], 'latency': [], 'delay': [], 'obs_age': []}
 
     def _pub(key):
         return types.SimpleNamespace(publish=lambda m: published[key].append(m))
@@ -53,14 +53,17 @@ def _stub_controller(obs_sample=None, action=None, metrics=None):
     cleared = []
     stub = types.SimpleNamespace(
         obs=types.SimpleNamespace(sample=lambda: obs_sample,
-                                  clear=lambda: cleared.append(1)),
+                                  clear=lambda: cleared.append(1),
+                                  age=lambda now_s: obs_age_s),
         chunk_executor=FakeExecutor(action=action, metrics=metrics),
         _t=0,
         pub_waypoint=_pub('waypoint'),
         pub_latency=_pub('latency'),
         pub_delay=_pub('delay'),
+        pub_obs_age=_pub('obs_age'),
         get_clock=lambda: types.SimpleNamespace(
-            now=lambda: types.SimpleNamespace(to_msg=lambda: Time(sec=1, nanosec=0))),
+            now=lambda: types.SimpleNamespace(to_msg=lambda: Time(sec=1, nanosec=0),
+                                              nanoseconds=1_000_000_000)),
         published=published,
         cleared=cleared,
     )
@@ -203,9 +206,10 @@ def test_image_callbacks_reshape_the_flat_ros_buffer():
     from sensor_msgs.msg import Image
 
     from evh_controller.controller_node import ControllerNode
+    from evh_controller.obs_buffer import ObsBuffer
 
     stub = _stub_controller()
-    stub.obs = types.SimpleNamespace(image=None, wrist=None, proprio=None)
+    stub.obs = ObsBuffer(1, needs_wrist=True)
     msg = Image(height=4, width=5, encoding='rgb8')
     msg.data = bytes(range(4 * 5 * 3))
 
@@ -222,9 +226,10 @@ def test_proprio_callback_keeps_the_nine_dim_layout():
     from sensor_msgs.msg import JointState
 
     from evh_controller.controller_node import ControllerNode
+    from evh_controller.obs_buffer import ObsBuffer
 
     stub = _stub_controller()
-    stub.obs = types.SimpleNamespace(image=None, wrist=None, proprio=None)
+    stub.obs = ObsBuffer(1, needs_wrist=False)
     ControllerNode._on_proprio(stub, JointState(position=[float(i) for i in range(9)]))
 
     assert stub.obs.proprio.shape == (9,)
@@ -243,3 +248,43 @@ def test_policy_absolute_parses_auto_and_the_forced_settings():
     assert _parse_absolute('1') is True
     with pytest.raises(ValueError):
         _parse_absolute('maybe')
+
+
+@requires_ros2
+def test_callbacks_pass_the_capture_stamp_so_a_straggler_is_dropped():
+    """The node must hand the header stamp to the buffer; without it the reorder guard and
+    d_obs both silently do nothing."""
+    from builtin_interfaces.msg import Time
+    from sensor_msgs.msg import JointState
+
+    from evh_controller.controller_node import ControllerNode
+    from evh_controller.obs_buffer import ObsBuffer
+
+    stub = _stub_controller()
+    stub.obs = ObsBuffer(1, needs_wrist=False)
+    new = JointState(position=[1.0] * 9)
+    new.header.stamp = Time(sec=2, nanosec=0)
+    old = JointState(position=[0.0] * 9)
+    old.header.stamp = Time(sec=1, nanosec=0)
+
+    ControllerNode._on_proprio(stub, new)
+    ControllerNode._on_proprio(stub, old)
+    assert stub.obs.proprio[0] == 1.0 and stub.obs.stale_drops == 1
+
+
+@requires_ros2
+def test_the_tick_publishes_observation_age_in_milliseconds():
+    from evh_controller.controller_node import ControllerNode
+
+    stub = _stub_controller(obs_sample=_obs(), obs_age_s=0.125)
+    ControllerNode._tick(stub)
+    assert [m.data for m in stub.published['obs_age']] == [pytest.approx(125.0)]
+
+
+@requires_ros2
+def test_no_observation_age_is_published_without_stamps():
+    from evh_controller.controller_node import ControllerNode
+
+    stub = _stub_controller(obs_sample=_obs(), obs_age_s=None)
+    ControllerNode._tick(stub)
+    assert stub.published['obs_age'] == []

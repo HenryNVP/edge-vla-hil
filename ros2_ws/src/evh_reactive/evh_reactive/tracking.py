@@ -28,6 +28,13 @@ Two modes, matching the plant's OSC configuration (invariant 1 — they must agr
     value, NOT from the measured EE pose: re-anchoring at the measurement would keep the OSC goal
     one step ahead of the arm, so the proportional force never grows and motion crawls.
 
+    The first setpoint of an episode starts at the arm's pose IN THE CONTROLLER'S FRAME. The
+    local anchor `/obs/ee_pose` reports `robot0_eef_quat`, which robosuite's OSC does not control
+    — its tool frame is that one rotated -90 deg about z (invariant 7) — while the waypoints are
+    controller-frame targets. Starting from the reported orientation made every episode open
+    with a ~0.3 s twist at max_step_rot, and handicapped exactly one arm of the reactive on/off
+    comparison. `ee_to_control_quat` holds the fixed offset; it is the Panda/OSC value by default.
+
 pos_scale / rot_scale mirror the plant OSC's output_max (robosuite defaults 0.05 m / 0.5 rad):
 how far a unit action moves the OSC goal in one control step. They are duplicated parameters, not
 shared ones — keep them in sync with the plant (invariant 3).
@@ -49,6 +56,10 @@ from evh_reactive.transforms import (
 )
 
 ACTION_DIM = 7   # OSC_POSE: dpos(3) + axis-angle drot(3) + gripper
+
+# Reported EE frame -> robosuite OSC tool frame, [x, y, z, w]: Rz(-90 deg). Duplicated in
+# evh_plant.env_factory and scripts/robomimic_to_lerobot.py; test_mode_crosscheck.py pins them.
+EEF_TO_CONTROL_QUAT = np.array([0.0, 0.0, -np.sin(np.pi / 4), np.cos(np.pi / 4)])
 
 
 @dataclass
@@ -116,10 +127,12 @@ class DeltaTracker(Tracker):
 class AbsoluteTracker(Tracker):
     """Absolute-OSC plant: march a setpoint trajectory toward the target and emit the setpoint."""
 
-    def __init__(self, max_step_pos: float = 0.004, max_step_rot: float = 0.02) -> None:
+    def __init__(self, max_step_pos: float = 0.004, max_step_rot: float = 0.02,
+                 ee_to_control_quat: np.ndarray = EEF_TO_CONTROL_QUAT) -> None:
         super().__init__()
         self.max_step_pos = max_step_pos
         self.max_step_rot = max_step_rot
+        self.ee_to_control_quat = np.asarray(ee_to_control_quat, dtype=np.float64)
         self.setpoint: Pose | None = None
 
     def reset(self) -> None:
@@ -134,8 +147,10 @@ class AbsoluteTracker(Tracker):
     def step(self, ee: Pose) -> np.ndarray | None:
         if self.target is None:
             return None
-        if self.setpoint is None:      # first tick of an episode: start from the arm's pose
-            self.setpoint = Pose(pos=ee.pos.copy(), quat=ee.quat.copy())
+        if self.setpoint is None:      # first tick of an episode: start from the arm's pose,
+            # expressed in the controller's frame (see the module docstring)
+            self.setpoint = Pose(pos=ee.pos.copy(),
+                                 quat=quat_mul(ee.quat, self.ee_to_control_quat))
 
         err_pos = self.target.pos - self.setpoint.pos
         dist = float(np.linalg.norm(err_pos))

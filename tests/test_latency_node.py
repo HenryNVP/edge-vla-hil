@@ -89,6 +89,38 @@ def test_drop_prob_one_drops_all(ros):
 
 
 @integration
+def test_a_disabled_relay_forwards_everything_at_once(ros):
+    """enabled=False is how placement sweeps leave a path undegraded while keeping its relay in
+    the graph: with drop_prob=1 and a long latency set, every message still arrives, immediately."""
+    import rclpy
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.qos import qos_profile_sensor_data
+    from std_msgs.msg import String
+
+    relay = _relay(rclpy, input_topic='/in_off', output_topic='/out_off',
+                   msg_type='std_msgs/msg/String', latency_ms=5000.0, drop_prob=1.0,
+                   enabled=False)
+    helper = rclpy.create_node('test_helper_off')
+    pub = helper.create_publisher(String, '/in_off', 10)
+    received: list[str] = []
+    helper.create_subscription(
+        String, '/out_off', lambda m: received.append(m.data), qos_profile_sensor_data)
+
+    ex = SingleThreadedExecutor()
+    ex.add_node(relay)
+    ex.add_node(helper)
+    for i in range(5):
+        pub.publish(String(data=str(i)))
+
+    assert _drain_executor(ex, lambda: len(received) >= 5, timeout=2.0)
+    assert received == [str(i) for i in range(5)]
+    assert not relay._heap, 'a disabled relay must not queue anything'
+
+    relay.destroy_node()
+    helper.destroy_node()
+
+
+@integration
 def test_timer_is_idle_until_a_message_arrives(ros):
     """The drain timer is event-driven: cancelled while the queue is empty, so an idle relay
     costs no CPU. A polled tick burned ~17% of a core per relay spinning on an empty heap."""

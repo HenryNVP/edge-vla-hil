@@ -8,10 +8,14 @@ The tracking itself — what a waypoint means, how the target is latched, how th
 lives in `tracking.py`, which has no ROS in it and is unit-tested directly. This module chooses a
 tracker from the parameters and moves messages in and out of it:
 
-    /cmd/waypoint  --> tracker.set_waypoint()
+    /cmd/waypoint  --> tracker.set_waypoint()   (remapped to the relay's /cmd/waypoint/delayed)
     /obs/ee_pose   --> the local anchor passed to tracker.step()
     /episode/reset --> tracker.reset()
     tick (rate_hz) --> tracker.step() --> /cmd/action
+
+Each waypoint's age on arrival (now minus the controller's publish stamp) goes out on
+`/metrics/waypoint_age_ms`: d_act, the action-path component of the delay. Exact on one host;
+across machines it is as good as the clock sync (chrony).
 
 `/cmd/action` carries a DEADLINE (see ACTION_QOS): the plant needs to tell "this layer is
 commanding a hold" from "this layer is gone", because it re-applies whatever it last received at
@@ -34,7 +38,7 @@ from rclpy.qos import (
     qos_profile_sensor_data,
 )
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, Float32
 
 from evh_reactive.tracking import (
     AbsoluteTracker,
@@ -47,7 +51,8 @@ from evh_reactive.transforms import quat_normalize
 
 # The command path, and the one topic that crosses the network in the split deployment. It is
 # BEST_EFFORT with a depth of 1 ON PURPOSE, and the three packages that touch it must agree or DDS
-# silently refuses to pair them.
+# silently refuses to pair them. (The latency relay between them is best-effort both ways, via
+# qos_profile_sensor_data, so it pairs with this profile on either side.)
 #
 # Reliable delivery is the wrong contract here. A waypoint is an ABSOLUTE target and the reactive
 # layer latches it, so a lost one costs nothing — it simply keeps tracking the previous target.
@@ -108,6 +113,7 @@ class ReactiveNode(Node):
         self.create_subscription(Empty, '/episode/reset', self._on_episode_reset, 10)
 
         self.pub_action = self.create_publisher(JointState, '/cmd/action', ACTION_QOS)
+        self.pub_wp_age = self.create_publisher(Float32, '/metrics/waypoint_age_ms', 10)
         self.create_timer(1.0 / self.rate_hz, self._tick)
 
         if 1.0 / self.rate_hz > ACTION_DEADLINE_S:
@@ -144,6 +150,10 @@ class ReactiveNode(Node):
 
     def _on_waypoint(self, msg: JointState) -> None:
         self.tracker.set_waypoint(normalize_waypoint(msg.position), self._ee)
+        sent_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+        if sent_ns > 0:
+            age_ms = (self.get_clock().now().nanoseconds - sent_ns) / 1e6
+            self.pub_wp_age.publish(Float32(data=float(max(0.0, age_ms))))
 
     def _on_episode_reset(self, _msg: Empty) -> None:
         self.tracker.reset()

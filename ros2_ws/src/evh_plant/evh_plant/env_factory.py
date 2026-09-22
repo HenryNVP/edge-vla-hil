@@ -17,6 +17,26 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# robosuite's OSC does not control the frame `robot0_eef_quat` reports: its tool frame is that one
+# rotated -90 deg about z (measured exactly, and constant: R_ctrl = R_obs @ Rz(-pi/2), positions
+# identical). An ABSOLUTE orientation target is read in the controller's frame, so commanding the
+# arm its own reported orientation swings it ~90 degrees, while the controller-frame orientation
+# holds it still (CLAUDE.md invariant 7). Duplicated in evh_reactive.tracking and
+# scripts/robomimic_to_lerobot.py (separate deployables); test_mode_crosscheck.py pins all three.
+EEF_TO_CONTROL_QUAT = np.array([0.0, 0.0, -np.sin(np.pi / 4), np.cos(np.pi / 4)])   # [x, y, z, w]
+
+
+def eef_to_control_quat(eef_quat) -> np.ndarray:
+    """The reported EE orientation expressed in the OSC's tool frame: q_eef (x) Rz(-90 deg)."""
+    x1, y1, z1, w1 = np.asarray(eef_quat, dtype=np.float64)
+    x2, y2, z2, w2 = EEF_TO_CONTROL_QUAT
+    return np.array([
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+    ])
+
 
 @dataclass(frozen=True)
 class EnvSpec:

@@ -68,10 +68,15 @@ the delayed waypoints using zero-delay local state.
 | `/cmd/action`        | `sensor_msgs/JointState` — carries a 50 ms **deadline QoS**: the plant re-applies the last action at `action_hz`, so it needs DDS to tell it when this layer has gone silent (it then holds instead) | reactive → plant       | ~200-500 Hz|
 | `/eval/success`      | `std_msgs/Bool` (True/False)  | plant → benchmark      | episode end|
 | `/episode/reset`     | `std_msgs/Empty`              | plant → controller, reactive | episode end|
-| `/metrics/inference_ms`, `/metrics/delay_steps` | `std_msgs/Float32` | controller → benchmark | per chunk |
+| `/metrics/inference_ms`, `/metrics/delay_steps` | `std_msgs/Float32` — inference time; d_inf in control steps | controller → benchmark | per chunk |
+| `/metrics/obs_age_ms` | `std_msgs/Float32` — d_obs: age of the observation the policy uses (capture stamp to tick) | controller → benchmark | per tick |
+| `/metrics/waypoint_age_ms` | `std_msgs/Float32` — d_act: waypoint age on arrival at the reactive layer | reactive → benchmark | per waypoint |
 
-Topics are remapped through `evh_latency` (e.g. `/obs/image` → `/obs/image/delayed`) via launch
-arguments; nodes themselves are unaware of the injected delay.
+Every networked link goes through an `evh_latency` relay, remapped via launch arguments
+(`/obs/image` → `/obs/image/delayed`, and on the action path `/cmd/waypoint` →
+`/cmd/waypoint/delayed`); nodes themselves are unaware of the injected delay. `delay_obs` /
+`delay_act` choose which path a condition degrades; the other path's relays stay in the graph in
+pass-through, so every placement pays the same relay floor.
 
 UML diagrams of all of this — deployment, the node graph with its QoS, per-package internals, and
 sequence diagrams for the control cycle, async chunk execution, the episode boundary and bringup —
@@ -407,6 +412,7 @@ In place: the HiL plumbing, the latency harness, the episode/metrics plane
 strategies, honestly measured request→arrival delay feeding RTC's forecast
 (`/metrics/inference_ms`, `/metrics/delay_steps`), and **ACT policies trained on robomimic Lift**
 in both action modes (9/10 absolute, 7/10 delta at zero latency — see the table above), real
-guided inpainting for RTC on the DP backend, and ONNX Runtime backends for ACT and DP. Next:
-measuring observation, inference and action delay separately (only the observation path is
-relayed today), robot-side chunk buffering, and bursty-loss and trace-replay channel models. BID is still a stub. See per-package docstrings.
+guided inpainting for RTC on the DP backend, ONNX Runtime backends for ACT and DP, and delay
+placement: the action path is relayed too (`delay_obs` / `delay_act`), with observation,
+inference and action delay each measured where it happens. Next: robot-side chunk buffering
+and bursty-loss channel models. BID is still a stub. See per-package docstrings.

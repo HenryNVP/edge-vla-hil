@@ -48,3 +48,4 @@
     drop_prob: 0.0
     reorder: false
     seed: 0
+    enabled: true           # false = pass-through; set per path by delay_obs / delay_act

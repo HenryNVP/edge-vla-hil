@@ -21,9 +21,14 @@ Wiring only. The pieces with behaviour of their own live beside it: `chunk_execu
 strategies), `inference_worker.py` (the background GPU slot), `obs_buffer.py` (the observation
 history contract), `policy.py` (the backends).
 
-Metrics (published on the tick a chunk arrives):
-  /metrics/inference_ms   true wall-clock inference time of that chunk
-  /metrics/delay_steps    request->arrival delay in control steps (what the strategies fight)
+Metrics:
+  /metrics/inference_ms   true wall-clock inference time of a chunk        (on its arrival tick)
+  /metrics/delay_steps    request->arrival delay in control steps: d_inf   (on its arrival tick)
+  /metrics/obs_age_ms     age of the observation the policy uses: d_obs    (every control tick)
+
+d_obs compares the plant's capture stamp with this node's clock, so across machines it is only as
+good as their clock sync (chrony); on one host it is exact. The third component, d_act, is
+measured where the waypoint lands, by the reactive layer.
 """
 from __future__ import annotations
 
@@ -53,7 +58,8 @@ MODE_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
 
 # The command path, and the one topic that crosses the network in the split deployment. It is
 # BEST_EFFORT with a depth of 1 ON PURPOSE, and the three packages that touch it must agree or DDS
-# silently refuses to pair them.
+# silently refuses to pair them. (The latency relay between them is best-effort both ways, via
+# qos_profile_sensor_data, so it pairs with this profile on either side.)
 #
 # Reliable delivery is the wrong contract here. A waypoint is an ABSOLUTE target and the reactive
 # layer latches it, so a lost one costs nothing — it simply keeps tracking the previous target.
@@ -82,12 +88,18 @@ def _parse_absolute(value: str) -> bool | None:
     raise ValueError(f"policy_absolute must be auto|true|false, got {value!r}")
 
 
+def _stamp_s(msg) -> float | None:
+    """A header stamp in seconds; None for an unstamped (zero) header."""
+    t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+    return t if t > 0.0 else None
+
+
 class ControllerNode(Node):
     def __init__(self, **kwargs) -> None:
         super().__init__('evh_controller', **kwargs)
 
         self.declare_parameter('backend', 'pytorch')        # pytorch | act | onnx | dp | dp_onnx
-        self.declare_parameter('weights_path', '')           # ckpt (dir/.ckpt), .onnx, or .engine
+        self.declare_parameter('weights_path', '')           # ckpt (dir/.ckpt) or .onnx
         self.declare_parameter('strategy', 'synchronous')    # chunk-execution strategy
         self.declare_parameter('control_hz', 20.0)   # action stream rate = policy training rate
         self.declare_parameter('denoise_steps', 16)  # dp backend: DDIM steps (0=ckpt default)
@@ -126,6 +138,7 @@ class ControllerNode(Node):
         self.pub_waypoint = self.create_publisher(JointState, '/cmd/waypoint', WAYPOINT_QOS)
         self.pub_latency = self.create_publisher(Float32, '/metrics/inference_ms', 10)
         self.pub_delay = self.create_publisher(Float32, '/metrics/delay_steps', 10)
+        self.pub_obs_age = self.create_publisher(Float32, '/metrics/obs_age_ms', 10)
 
         # announce the mode the CHECKPOINT dictates so the plant can cross-check its launch arg
         self.pub_mode = self.create_publisher(Bool, '/policy/absolute', MODE_QOS)
@@ -135,13 +148,15 @@ class ControllerNode(Node):
 
     # ------------------------------------------------------------- callbacks
     def _on_image(self, msg: Image) -> None:
-        self.obs.image = np.frombuffer(msg.data, np.uint8).reshape(msg.height, msg.width, 3)
+        self.obs.put('image', np.frombuffer(msg.data, np.uint8).reshape(
+            msg.height, msg.width, 3), _stamp_s(msg))
 
     def _on_wrist(self, msg: Image) -> None:
-        self.obs.wrist = np.frombuffer(msg.data, np.uint8).reshape(msg.height, msg.width, 3)
+        self.obs.put('wrist', np.frombuffer(msg.data, np.uint8).reshape(
+            msg.height, msg.width, 3), _stamp_s(msg))
 
     def _on_proprio(self, msg: JointState) -> None:
-        self.obs.proprio = np.asarray(msg.position, dtype=np.float32)
+        self.obs.put('proprio', np.asarray(msg.position, dtype=np.float32), _stamp_s(msg))
 
     def _on_episode_reset(self, _msg: Empty) -> None:
         self.chunk_executor.reset()
@@ -153,6 +168,9 @@ class ControllerNode(Node):
         obs = self.obs.sample()
         if obs is None:
             return  # wait for first observations
+        age = self.obs.age(self.get_clock().now().nanoseconds / 1e9)
+        if age is not None:
+            self.pub_obs_age.publish(Float32(data=float(age * 1e3)))
 
         action = self.chunk_executor.step(obs, self._t)
         self._t += 1

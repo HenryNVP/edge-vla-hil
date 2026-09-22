@@ -116,3 +116,61 @@ def test_a_degenerate_history_length_still_keeps_one_step(n_obs_steps):
     """A zero-length deque would silently stack nothing and hand the policy an empty batch."""
     buf = _filled(n_obs_steps=n_obs_steps)
     assert buf.sample()['agentview'].shape[0] == 1
+
+
+# ------------------------------------------------------------ capture stamps
+def test_a_reordered_straggler_does_not_overwrite_a_fresher_frame():
+    """A jittered relay can deliver an older capture after a newer one. Keeping the latest
+    arrival would make the policy see time run backwards."""
+    buf = ObsBuffer(1, needs_wrist=False)
+    assert buf.put('image', _img(2), stamp_s=2.0)
+    assert not buf.put('image', _img(1), stamp_s=1.0), 'older capture accepted'
+
+    assert buf.image[0, 0, 0] == 2
+    assert buf.stale_drops == 1
+
+
+def test_an_equal_or_newer_stamp_is_accepted():
+    buf = ObsBuffer(1, needs_wrist=False)
+    assert buf.put('proprio', _prop(1), stamp_s=1.0)
+    assert buf.put('proprio', _prop(2), stamp_s=1.0)
+    assert buf.put('proprio', _prop(3), stamp_s=1.5)
+    assert buf.proprio[0] == 3 and buf.stale_drops == 0
+
+
+def test_unstamped_messages_are_always_accepted():
+    buf = ObsBuffer(1, needs_wrist=False)
+    buf.put('image', _img(2), stamp_s=2.0)
+    assert buf.put('image', _img(1))
+    assert buf.image[0, 0, 0] == 1
+
+
+def test_put_rejects_an_unknown_stream():
+    with pytest.raises(ValueError):
+        ObsBuffer(1, needs_wrist=False).put('depth', _img(1), stamp_s=0.0)
+
+
+def test_age_is_set_by_the_stalest_required_stream():
+    """The policy sees image and proprio together; the observation is as old as the older one."""
+    buf = ObsBuffer(1, needs_wrist=False)
+    buf.put('image', _img(1), stamp_s=10.0)
+    assert buf.age(10.5) is None, 'age reported before every required stream arrived'
+
+    buf.put('proprio', _prop(1), stamp_s=10.2)
+    assert buf.age(10.5) == pytest.approx(0.5)
+
+
+def test_age_waits_for_the_wrist_only_when_the_policy_needs_it():
+    buf = ObsBuffer(1, needs_wrist=True)
+    buf.put('image', _img(1), stamp_s=1.0)
+    buf.put('proprio', _prop(1), stamp_s=1.0)
+    assert buf.age(2.0) is None
+    buf.put('wrist', _img(1), stamp_s=0.5)
+    assert buf.age(2.0) == pytest.approx(1.5)
+
+
+def test_age_is_never_negative_under_clock_skew():
+    buf = ObsBuffer(1, needs_wrist=False)
+    buf.put('image', _img(1), stamp_s=5.0)
+    buf.put('proprio', _prop(1), stamp_s=5.0)
+    assert buf.age(4.9) == 0.0

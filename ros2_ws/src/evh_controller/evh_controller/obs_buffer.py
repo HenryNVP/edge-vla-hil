@@ -15,12 +15,26 @@ delivers observations, because that is the spacing the policy was trained on —
 the same frame legitimately repeats in consecutive slots, and that is the signal, not a bug. And
 `ready()` gates on every required stream having arrived at least once, so the first chunk is never
 computed against a half-populated observation.
+
+`put()` is the arrival path, and it keys on CAPTURE time (the plant's header stamp), not arrival
+order. A slot keeps the newest capture: a message stamped earlier than the one already held is a
+reordered straggler and is dropped (`stale_drops` counts them). Keeping the latest ARRIVAL
+instead would let a jittered relay overwrite a fresh frame with an old one, so the policy would
+see time run backwards; that is a bug in naive latest-value code, not a network effect worth
+measuring, and dropping by stamp removes it.
+
+`age()` is how stale the observation the policy is about to use is: now minus the capture time of
+the oldest of the latest required streams. It is measured at the control tick, so it includes the
+wait for the tick as well as the relay; at zero injected delay it sits between 0 and one
+observation period. That is d_obs, the observation component of the delay a chunk has to bridge.
 """
 from __future__ import annotations
 
 import collections
 
 import numpy as np
+
+_STREAMS = ('image', 'wrist', 'proprio')
 
 
 class ObsBuffer:
@@ -32,6 +46,33 @@ class ObsBuffer:
         self.wrist: np.ndarray | None = None
         self.proprio: np.ndarray | None = None
         self._history: collections.deque = collections.deque(maxlen=max(1, n_obs_steps))
+        self._stamps: dict[str, float] = {}    # capture time (s) of each slot's current message
+        self.stale_drops = 0
+
+    def put(self, stream: str, value: np.ndarray, stamp_s: float | None = None) -> bool:
+        """Store a message in its slot unless it was captured before the one already there.
+
+        Returns False (and counts it) for a reordered straggler. A message without a stamp is
+        always accepted, but then contributes nothing to `age()`.
+        """
+        if stream not in _STREAMS:
+            raise ValueError(f'unknown observation stream {stream!r}')
+        if stamp_s is not None:
+            held = self._stamps.get(stream)
+            if held is not None and stamp_s < held:
+                self.stale_drops += 1
+                return False
+            self._stamps[stream] = stamp_s
+        setattr(self, stream, value)
+        return True
+
+    def age(self, now_s: float) -> float | None:
+        """Seconds since the oldest of the latest required streams was captured, or None."""
+        required = ['image', 'proprio'] + (['wrist'] if self.needs_wrist else [])
+        stamps = [self._stamps.get(k) for k in required]
+        if any(t is None for t in stamps):
+            return None
+        return max(0.0, now_s - min(stamps))
 
     def clear(self) -> None:
         """Drop the history at an episode boundary; the latest-message slots stay valid."""

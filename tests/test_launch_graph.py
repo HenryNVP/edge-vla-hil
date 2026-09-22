@@ -7,8 +7,10 @@ the graph properties the rest of the system's invariants rest on:
 
   * `absolute` reaches the plant AND the reactive layer from ONE argument (invariant #1: this is
     precisely why the plant's cross-check does not also police the reactive layer),
-  * exactly the three observation topics are relayed, and `/obs/ee_pose` never is (invariant #6),
-  * every relay output is what the controller actually subscribes to,
+  * exactly the three observation topics and the waypoint are relayed, and `/obs/ee_pose` and
+    `/cmd/action` never are (invariant #8),
+  * delay placement: observation relays follow `delay_obs`, the waypoint relay `delay_act`,
+  * every relay output is what its consumer (controller or reactive layer) subscribes to,
   * every LaunchConfiguration referenced is declared,
   * every (package, executable) launched exists as a console_script, and
   * config/default.yaml still mirrors the node parameter defaults it claims to document.
@@ -35,6 +37,7 @@ GRAPH_LAUNCHES = ['hil.launch.py', 'host.launch.py']     # the two that run plan
 PACKAGES = ['evh_plant', 'evh_controller', 'evh_reactive', 'evh_latency', 'evh_bringup']
 
 OBS_RELAYED = {'/obs/image', '/obs/image_wrist', '/obs/proprio'}
+ACT_RELAYED = {'/cmd/waypoint'}
 
 
 # ------------------------------------------------------------------------ loading
@@ -215,19 +218,64 @@ def test_absolute_and_the_mode_guard_default_on(filename):
     assert _params(ctx, _only(ctx, ld, 'evh_plant'))['strict_mode_check'] == 'true'
 
 
-# --------------------------------------------------- invariant 6: what gets delayed
+# --------------------------------------------------- invariant 8: what gets delayed
 @requires_ros2
 @pytest.mark.parametrize('filename', GRAPH_LAUNCHES)
-def test_only_the_three_observation_topics_are_relayed(filename):
-    """/obs/ee_pose is the reactive layer's ZERO-DELAY local anchor. Routing it through a relay
-    would delay the anchor too and quietly destroy the thing the experiment measures."""
+def test_exactly_the_networked_links_are_relayed(filename):
+    """The observation topics and the waypoint cross the network; nothing else does.
+    /obs/ee_pose is the reactive layer's ZERO-DELAY local anchor: relaying it would delay the
+    anchor too and quietly destroy the thing the experiment measures."""
     ld = _load(filename)
     ctx = _context(ld)
     relayed = {_params(ctx, r)['input_topic'] for r in _relays(ctx, ld)}
 
-    assert relayed == OBS_RELAYED, f'{filename}: relayed topics changed: {sorted(relayed)}'
+    assert relayed == OBS_RELAYED | ACT_RELAYED, (
+        f'{filename}: relayed topics changed: {sorted(relayed)}')
     assert '/obs/ee_pose' not in relayed
     assert '/cmd/action' not in relayed, 'the reactive->plant link is local, not networked'
+
+
+@requires_ros2
+@pytest.mark.parametrize('filename', GRAPH_LAUNCHES)
+def test_each_path_is_switched_by_its_own_placement_argument(filename):
+    """Placement is swept by enabling relays, not by adding or removing them. A relay wired to
+    the wrong switch would degrade the other path and the placement curves would swap labels."""
+    ld = _load(filename)
+    ctx = _context(ld)
+
+    for relay in _relays(ctx, ld):
+        topic = _params(ctx, relay)['input_topic']
+        expected = 'delay_act' if topic in ACT_RELAYED else 'delay_obs'
+        assert _param_refs(ctx, relay).get('enabled') == expected, (
+            f'{filename}: relay on {topic} is switched by '
+            f'{_param_refs(ctx, relay).get("enabled")!r}, expected {expected!r}')
+
+
+@requires_ros2
+@pytest.mark.parametrize('filename', GRAPH_LAUNCHES)
+def test_placement_defaults_reproduce_the_observation_only_runs(filename):
+    """Every CSV recorded before the action relay existed is observation-only; the defaults keep
+    a re-run of those commands meaning the same thing."""
+    ld = _load(filename)
+    defaults = {a._DeclareLaunchArgument__name: a.default_value for a in _declared(ld)}
+    ctx = _context(ld)
+
+    assert _perform(ctx, defaults['delay_obs']) == 'true'
+    assert _perform(ctx, defaults['delay_act']) == 'false'
+
+
+@requires_ros2
+@pytest.mark.parametrize('filename', GRAPH_LAUNCHES)
+def test_the_reactive_layer_reads_the_delayed_waypoint(filename):
+    """The waypoint relay publishing where nobody listens would make every action-path condition
+    a silent no-op, and the reactive layer reading the raw topic would bypass it the same way."""
+    ld = _load(filename)
+    ctx = _context(ld)
+    outputs = {_params(ctx, r)['input_topic']: _params(ctx, r)['output_topic']
+               for r in _relays(ctx, ld)}
+
+    assert _remaps(ctx, _only(ctx, ld, 'evh_reactive')) == {
+        '/cmd/waypoint': outputs['/cmd/waypoint']}
 
 
 @requires_ros2
@@ -253,7 +301,8 @@ def test_the_controller_subscribes_to_exactly_the_relay_outputs():
     ctx = _context(ld)
 
     outputs = {_params(ctx, r)['input_topic']: _params(ctx, r)['output_topic']
-               for r in _relays(ctx, ld)}
+               for r in _relays(ctx, ld)
+               if _params(ctx, r)['input_topic'] in OBS_RELAYED}
     remaps = _remaps(ctx, _only(ctx, ld, 'evh_controller'))
 
     assert remaps == outputs, (
@@ -412,3 +461,16 @@ def test_default_config_still_mirrors_the_node_defaults(key, package, module):
     for name, value in listed.items():
         assert value == declared[name] and type(value) is type(declared[name]), (
             f'{key}/{name}: default.yaml says {value!r}, {module}.py declares {declared[name]!r}')
+
+
+@requires_ros2
+@pytest.mark.parametrize('filename', GRAPH_LAUNCHES)
+def test_the_task_and_its_horizon_reach_the_plant(filename):
+    """Without these the plant silently runs its own defaults (Lift, 20 s) under a sweep
+    labelled Square."""
+    ld = _load(filename)
+    ctx = _context(ld)
+    refs = _param_refs(ctx, _only(ctx, ld, 'evh_plant'))
+
+    assert refs.get('env_name') == 'env_name'
+    assert refs.get('max_episode_s') == 'max_episode_s'

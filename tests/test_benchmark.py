@@ -23,6 +23,10 @@ def _blank_recorder():
     rec._action_stamps = []
     rec._waypoint_stamps = []
     rec._waypoints = []
+    rec._rx_stamps = []
+    rec._d_obs_ms = []
+    rec._d_inf_steps = []
+    rec._d_act_ms = []
     return rec
 
 
@@ -64,8 +68,44 @@ def test_summary_reports_zero_throughput_without_traffic():
     assert s['waypoint_hz'] == 0.0
     assert s['loop_hz'] == 0.0
     # a quantity that was never observed has no value, unlike a throughput of zero
-    for key in ('infer_ms_mean', 'infer_ms_p95', 'wp_step_mm', 'wp_jerk_mm', 'wp_gap_p95_ms'):
+    assert s['wp_rx_hz'] == 0.0
+    for key in ('infer_ms_mean', 'infer_ms_p95', 'wp_step_mm', 'wp_jerk_mm', 'wp_gap_p95_ms',
+                'd_obs_ms_p50', 'd_obs_ms_p95', 'd_inf_steps_p50', 'd_inf_steps_p95',
+                'd_act_ms_p50', 'd_act_ms_p95', 'wp_rx_gap_p95_ms'):
         assert math.isnan(s[key]), f'{key} reported a value for a cell that saw no traffic'
+
+
+@requires_ros2
+def test_each_delay_component_is_summarised_from_its_own_stream():
+    """A mixed-up subscription would put the observation delay in the action column; the
+    placement plot would then show the wrong path moving."""
+    from evh_bringup.benchmark import Recorder
+
+    rec = _blank_recorder()
+    rec._d_obs_ms = [10.0] * 19 + [100.0]
+    rec._d_inf_steps = [2.0] * 20
+    rec._d_act_ms = [200.0] * 20
+    s = Recorder.summary(rec, 1.0)
+
+    assert s['d_obs_ms_p50'] == 10.0, 'the median must not be dragged by the outlier'
+    assert s['d_obs_ms_p95'] > 10.0, 'p95 should see the tail'
+    assert s['d_inf_steps_p50'] == 2.0
+    assert s['d_act_ms_p50'] == 200.0 and s['d_act_ms_p95'] == 200.0
+
+
+@requires_ros2
+def test_received_stream_shows_action_path_loss_the_sent_stream_hides():
+    """The controller sends at 20 Hz regardless of the channel; only the received side sees
+    half of it lost."""
+    from evh_bringup.benchmark import Recorder
+
+    rec = _blank_recorder()
+    rec._waypoint_stamps = [i * 0.05 for i in range(20)]
+    rec._rx_stamps = [i * 0.10 for i in range(10)]
+    s = Recorder.summary(rec, 1.0)
+
+    assert s['waypoint_hz'] == 20.0 and s['wp_rx_hz'] == 10.0
+    assert s['wp_rx_gap_p95_ms'] == pytest.approx(100.0)
 
 
 @requires_ros2
@@ -192,6 +232,55 @@ def test_every_degradation_knob_is_passed_even_when_it_is_not_swept():
         assert knobs[_AXIS_PARAM[axis]] == swept_value, 'swept knob did not take the value'
         held = {k: v for k, v in knobs.items() if k != _AXIS_PARAM[axis]}
         assert all(v is not None for v in held.values()), 'a held knob went unpassed'
+
+
+# ------------------------------------------------------------------ placement
+@requires_ros2
+@pytest.mark.parametrize('placement,delay_obs,delay_act', [
+    ('obs', 'true', 'false'), ('act', 'false', 'true'), ('both', 'true', 'true'),
+])
+def test_each_placement_switches_exactly_its_own_relays(placement, delay_obs, delay_act):
+    """A swapped pair here would silently relabel the observation curve as the action curve."""
+    from evh_bringup.benchmark import PLACEMENTS
+    assert PLACEMENTS[placement] == (delay_obs, delay_act)
+
+
+@requires_ros2
+def test_placement_defaults_to_observation_only():
+    """Every sweep before the action relay existed was observation-only; a re-run of an old
+    command must keep meaning the same thing."""
+    import evh_bringup.benchmark as bm
+    from evh_bringup.benchmark import main
+
+    seen = {}
+    orig = bm.run_record
+    bm.run_record = lambda args: seen.setdefault('placement', args.placement)
+    try:
+        main(['--label', 'x'])
+    finally:
+        bm.run_record = orig
+    assert seen['placement'] == 'obs'
+
+
+@requires_ros2
+def test_rows_record_their_placement(tmp_path):
+    import argparse
+    import csv
+
+    from evh_bringup.benchmark import _append_csv
+
+    out = tmp_path / 'rows.csv'
+    row = {'trials': 1, 'success_rate': 1.0, 'd_act_ms_p50': 200.0}
+    for placement in ('obs', 'act'):
+        _append_csv(str(out), argparse.Namespace(
+            label='x', strategy='rtc', latency_ms=100.0, jitter_ms=0.0,
+            placement=placement, reactive=True), row)
+
+    with open(out) as fh:
+        rows = list(csv.DictReader(fh))
+    assert [r['placement'] for r in rows] == ['obs', 'act']
+    assert rows[0]['d_act_ms_p50'] == '200.0'
+    assert rows[0]['wp_rx_hz'] == 'nan', 'a metric the row lacks must be NaN, not shifted'
 
 
 # ------------------------------------------------------- waypoint stream shape

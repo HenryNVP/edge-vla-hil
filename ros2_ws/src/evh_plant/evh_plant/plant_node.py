@@ -38,7 +38,7 @@ from rclpy.qos_event import SubscriptionEventCallbacks
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Bool, Empty
 
-from evh_plant.env_factory import EnvSpec, build_env
+from evh_plant.env_factory import EnvSpec, build_env, eef_to_control_quat
 from evh_plant.messages import PlantObservation
 from evh_plant.video import VideoRecorder
 
@@ -289,6 +289,10 @@ class PlantNode(Node):
         ABSOLUTE target at the world origin (0,0,0), yanking the arm off the table until the
         reactive layer's first /cmd/action lands (~one inference latency) — so command the CURRENT
         EE pose instead, i.e. a genuine hold. Gripper stays 0 (neutral/open at episode start).
+
+        The orientation goes out in the OSC's tool frame, not the frame `robot0_eef_quat` reports:
+        the reported one is 90 degrees off about z, and commanding it twists the arm for as long as
+        the hold lasts (invariant 7) — the start of every episode, and any /cmd/action silence.
         """
         action = np.zeros(self._action_dim, dtype=np.float32)
         if self.absolute_actions and self._obs is not None and self._action_dim >= 6:
@@ -302,7 +306,7 @@ class PlantNode(Node):
                     f'absolute-mode hold needs {exc} in the obs dict — refusing to fall back '
                     'to a zero action, which OSC would read as the world origin') from None
             action[:3] = ee_pos
-            action[3:6] = _quat_to_axisangle(ee_quat).astype(np.float32)
+            action[3:6] = _quat_to_axisangle(eef_to_control_quat(ee_quat)).astype(np.float32)
         return action
 
     # --------------------------------------------------------------- episodes
