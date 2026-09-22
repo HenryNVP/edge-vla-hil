@@ -19,6 +19,7 @@ from __future__ import annotations
 import numpy as np
 
 from evh_controller.chunk_executor.base import ChunkExecutor
+from evh_controller.rotation import average_axisangles
 
 
 class SynchronousExecutor(ChunkExecutor):
@@ -88,6 +89,10 @@ class TemporalEnsembleExecutor(ChunkExecutor):
     covering the current tick gets the highest weight: w_i = exp(-m * i) with i ranked oldest
     first (m=0.01 there, near-uniform). Smoothness only — no latency model; this is the weak
     baseline RTC beats.
+
+    With ABSOLUTE actions the rotation part is averaged as a rotation (rotation.average_axisangles),
+    not element-wise: absolute orientation targets sit at the pi wrap, where element-wise
+    averaging of axis-angle vectors returns the identity. Position and gripper stay linear.
     """
     name = 'temporal_ensemble'
 
@@ -117,4 +122,7 @@ class TemporalEnsembleExecutor(ChunkExecutor):
             return None
         votes = np.stack([c[t - t0] for t0, c in covering])
         w = np.exp(-self.m * np.arange(len(covering)))
-        return np.average(votes, axis=0, weights=w / w.sum())
+        action = np.average(votes, axis=0, weights=w / w.sum())
+        if getattr(self.policy, 'absolute_actions', False) and votes.shape[1] >= 6:
+            action[3:6] = average_axisangles(votes[:, 3:6], w)
+        return action

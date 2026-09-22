@@ -14,14 +14,14 @@ from conftest import requires_ros2
 def _stub(executor=None):
     from builtin_interfaces.msg import Time
 
-    published = {k: [] for k in ('waypoint', 'latency', 'delay', 'lost', 'request', 'age')}
+    published = {k: [] for k in ('waypoint', 'delay', 'lost', 'request', 'age')}
 
     def _pub(key):
         return types.SimpleNamespace(publish=lambda m: published[key].append(m))
 
     stub = types.SimpleNamespace(
         chunk_executor=executor, worker=None, info=None, _t=0,
-        pub_waypoint=_pub('waypoint'), pub_latency=_pub('latency'), pub_delay=_pub('delay'),
+        pub_waypoint=_pub('waypoint'), pub_delay=_pub('delay'),
         pub_lost=_pub('lost'), pub_request=_pub('request'), pub_chunk_age=_pub('age'),
         get_clock=lambda: types.SimpleNamespace(
             now=lambda: types.SimpleNamespace(to_msg=lambda: Time(sec=1, nanosec=0),
@@ -79,11 +79,13 @@ def test_a_hold_publishes_nothing():
 
 @requires_ros2
 def test_arrival_and_loss_metrics_use_the_policy_side_names():
+    """Inference time is not among them: the serving controller already publishes it once per
+    computed chunk, and a second copy on arrival double-counted every chunk."""
     from evh_controller.executor_node import ExecutorNode
 
     stub = _stub(FakeExecutor(action=np.zeros(7), metrics=(68.0, 9), lost=2))
     ExecutorNode._tick(stub)
-    assert [m.data for m in stub.published['latency']] == pytest.approx([68.0])
+    assert not hasattr(stub, 'pub_latency')
     assert [m.data for m in stub.published['delay']] == pytest.approx([9.0])
     assert len(stub.published['lost']) == 2
 

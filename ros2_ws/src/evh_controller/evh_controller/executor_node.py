@@ -11,10 +11,11 @@ with `executor:=robot`, paired with a `controller_node` in the same mode serving
     /episode/reset             -> executor.reset()
 
 Metrics, named as in the policy-side placement so the recorder reads both the same way:
-  /metrics/inference_ms   the server's compute time, carried in the chunk
   /metrics/delay_steps    request -> arrival in robot ticks: here the WHOLE round trip
   /metrics/chunk_age_ms   downlink delay of each chunk (send stamp to arrival): d_act
   /metrics/request_lost   1.0 per request given up on after the timeout
+/metrics/inference_ms is NOT published here: the serving controller publishes it once per chunk
+it computes, and publishing it again on arrival counted every chunk twice.
 """
 from __future__ import annotations
 
@@ -77,7 +78,6 @@ class ExecutorNode(Node):
 
         self.pub_request = self.create_publisher(JointState, '/policy/request', WAYPOINT_QOS)
         self.pub_waypoint = self.create_publisher(JointState, '/cmd/waypoint', WAYPOINT_QOS)
-        self.pub_latency = self.create_publisher(Float32, '/metrics/inference_ms', 10)
         self.pub_delay = self.create_publisher(Float32, '/metrics/delay_steps', 10)
         self.pub_chunk_age = self.create_publisher(Float32, '/metrics/chunk_age_ms', 10)
         self.pub_lost = self.create_publisher(Float32, '/metrics/request_lost', 10)
@@ -130,8 +130,7 @@ class ExecutorNode(Node):
 
         metrics = self.chunk_executor.take_arrival_metrics()
         if metrics is not None:
-            compute_ms, delay_steps = metrics
-            self.pub_latency.publish(Float32(data=float(compute_ms)))
+            _compute_ms, delay_steps = metrics
             self.pub_delay.publish(Float32(data=float(delay_steps)))
         for _ in range(self.chunk_executor.take_lost()):
             self.pub_lost.publish(Float32(data=1.0))

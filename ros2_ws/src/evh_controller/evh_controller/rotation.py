@@ -99,3 +99,24 @@ def abs7_to_abs10(chunk7: np.ndarray) -> np.ndarray:
         out[i, 3:9] = matrix_to_rotation_6d(axisangle_to_matrix(chunk7[i, 3:6]))
     out[:, 9] = chunk7[:, 6]
     return out
+
+
+def average_axisangles(vectors: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Weighted mean rotation of axis-angle vectors [N, 3], returned as axis-angle.
+
+    Averaging the vectors element-wise is wrong exactly where absolute targets live: near the pi
+    wrap, v and a near-antipodal -v' describe almost the same rotation and average to ~0, the
+    identity, i.e. a command to turn the gripper upside down. That is what temporal ensembling
+    did to every absolute action on Square (0.1-0.2 success at zero delay against 0.8 for the
+    other strategies). The chordal mean has no wrap: average the rotation MATRICES with the
+    weights, then project back onto SO(3) with an SVD (the closest rotation in Frobenius norm).
+    """
+    v = np.asarray(vectors, dtype=np.float64).reshape(-1, 3)
+    w = np.asarray(weights, dtype=np.float64).reshape(-1)
+    M = np.einsum('n,nij->ij', w / w.sum(), np.stack([axisangle_to_matrix(x) for x in v]))
+    U, _S, Vt = np.linalg.svd(M)
+    R = U @ Vt
+    if np.linalg.det(R) < 0:              # a reflection: flip the least significant axis
+        U[:, -1] *= -1.0
+        R = U @ Vt
+    return matrix_to_axisangle(R)

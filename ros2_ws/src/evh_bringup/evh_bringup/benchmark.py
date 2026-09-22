@@ -22,7 +22,7 @@ Two modes:
       --absolute/--backend must agree with the checkpoint (see resolve_absolute); the plant
       enforces this at runtime and aborts a mismatched cell rather than recording garbage.
 
-      Each cell waits for the graph to be READY (first /cmd/waypoint) rather than sleeping a
+      Each cell waits for the graph to be READY (first computed chunk) rather than sleeping a
       fixed --warmup: loading the DP checkpoint takes ~7 s warm and far longer cold, and a cell
       that starts recording early reports a throughput the graph never had. --warmup is the
       timeout on that wait, not a delay. Launch output goes to a per-cell log and the driver
@@ -383,10 +383,14 @@ def _shutdown(proc: subprocess.Popen) -> None:
 
 
 def wait_until_ready(timeout_s: float) -> float:
-    """Block until the graph produces its first /cmd/waypoint. Returns seconds waited, or -1.
+    """Block until the policy has computed its first chunk. Returns seconds waited, or -1.
 
-    A true end-to-end readiness signal: a waypoint means the plant is publishing observations,
-    the relay is forwarding them, the checkpoint is loaded and the policy has produced a chunk.
+    A true end-to-end readiness signal: a chunk means the plant is publishing observations, the
+    relays are forwarding them, the checkpoint is loaded and warmed up. It is deliberately NOT the
+    first /cmd/waypoint: a strategy may legitimately never emit one. With the executor on the
+    robot side and an 800 ms action path the round trip exceeds the chunk, so temporal
+    ensembling never has a prediction covering the current tick and holds forever; waiting for a
+    waypoint skipped that cell as "not ready" when its honest result is 0 successes.
     Sleeping a fixed interval instead guesses at all four, and guessing short is not benign — the
     recorder counts messages over the whole window, so a graph that is still coming up drags
     waypoint_hz down and the cell looks degraded by the condition rather than by the clock.
@@ -396,8 +400,9 @@ def wait_until_ready(timeout_s: float) -> float:
     rclpy.init()
     probe = rclpy.create_node('evh_benchmark_probe')
     seen: list[int] = []
-    probe.create_subscription(
-        JointState, '/cmd/waypoint', lambda _m: seen.append(1), WAYPOINT_QOS)
+    # published on every computed chunk by whichever node runs inference (controller_node in
+    # both placements), so it reads the same way for streamed and buffered execution
+    probe.create_subscription(Float32, '/metrics/inference_ms', lambda _m: seen.append(1), 10)
     t0 = time.perf_counter()
     try:
         while time.perf_counter() - t0 < timeout_s:
@@ -490,10 +495,10 @@ def run_sweep(args) -> None:
             try:
                 waited = wait_until_ready(args.warmup)
                 if waited < 0:
-                    # never produced a waypoint: checkpoint load failed, a node died, or the
+                    # never computed a chunk: checkpoint load failed, a node died, or the
                     # plant aborted on an action-mode mismatch. Recording anyway would write a
                     # zero row indistinguishable from "this condition is simply too degraded".
-                    failures.append((label, f'no /cmd/waypoint within {args.warmup:.0f}s'))
+                    failures.append((label, f'no chunk computed within {args.warmup:.0f}s'))
                     print(f'[sweep]   SKIPPED — not ready; see {log_path}')
                     continue
                 if proc.poll() is not None:
@@ -577,7 +582,7 @@ def main(argv=None) -> None:
                         'exactly the interesting end of the curve. 10 is a fast iteration default '
                         'and is NOT enough to separate success rates — raise it for a real run.')
     p.add_argument('--warmup', type=float, default=90.0,
-                   help='TIMEOUT (not a delay) on waiting for the first /cmd/waypoint')
+                   help='TIMEOUT (not a delay) on waiting for the first computed chunk')
     p.add_argument('--reactive_modes', choices=['both', 'on', 'off'], default='both',
                    help='which reactive-layer settings to sweep')
     p.add_argument('--video_dir', default='', help='record one mp4 per cell into this directory')

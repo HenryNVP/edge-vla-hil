@@ -376,3 +376,22 @@ def test_a_lost_request_produces_no_delay_sample():
     for t in range(3):
         ex.step(_obs(), t)
     assert ex._delays == []
+
+
+def test_temporal_ensemble_averages_absolute_rotations_as_rotations():
+    """Absolute targets sit at the pi wrap; an element-wise mean of two predictions on either side
+    of it commanded the identity rotation (Square: 0.1-0.2 success, the others 0.8)."""
+    policy = FakePolicy()
+    policy.absolute_actions = True
+    worker = FakeWorker(policy, delay_steps=1)
+    near = np.array([0.4, 0.0, 1.0, np.pi - 0.02, 0.0, 0.0, 1.0], dtype=np.float32)
+    flipped = near.copy()
+    flipped[3] = -(np.pi - 0.03)
+    chunks = iter([np.tile(near, (H, 1)), np.tile(flipped, (H, 1))] * 4)
+    policy.next_chunk = lambda: next(chunks)
+    ex = TemporalEnsembleExecutor(worker, policy, m=0.0, replan_every=1)
+
+    actions = [ex.step(_obs(), t) for t in range(4)]
+    blended = [a for a in actions if a is not None][-1]
+    assert np.linalg.norm(blended[3:6]) > 3.0, 'rotations averaged element-wise'
+    assert blended[0] == pytest.approx(0.4) and blended[6] == pytest.approx(1.0)
