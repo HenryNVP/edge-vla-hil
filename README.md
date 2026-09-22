@@ -28,16 +28,16 @@ is measured rather than assumed.
 ros2_ws/src/
 ├── evh_plant/        # robosuite (MuJoCo) sim wrapped as a ROS2 node  [PC host]
 ├── evh_controller/   # diffusion/flow policy + pluggable chunk-execution strategy  [Jetson]
-│   ├── policy.py          # diffusion/flow backends (PyTorch + TensorRT)
-│   └── chunk_executor.py  # synchronous|naive_async|temporal_ensemble|bid|rtc|network_aware
-├── evh_reactive/     # high-rate operational-space impedance controller
+│   ├── policy.py          # policy backends (PyTorch, ACT, ONNX Runtime, diffusion_policy)
+│   └── chunk_executor/    # synchronous|naive_async|temporal_ensemble|bid|rtc|network_aware
+├── evh_reactive/     # high-rate local setpoint tracking (robosuite's OSC supplies the impedance)
 ├── evh_latency/      # programmable latency / jitter / drop / reorder at the DDS boundary
 └── evh_bringup/      # launch files, configs, metrics recorder / benchmark
 docker/               # Dockerfile.host (x86) and Dockerfile.jetson (arm64)
-scripts/              # one-off tooling (dataset conversion, ONNX export, TRT build)
+scripts/              # one-off tooling (dataset conversion, ONNX export, evals)
 ```
 
-The **chunk-execution strategy** (`chunk_executor.py`) is the experiment's core seam: Wedge A
+The **chunk-execution strategy** (`chunk_executor/`) is the experiment's core seam: Wedge A
 reproduces the baselines; Wedge B drops in `network_aware` (RTC with a measured-RTT/jitter delay
 forecast) without touching the ROS2 node.
 
@@ -157,8 +157,8 @@ docker run -it --rm --network host --runtime nvidia \
     backend:=dp weights:=/ws/checkpoints/dp_lift_ph_image_cnn.ckpt
 ```
 
-`backend:=dp` runs the real policy on the L4T torch wheels in the base image; `tensorrt` is a stub
-(zeros/unimplemented), only useful for plumbing smoke tests.
+`backend:=dp` runs the real policy on the L4T torch wheels in the base image; `backend:=onnx` or
+`dp_onnx` runs an exported policy on ONNX Runtime with no torch at all.
 
 First thing to measure on-device is **inference time per chunk** — the controller logs it and
 publishes it on `/metrics/inference_ms`. On an RTX 5060 it is ~262 ms (16 DDIM steps). That single
@@ -400,12 +400,13 @@ ros2 run evh_bringup benchmark --sweep latency \
 
 ## Status
 
-Phase 2 in progress. In place: the HiL plumbing, the latency harness, the episode/metrics plane
+In place: the HiL plumbing, the latency harness, the episode/metrics plane
 (success AND timeout recorded, `/episode/reset` boundary signal), the full-action contract
 (gripper included; reactive layer tracks absolute targets from zero-delay local EE state), and
 **asynchronous chunk execution** — policy inference on a background worker, arrival-based
 strategies, honestly measured request→arrival delay feeding RTC's forecast
 (`/metrics/inference_ms`, `/metrics/delay_steps`), and **ACT policies trained on robomimic Lift**
-in both action modes (9/10 absolute, 7/10 delta at zero latency — see the table above). Still to
-come: true guided inpainting for RTC + real BID (Phase 3), TensorRT backend (Phase 4). See
-per-package docstrings.
+in both action modes (9/10 absolute, 7/10 delta at zero latency — see the table above), real
+guided inpainting for RTC on the DP backend, and ONNX Runtime backends for ACT and DP. Next:
+measuring observation, inference and action delay separately (only the observation path is
+relayed today), robot-side chunk buffering, and bursty-loss and trace-replay channel models. BID is still a stub. See per-package docstrings.

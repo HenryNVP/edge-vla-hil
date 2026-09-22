@@ -4,6 +4,13 @@ GitHub Repository Name: edge-vla-hil
 Project Name: EdgeVLA-HiL (Edge Vision-Language-Action Hardware-in-the-Loop) — see §1 for
 what is literally hardware in this loop and what is not.
 
+> **Status (2026-09-22): original pitch, kept for the motivation and §1's scoping of the HiL
+> claim.** §5–§7 (experiments, phases, future work) are out of date. Changes since this was
+> written: TensorRT is out of the project (the Jetson runs ONNX Runtime); the reactive layer is
+> a setpoint interpolator over robosuite's OSC, not a separate impedance controller; and the
+> "first edge-network benchmark" claim is narrowed, since recent cloud-robotics work models
+> jitter or variable connectivity.
+
 ## 1. Executive Summary
 
 Action-chunking policies (ACT, Diffusion Policy) and VLAs are slow to run, so a growing body of
@@ -22,7 +29,7 @@ reordering** at the DDS layer. On this testbed we deliver:
 1. **The first edge-network benchmark** of SOTA latency-robust chunking strategies
    (synchronous, naive-async, Temporal Ensembling, BID, **RTC**) under *physically realistic*
    network degradation — not just a deterministic delay constant.
-2. **A high-rate local reactive layer** (operational-space impedance controller) that recovers
+2. **A high-rate local reactive layer** (setpoint tracking on zero-delay local state) that recovers
    task success the inference-time methods lose when delay becomes stochastic, and that composes
    with them rather than replacing them.
 
@@ -62,8 +69,8 @@ number of timesteps. The gap between that and a real edge deployment is exactly:
 
 This project targets that gap directly:
 
-- **Edge AI deployment:** compile and run a small diffusion/flow policy natively on a Jetson Orin
-  Nano (ONNX → TensorRT) and report the honest achievable inference rate.
+- **Edge AI deployment:** run a small policy natively on a Jetson Orin Nano (ONNX Runtime) and
+  report the honest achievable inference rate.
 - **Testbed validation:** reproduce latency-robust chunking strategies and measure where each breaks
   under injected jitter/loss/reorder — reproducibly, with a seeded harness.
 - **Async hierarchical control:** show a fast local reactive layer recovers performance the
@@ -80,8 +87,9 @@ flow policy; few-step / consistency sampling for the Jetson). This choice is del
   latency motivation realistic rather than contrived. We use a few-step sampler to keep the Orin
   Nano honest while preserving the effect under study.
 - **Action space:** end-effector (Cartesian) pose deltas via RoboMimic's `OSC_POSE` controller, so
-  the cognitive layer emits task-space targets and the reactive layer tracks them with Cartesian
-  impedance (Jacobian-transpose, no IK).
+  the cognitive layer emits task-space targets and the reactive layer tracks them; robosuite's
+  OSC supplies the Cartesian impedance underneath. (The DP Lift checkpoint turned out to be the
+  absolute-action variant, so the stack runs absolute targets by default.)
 
 **ACT + Temporal Ensembling** is retained as a deterministic baseline. **AWE** (sparse waypoints)
 is an *optional sparsity ablation*, not the centerpiece.
@@ -98,11 +106,12 @@ robosuite/MuJoCo (RoboMimic task) wrapped as a ROS2 node: steps physics, publish
 The diffusion/flow policy + a **pluggable chunk-execution strategy**. The strategy is the heart of
 the experiment and the extensibility seam: `{synchronous, naive_async, temporal_ensemble, bid,
 rtc}` for Wedge A, with `network_aware` reserved for Wedge B (Section 7). The policy backend is
-swappable PyTorch ↔ TensorRT so a TRT stall never blocks the science.
+swappable (PyTorch, diffusion_policy, ONNX Runtime) behind one interface.
 
 ### C. Reactive Local Layer
-High-rate (~200–500 Hz) operational-space impedance controller, co-located with the plant
-(zero-delay local state). Tracks the (delayed) task-space targets between cognitive updates. Fixed
+High-rate (~200–500 Hz) setpoint tracker, co-located with the plant (zero-delay local state):
+a rate-limited interpolator in absolute mode, a proportional tracker in delta mode, with
+robosuite's OSC supplying the impedance. Tracks the (delayed) task-space targets between cognitive updates. Fixed
 gains in this work. A `passthrough` mode reproduces the monolithic (no-reactive-layer) baseline.
 
 ### D. Latency Harness (the instrument)
@@ -146,10 +155,10 @@ network boundary. Implement the chunk-execution strategy interface with the simp
 inpainting) and BID against the flow policy. Validate they match published behavior at
 deterministic delay before adding network effects.
 
-**Phase 4 — Jetson deployment (Weeks 6–8, overlaps).** ONNX → TensorRT; honest inference rate.
-PyTorch fallback built first as insurance.
+**Phase 4 — Jetson deployment (Weeks 6–8, overlaps).** ONNX Runtime on the Jetson; honest
+inference rate. PyTorch fallback built first as insurance.
 
-**Phase 5 — Reactive layer + benchmark sweep (Weeks 8–12).** Add the impedance layer; run the full
+**Phase 5 — Reactive layer + benchmark sweep (Weeks 8–12).** Add the reactive layer; run the full
 sweep over latency/jitter/loss × strategy × reactive on/off; produce the headline plots; writeup,
 README, demo video.
 
