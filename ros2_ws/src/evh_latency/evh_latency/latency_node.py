@@ -13,7 +13,10 @@ Effects (composable):
                   only loses to a quantile when the tail is heavy. `lognormal` supplies that
                   tail (occasional large spikes, same mean deviation), so a sweep can actually
                   distinguish the two forecasts instead of feeding them identical integers.
-  * drop_prob   : probability a message is dropped entirely (packet loss).
+  * drop_prob   : average probability a message is dropped entirely (packet loss).
+  * loss_model  : iid (each message independently) | gilbert (bursty: whole outages averaging
+                  `burst_ms`, at the same average rate, sharing one state across every relay).
+                  See channel.py, where the delay and loss statistics live, ROS-free.
   * reorder     : if False (default), enforce monotonic release ordering even when jitter would
                   otherwise reorder messages (TCP-like); if True, allow reordering (UDP-like).
   * enabled     : if False, forward every message immediately and ignore all of the above.
@@ -42,12 +45,13 @@ from __future__ import annotations
 
 import heapq
 import itertools
-import random
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rosidl_runtime_py.utilities import get_message
+
+from evh_latency.channel import Channel
 
 # rcl will not take a zero-length timer period; the head of the queue is always strictly in the
 # future by the time we arm (_drain pops everything already due), so this only floors the rounding.
@@ -65,6 +69,8 @@ class LatencyNode(Node):
         self.declare_parameter('jitter_ms', 0.0)
         self.declare_parameter('jitter_model', 'gaussian')   # gaussian|uniform|lognormal
         self.declare_parameter('drop_prob', 0.0)
+        self.declare_parameter('loss_model', 'iid')          # iid|gilbert
+        self.declare_parameter('burst_ms', 100.0)            # gilbert: mean outage length
         self.declare_parameter('reorder', False)
         self.declare_parameter('seed', 0)
         self.declare_parameter('enabled', True)
@@ -80,7 +86,12 @@ class LatencyNode(Node):
         self.reorder = bool(self.get_parameter('reorder').value)
         self.enabled = bool(self.get_parameter('enabled').value)
 
-        self._rng = random.Random(int(self.get_parameter('seed').value))
+        self.loss_model = self.get_parameter('loss_model').value
+        self.channel = Channel(
+            latency_ms=self.latency_ms, jitter_ms=self.jitter_ms, jitter_model=self.jitter_model,
+            drop_prob=self.drop_prob, loss_model=self.loss_model,
+            burst_ms=float(self.get_parameter('burst_ms').value),
+            seed=int(self.get_parameter('seed').value))
         self._heap: list[tuple[float, int, object]] = []     # (release_t, seq, msg)
         self._seq = itertools.count()
         self._last_release = 0.0
@@ -95,7 +106,8 @@ class LatencyNode(Node):
 
         self.get_logger().info(
             f'evh_latency: {in_topic} -> {out_topic} [{type_str}] '
-            + (f'lat={self.latency_ms}ms jitter={self.jitter_ms}ms drop={self.drop_prob}'
+            + (f'lat={self.latency_ms}ms jitter={self.jitter_ms}ms drop={self.drop_prob} '
+               f'({self.loss_model})'
                if self.enabled else 'DISABLED (pass-through)'))
 
     # --------------------------------------------------------------- ingest
@@ -103,11 +115,11 @@ class LatencyNode(Node):
         if not self.enabled:
             self.pub.publish(msg)
             return
-        if self.drop_prob > 0.0 and self._rng.random() < self.drop_prob:
+        now = self._now_s()
+        if self.channel.dropped(now):
             return  # dropped
 
-        delay_s = self._sample_delay_ms() / 1e3
-        now = self._now_s()
+        delay_s = self.channel.delay_ms() / 1e3
         release = now + delay_s
         if not self.reorder:
             release = max(release, self._last_release)   # preserve order (no overtaking)
@@ -140,22 +152,6 @@ class LatencyNode(Node):
         self._timer.reset()   # also clears the cancelled state
 
     # -------------------------------------------------------------- helpers
-    def _sample_delay_ms(self) -> float:
-        """Sample this message's one-way delay. Never negative; see jitter_model in the docstring."""
-        d = self.latency_ms
-        if self.jitter_ms > 0.0:
-            if self.jitter_model == 'uniform':
-                d += self._rng.uniform(-self.jitter_ms, self.jitter_ms)
-            elif self.jitter_model == 'lognormal':
-                # heavy-tailed and one-sided: a link is occasionally much slower than nominal and
-                # never faster. Scaled so the MEAN excess is jitter_ms, keeping the knob
-                # comparable to the light-tailed models while the tail behaves nothing like them.
-                sigma = 1.0
-                d += self.jitter_ms * self._rng.lognormvariate(-0.5 * sigma * sigma, sigma)
-            else:
-                d += self._rng.gauss(0.0, self.jitter_ms)
-        return max(0.0, d)
-
     def _now_s(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9
 

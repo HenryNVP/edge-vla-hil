@@ -339,3 +339,40 @@ def test_the_base_policy_does_not_claim_the_capability():
     assert ChunkPolicy.guided_resampling is False
     assert ACTBackend.guided_resampling is False
     assert ONNXBackend.guided_resampling is False
+
+
+# ------------------------------------------------------------- remote loss handling
+class LosingWorker(FakeWorker):
+    """Like FakeWorker, but the listed request numbers come back `lost` (a remote timeout)."""
+
+    def __init__(self, policy, delay_steps=1, lose=()):
+        super().__init__(policy, delay_steps)
+        self.lose = set(lose)
+
+    def poll(self):
+        arrival = super().poll()
+        if arrival is not None and len(self.requests) - 1 in self.lose:
+            return Arrival(np.zeros((0, A), np.float32), arrival.t_issue, arrival.epoch,
+                           0.0, lost=True)
+        return arrival
+
+
+@pytest.mark.parametrize('name', ['synchronous', 'naive_async', 'rtc'])
+def test_a_lost_request_frees_the_slot_and_is_counted(name):
+    policy = FakePolicy()
+    worker = LosingWorker(policy, delay_steps=2, lose={0})
+    ex = make_executor(name, worker, policy)
+    for t in range(12):
+        ex.step(_obs(), t)
+    assert ex.take_lost() == 1
+    assert ex.take_lost() == 0, 'the count must reset once taken'
+    assert len(worker.requests) >= 2, 'never re-asked after the loss'
+
+
+def test_a_lost_request_produces_no_delay_sample():
+    """A timeout is missing data, not a very long delay; it must not enter RTC's forecast."""
+    policy = FakePolicy()
+    ex = RTCExecutor(LosingWorker(policy, delay_steps=2, lose={0}), policy)
+    for t in range(3):
+        ex.step(_obs(), t)
+    assert ex._delays == []

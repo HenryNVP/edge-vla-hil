@@ -36,6 +36,7 @@ class Arrival:
     t_issue: int           # control tick the request was issued at
     epoch: int             # executor epoch at issue time (stale-after-reset guard)
     compute_s: float       # wall-clock inference time
+    lost: bool = False     # remote only: the request or its reply never came (see remote_worker)
 
 
 @dataclass

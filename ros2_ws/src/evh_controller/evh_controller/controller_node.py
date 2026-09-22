@@ -17,6 +17,15 @@ honestly and published, and is what feeds RTC's delay forecast.
 Resets the executor (chunk buffers, timestep counter) on /episode/reset from the plant so chunks
 never bleed across episode boundaries.
 
+`executor` chooses where chunks are executed, one of the paper's factors:
+  policy  (default) the executor runs here and streams one waypoint per tick over the network.
+  robot   the executor runs next to the robot (executor_node.py) and this node only SERVES
+          chunks: a request arrives on /policy/request, is answered from the newest observation
+          history on /cmd/chunk (chunk_server.py). `strategy` is then the executor node's
+          parameter, not this one's.
+Either way the node announces the policy's shape on the latched /policy/info, which is all the
+robot side needs to run a strategy without loading the model.
+
 Wiring only. The pieces with behaviour of their own live beside it: `chunk_executor/` (the
 strategies), `inference_worker.py` (the background GPU slot), `obs_buffer.py` (the observation
 history contract), `policy.py` (the backends).
@@ -45,7 +54,9 @@ from rclpy.qos import (
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Bool, Empty, Float32
 
+from evh_controller.chunk_codec import CodecError, decode_request, encode_chunk
 from evh_controller.chunk_executor import make_executor
+from evh_controller.chunk_server import ChunkServer
 from evh_controller.inference_worker import InferenceWorker
 from evh_controller.obs_buffer import ObsBuffer
 from evh_controller.policy import make_policy
@@ -69,6 +80,11 @@ MODE_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
 # prevent. Newest-wins, no retransmit, no head-of-line blocking.
 WAYPOINT_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
                           history=QoSHistoryPolicy.KEEP_LAST)
+# The chunk request/reply pair (robot-side execution) reuses it for the same reasons: a retry or a
+# newer chunk supersedes an old one, and a reliable resend would only deliver something stale.
+
+# How often the chunk server checks for a finished chunk (robot-side execution only).
+SERVE_HZ = 200.0
 
 
 def _parse_absolute(value: str) -> bool | None:
@@ -105,6 +121,7 @@ class ControllerNode(Node):
         self.declare_parameter('denoise_steps', 16)  # dp backend: DDIM steps (0=ckpt default)
         self.declare_parameter('prompt', 'pick up the block')
         self.declare_parameter('policy_absolute', 'auto')    # auto (from checkpoint) | true | false
+        self.declare_parameter('executor', 'policy')         # policy | robot (see docstring)
 
         backend = self.get_parameter('backend').value
         weights = self.get_parameter('weights_path').value
@@ -112,13 +129,24 @@ class ControllerNode(Node):
         self.control_hz = self.get_parameter('control_hz').value
         denoise_steps = int(self.get_parameter('denoise_steps').value)
         absolute = _parse_absolute(self.get_parameter('policy_absolute').value)
+        self.placement = str(self.get_parameter('executor').value).strip().lower()
+        if self.placement not in ('policy', 'robot'):
+            raise ValueError(f"executor must be policy|robot, got {self.placement!r}")
 
         self.policy = make_policy(backend, weights, denoise_steps=denoise_steps,
                                   absolute=absolute)
         self.worker = InferenceWorker(self.policy)
-        self.chunk_executor = make_executor(strategy, self.worker, self.policy)
+        if self.placement == 'policy':
+            self.chunk_executor = make_executor(strategy, self.worker, self.policy)
+            self.server = None
+        else:
+            self.chunk_executor = None
+            self.server = ChunkServer(self.worker)
+        self._latest_obs: dict | None = None
         self.get_logger().info(
-            f'evh_controller: backend={backend} strategy={strategy} ctrl={self.control_hz}Hz '
+            f'evh_controller: backend={backend} executor={self.placement} '
+            f'strategy={strategy if self.placement == "policy" else "(robot side)"} '
+            f'ctrl={self.control_hz}Hz '
             f'chunk={self.policy.chunk_size} n_obs={self.policy.n_obs_steps} '
             f'absolute={self.policy.absolute_actions} '
             f'guided={self.policy.guided_resampling}')
@@ -143,6 +171,16 @@ class ControllerNode(Node):
         # announce the mode the CHECKPOINT dictates so the plant can cross-check its launch arg
         self.pub_mode = self.create_publisher(Bool, '/policy/absolute', MODE_QOS)
         self.pub_mode.publish(Bool(data=bool(self.policy.absolute_actions)))
+        # the policy's shape, for a robot-side executor that never loads the model
+        self.pub_info = self.create_publisher(JointState, '/policy/info', MODE_QOS)
+        self.pub_info.publish(self._policy_info_msg())
+
+        if self.server is not None:
+            self.create_subscription(
+                JointState, '/policy/request', self._on_request, WAYPOINT_QOS)
+            self.pub_chunk = self.create_publisher(JointState, '/cmd/chunk', WAYPOINT_QOS)
+            # faster than the control tick so a finished chunk is not held back up to 50 ms
+            self.create_timer(1.0 / SERVE_HZ, self._serve)
 
         self.create_timer(1.0 / self.control_hz, self._tick)
 
@@ -159,9 +197,29 @@ class ControllerNode(Node):
         self.obs.put('proprio', np.asarray(msg.position, dtype=np.float32), _stamp_s(msg))
 
     def _on_episode_reset(self, _msg: Empty) -> None:
-        self.chunk_executor.reset()
+        if self.chunk_executor is not None:
+            self.chunk_executor.reset()
+        if self.server is not None:
+            self.server.reset()
         self.obs.clear()
+        self._latest_obs = None
         self._t = 0
+
+    def _on_request(self, msg: JointState) -> None:
+        try:
+            self.server.on_request(decode_request(msg.position))
+        except CodecError as exc:
+            self.get_logger().warn(f'dropping a malformed chunk request: {exc}')
+
+    def _serve(self) -> None:
+        chunk = self.server.step(self._latest_obs)
+        if chunk is None:
+            return
+        self.pub_latency.publish(Float32(data=float(chunk.compute_s * 1e3)))
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.position = encode_chunk(chunk)
+        self.pub_chunk.publish(msg)
 
     # --------------------------------------------------------------- control
     def _tick(self) -> None:
@@ -171,6 +229,9 @@ class ControllerNode(Node):
         age = self.obs.age(self.get_clock().now().nanoseconds / 1e9)
         if age is not None:
             self.pub_obs_age.publish(Float32(data=float(age * 1e3)))
+        if self.chunk_executor is None:
+            self._latest_obs = obs     # serving: requests are answered from this history
+            return
 
         action = self.chunk_executor.step(obs, self._t)
         self._t += 1
@@ -185,6 +246,14 @@ class ControllerNode(Node):
             self.pub_waypoint.publish(self._to_waypoint(action))
 
     # --------------------------------------------------------------- helpers
+    def _policy_info_msg(self) -> JointState:
+        """[chunk_size, action_dim, guided_resampling, absolute_actions] — see executor_node."""
+        msg = JointState()
+        msg.position = [float(self.policy.chunk_size), float(self.policy.action_dim),
+                        float(bool(self.policy.guided_resampling)),
+                        float(bool(self.policy.absolute_actions))]
+        return msg
+
     def _to_waypoint(self, action: np.ndarray) -> JointState:
         """Pack the full OSC_POSE action [dpos(3), drot(3), gripper] into the waypoint message.
 

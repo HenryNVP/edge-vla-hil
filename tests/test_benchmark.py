@@ -25,7 +25,9 @@ def _blank_recorder():
     rec._waypoints = []
     rec._rx_stamps = []
     rec._d_obs_ms = []
-    rec._d_inf_steps = []
+    rec._d_chunk_steps = []
+    rec._chunk_age_ms = []
+    rec._req_lost = 0
     rec._d_act_ms = []
     return rec
 
@@ -69,8 +71,9 @@ def test_summary_reports_zero_throughput_without_traffic():
     assert s['loop_hz'] == 0.0
     # a quantity that was never observed has no value, unlike a throughput of zero
     assert s['wp_rx_hz'] == 0.0
+    assert s['req_lost'] == 0
     for key in ('infer_ms_mean', 'infer_ms_p95', 'wp_step_mm', 'wp_jerk_mm', 'wp_gap_p95_ms',
-                'd_obs_ms_p50', 'd_obs_ms_p95', 'd_inf_steps_p50', 'd_inf_steps_p95',
+                'd_obs_ms_p50', 'd_obs_ms_p95', 'd_chunk_steps_p50', 'd_chunk_steps_p95',
                 'd_act_ms_p50', 'd_act_ms_p95', 'wp_rx_gap_p95_ms'):
         assert math.isnan(s[key]), f'{key} reported a value for a cell that saw no traffic'
 
@@ -83,13 +86,13 @@ def test_each_delay_component_is_summarised_from_its_own_stream():
 
     rec = _blank_recorder()
     rec._d_obs_ms = [10.0] * 19 + [100.0]
-    rec._d_inf_steps = [2.0] * 20
+    rec._d_chunk_steps = [2.0] * 20
     rec._d_act_ms = [200.0] * 20
     s = Recorder.summary(rec, 1.0)
 
     assert s['d_obs_ms_p50'] == 10.0, 'the median must not be dragged by the outlier'
     assert s['d_obs_ms_p95'] > 10.0, 'p95 should see the tail'
-    assert s['d_inf_steps_p50'] == 2.0
+    assert s['d_chunk_steps_p50'] == 2.0
     assert s['d_act_ms_p50'] == 200.0 and s['d_act_ms_p95'] == 200.0
 
 
@@ -373,3 +376,32 @@ def test_auto_absolute_reads_an_onnx_sidecar(tmp_path):
     onnx.write_bytes(b'')
     (tmp_path / 'act_lift.json').write_text('{"absolute_actions": true, "chunk_size": 16}')
     assert resolve_absolute('auto', 'onnx', str(onnx)) == 'true'
+
+
+@requires_ros2
+def test_buffered_chunks_take_the_action_delay_from_the_downlink():
+    """With the executor on the robot side the waypoint hop is local (~1 ms); the delay the
+    action path adds is the chunk's, and reporting the waypoint's would hide it."""
+    from evh_bringup.benchmark import Recorder
+
+    rec = _blank_recorder()
+    rec._d_act_ms = [1.0] * 10          # local waypoint hop
+    rec._chunk_age_ms = [200.0] * 10    # chunk downlink
+    s = Recorder.summary(rec, 1.0)
+    assert s['d_act_ms_p50'] == 200.0
+
+
+@requires_ros2
+def test_rows_record_their_executor_placement(tmp_path):
+    import argparse
+    import csv
+
+    from evh_bringup.benchmark import _append_csv
+
+    out = tmp_path / 'rows.csv'
+    _append_csv(str(out), argparse.Namespace(
+        label='x', strategy='rtc', latency_ms=0.0, jitter_ms=0.0, placement='act',
+        executor='robot', reactive=True), {'trials': 1, 'req_lost': 3})
+    with open(out) as fh:
+        row = next(csv.DictReader(fh))
+    assert row['executor'] == 'robot' and row['req_lost'] == '3'

@@ -14,7 +14,9 @@ Called once per control timestep by the controller:
 
 Two pieces of bookkeeping live here so no strategy has to re-derive them: the single-slot request
 guard (`_issue`), and the epoch check in `_poll` that throws away a chunk computed against
-observations from before a reset. The measured request->arrival delay recorded there is the honest
+observations from before a reset. A third matters only when the worker is remote
+(remote_worker.py, robot-side execution): a request that timed out comes back as a `lost`
+Arrival, and `_poll` frees the slot so the strategy simply asks again. No strategy sees it. The measured request->arrival delay recorded there is the honest
 number RTC's forecast is built on — see rtc.py.
 """
 from __future__ import annotations
@@ -42,6 +44,7 @@ class ChunkExecutor(ABC):
         self._epoch = 0
         self._pending_t: int | None = None
         self._arrival_metrics: tuple[float, int] | None = None
+        self._lost = 0
         self.reset()
 
     def reset(self) -> None:
@@ -64,6 +67,11 @@ class ChunkExecutor(ABC):
         m, self._arrival_metrics = self._arrival_metrics, None
         return m
 
+    def take_lost(self) -> int:
+        """Requests given up on (remote worker timeouts) since the last call."""
+        n, self._lost = self._lost, 0
+        return n
+
     # ----------------------------------------------------------- worker plumbing
     def _issue(self, obs: dict, t: int,
                prefix: np.ndarray | None = None, weights: np.ndarray | None = None) -> bool:
@@ -82,6 +90,9 @@ class ChunkExecutor(ABC):
         if arrival.epoch != self._epoch:
             return None          # computed against pre-reset observations
         self._pending_t = None
+        if arrival.lost:
+            self._lost += 1      # nothing in flight any more; the strategy will ask again
+            return None
         delay = max(0, t - arrival.t_issue)
         self._arrival_metrics = (arrival.compute_s * 1e3, delay)
         return arrival

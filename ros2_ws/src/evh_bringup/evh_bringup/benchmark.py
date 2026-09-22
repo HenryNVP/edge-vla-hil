@@ -33,15 +33,21 @@ Two modes:
       launch's delay_obs / delay_act. Every placement runs the same graph: the undegraded path's
       relays stay in, in pass-through, so placements differ only in where the delay sits.
 
-CSV columns: condition,strategy,latency_ms,jitter_ms,placement,reactive,trials,success_rate,
-             infer_ms_mean,infer_ms_p95,waypoint_hz,loop_hz,wp_step_mm,wp_jerk_mm,wp_gap_p95_ms,
-             d_obs_ms_p50,d_obs_ms_p95,d_inf_steps_p50,d_inf_steps_p95,d_act_ms_p50,
-             d_act_ms_p95,wp_rx_hz,wp_rx_gap_p95_ms,truncated
+      --executor picks where chunks are executed (policy: streamed per tick; robot: buffered next
+      to the robot, see evh_controller/remote_worker.py).
 
-The d_* columns are the three delay components a chunk has to bridge, each measured where it
-happens: d_obs by the controller (age of the observation it uses, per tick), d_inf by the
-executor (request -> arrival, in control steps), d_act by the reactive layer (waypoint age on
-arrival). They are what makes a row checkable against its label: a "200 ms action-path" cell
+CSV columns: condition,strategy,latency_ms,jitter_ms,jitter_model,drop_prob,loss_model,burst_ms,
+             placement,executor,reactive,trials,
+             success_rate,infer_ms_mean,infer_ms_p95,waypoint_hz,loop_hz,wp_step_mm,wp_jerk_mm,
+             wp_gap_p95_ms,d_obs_ms_p50,d_obs_ms_p95,d_chunk_steps_p50,d_chunk_steps_p95,
+             d_act_ms_p50,d_act_ms_p95,wp_rx_hz,wp_rx_gap_p95_ms,req_lost,truncated
+
+The d_* columns are the delay components, each measured where it happens: d_obs by the
+controller (age of the observation it uses, per tick); d_chunk by the executor (request ->
+arrival in control steps, which is what a strategy fights: inference alone when the executor is
+on the policy side, the whole round trip when it is on the robot side); d_act on the action path
+(waypoint age at the reactive layer, or chunk age at the robot-side executor when chunks are
+buffered). req_lost counts requests the robot-side executor gave up on after its timeout. They are what makes a row checkable against its label: a "200 ms action-path" cell
 whose d_act reads ~1 ms was not degraded. waypoint_hz / wp_gap_p95_ms describe what the
 controller SENT; wp_rx_hz / wp_rx_gap_p95_ms what the robot side RECEIVED after the relay, which
 is where action-path loss shows.
@@ -97,8 +103,10 @@ class Recorder(Node):
         self._waypoints: list[list[float]] = []   # commanded EE positions, for smoothness
         self._rx_stamps: list[float] = []        # waypoints as the robot side received them
         self._d_obs_ms: list[float] = []
-        self._d_inf_steps: list[float] = []
+        self._d_chunk_steps: list[float] = []
         self._d_act_ms: list[float] = []
+        self._chunk_age_ms: list[float] = []
+        self._req_lost = 0
 
         self.create_subscription(Bool, '/eval/success', self._on_success, 10)
         self.create_subscription(Float32, '/metrics/inference_ms', self._on_infer, 10)
@@ -110,9 +118,12 @@ class Recorder(Node):
         self.create_subscription(Float32, '/metrics/obs_age_ms',
                                  lambda m: self._d_obs_ms.append(float(m.data)), 10)
         self.create_subscription(Float32, '/metrics/delay_steps',
-                                 lambda m: self._d_inf_steps.append(float(m.data)), 10)
+                                 lambda m: self._d_chunk_steps.append(float(m.data)), 10)
         self.create_subscription(Float32, '/metrics/waypoint_age_ms',
                                  lambda m: self._d_act_ms.append(float(m.data)), 10)
+        self.create_subscription(Float32, '/metrics/chunk_age_ms',
+                                 lambda m: self._chunk_age_ms.append(float(m.data)), 10)
+        self.create_subscription(Float32, '/metrics/request_lost', self._on_lost, 10)
 
     @property
     def trials(self) -> int:
@@ -131,6 +142,9 @@ class Recorder(Node):
         pos = list(msg.position[:3])
         if len(pos) == 3:
             self._waypoints.append(pos)
+
+    def _on_lost(self, _msg: Float32) -> None:
+        self._req_lost += 1
 
     def _on_action(self, _msg: JointState) -> None:
         self._action_stamps.append(time.perf_counter())
@@ -225,10 +239,13 @@ class Recorder(Node):
             # the three delay components, each measured where it happens
             'd_obs_ms_p50': self._p50_p95(self._d_obs_ms)[0],
             'd_obs_ms_p95': self._p50_p95(self._d_obs_ms)[1],
-            'd_inf_steps_p50': self._p50_p95(self._d_inf_steps)[0],
-            'd_inf_steps_p95': self._p50_p95(self._d_inf_steps)[1],
-            'd_act_ms_p50': self._p50_p95(self._d_act_ms)[0],
-            'd_act_ms_p95': self._p50_p95(self._d_act_ms)[1],
+            'd_chunk_steps_p50': self._p50_p95(self._d_chunk_steps)[0],
+            'd_chunk_steps_p95': self._p50_p95(self._d_chunk_steps)[1],
+            # the action path is the chunk downlink when chunks are buffered on the robot side
+            # (the waypoint hop is then local), else the streamed waypoint link
+            'd_act_ms_p50': self._p50_p95(self._chunk_age_ms or self._d_act_ms)[0],
+            'd_act_ms_p95': self._p50_p95(self._chunk_age_ms or self._d_act_ms)[1],
+            'req_lost': self._req_lost,
             # the command stream as the robot side received it, after the action-path relay
             'wp_rx_hz': self._rate(self._rx_stamps, window_s),
             'wp_rx_gap_p95_ms': self._gap_p95_ms(self._rx_stamps),
@@ -271,11 +288,12 @@ def run_record(args) -> dict:
     return s
 
 
-_TAG_COLUMNS = ['condition', 'strategy', 'latency_ms', 'jitter_ms', 'placement', 'reactive']
+_TAG_COLUMNS = ['condition', 'strategy', 'latency_ms', 'jitter_ms', 'jitter_model', 'drop_prob',
+                'loss_model', 'burst_ms', 'placement', 'executor', 'reactive']
 _METRIC_COLUMNS = ['trials', 'success_rate', 'infer_ms_mean', 'infer_ms_p95', 'waypoint_hz',
                    'loop_hz', 'wp_step_mm', 'wp_jerk_mm', 'wp_gap_p95_ms',
-                   'd_obs_ms_p50', 'd_obs_ms_p95', 'd_inf_steps_p50', 'd_inf_steps_p95',
-                   'd_act_ms_p50', 'd_act_ms_p95', 'wp_rx_hz', 'wp_rx_gap_p95_ms']
+                   'd_obs_ms_p50', 'd_obs_ms_p95', 'd_chunk_steps_p50', 'd_chunk_steps_p95',
+                   'd_act_ms_p50', 'd_act_ms_p95', 'wp_rx_hz', 'wp_rx_gap_p95_ms', 'req_lost']
 
 
 def _append_csv(path: str, args, s: dict) -> None:
@@ -286,7 +304,10 @@ def _append_csv(path: str, args, s: dict) -> None:
         if new:
             w.writerow(_TAG_COLUMNS + _METRIC_COLUMNS + ['truncated'])
         w.writerow([args.label, args.strategy, args.latency_ms, args.jitter_ms,
-                    getattr(args, 'placement', 'obs'), args.reactive]
+                    getattr(args, 'jitter_model', 'gaussian'), getattr(args, 'drop_prob', 0.0),
+                    getattr(args, 'loss_model', 'iid'), getattr(args, 'burst_ms', 100.0),
+                    getattr(args, 'placement', 'obs'), getattr(args, 'executor', 'policy'),
+                    args.reactive]
                    + [s.get(k, float('nan')) for k in _METRIC_COLUMNS]
                    + [s.get('truncated', False)])
 
@@ -398,7 +419,8 @@ def run_sweep(args) -> None:
     failures = []
     baseline_infer = None    # first cell's inference time; see the drift check below
     for n, (strategy, reactive, lat) in enumerate(cells, 1):
-        label = f'strat={strategy}_reactive={reactive}_place={args.placement}_{axis}={lat}'
+        label = (f'strat={strategy}_reactive={reactive}_place={args.placement}_'
+                 f'exec={args.executor}_{axis}={lat}')
         log_path = os.path.join(log_dir, f'{label}.log'.replace('/', '_'))
         # every degradation knob is passed EXPLICITLY, swept or not. drop_prob used to be
         # omitted entirely, so it silently stayed at the launch default of 0.0 and no sweep
@@ -409,7 +431,9 @@ def run_sweep(args) -> None:
         cmd = ['ros2', 'launch', 'evh_bringup', 'hil.launch.py',
                *(f'{k}:={v}' for k, v in knobs.items()),
                f'jitter_model:={args.jitter_model}',
+               f'loss_model:={args.loss_model}', f'burst_ms:={args.burst_ms}',
                f'delay_obs:={delay_obs}', f'delay_act:={delay_act}',
+               f'executor:={args.executor}', f'denoise_steps:={args.denoise_steps}',
                f'backend:={args.backend}', f'weights:={args.weights}',
                f'strategy:={strategy}', f'passthrough:={"false" if reactive else "true"}',
                f'absolute:={absolute}', f'env_name:={args.env}',
@@ -441,7 +465,9 @@ def run_sweep(args) -> None:
                 row = run_record(argparse.Namespace(
                     out=args.out, duration=args.duration, label=label,
                     latency_ms=knobs['latency_ms'], jitter_ms=knobs['jitter_ms'],
-                    placement=args.placement, reactive=reactive, strategy=strategy, trials_target=args.trials))
+                    jitter_model=args.jitter_model, drop_prob=knobs['drop_prob'],
+                    loss_model=args.loss_model, burst_ms=args.burst_ms,
+                    placement=args.placement, executor=args.executor, reactive=reactive, strategy=strategy, trials_target=args.trials))
                 if row.get('truncated'):
                     failures.append((label, f"hit the {args.duration:.0f}s cap at "
                                             f"{row['trials']}/{args.trials} episodes"))
@@ -485,6 +511,10 @@ def main(argv=None) -> None:
                    help='run the orchestrated sweep, walking --values along this knob')
     p.add_argument('--drop_prob', type=float, default=0.0,
                    help='packet-loss probability held fixed (or swept with --sweep drop)')
+    p.add_argument('--loss_model', choices=['iid', 'gilbert'], default='iid',
+                   help='iid drops, or gilbert outages of --burst_ms on average at the same '
+                        'average rate --drop_prob')
+    p.add_argument('--burst_ms', type=float, default=100.0, help='gilbert mean outage length')
     p.add_argument('--jitter_model', choices=['gaussian', 'uniform', 'lognormal'],
                    default='gaussian',
                    help='gaussian/uniform are light-tailed; lognormal supplies the heavy tail a '
@@ -492,6 +522,9 @@ def main(argv=None) -> None:
     p.add_argument('--placement', choices=sorted(PLACEMENTS), default='obs',
                    help='which path the condition degrades: obs (the default, and what every '
                         'run before the action relay measured), act, or both')
+    p.add_argument('--executor', choices=['policy', 'robot'], default='policy',
+                   help='where chunks are executed: policy (streamed per tick, the default and '
+                        'the original design) or robot (buffered next to the robot)')
     p.add_argument('--values', default='0,25,50,100,200', help='comma-separated latency_ms values')
     p.add_argument('--strategies', default='synchronous,temporal_ensemble,rtc',
                    help='comma-separated chunk-execution strategies to sweep (Wedge A)')
@@ -517,6 +550,8 @@ def main(argv=None) -> None:
     p.add_argument('--env', default='Lift', help='robosuite task, e.g. NutAssemblySquare')
     p.add_argument('--max_episode_s', type=float, default=20.0,
                    help='episode horizon; a timeout is a recorded failure')
+    p.add_argument('--denoise_steps', type=int, default=16,
+                   help='dp backend DDIM steps; inference time is held fixed across a sweep')
     p.add_argument('--backend', default='pytorch')
     p.add_argument('--weights', default='')
     p.add_argument('--absolute', choices=['auto', 'true', 'false'], default='auto',

@@ -22,6 +22,11 @@ Two rough edges in launch_ros's own coercion, both handled by `_normalize` below
 
 `bool` and `float` are left to launch_ros: it already accepts true/True/TRUE/1/yes (and the
 negatives) for bool, and 40 / 40.0 / 1e2 for float.
+
+`degrade_when()` switches a relay on for one executor placement only. Which network link a
+chunk's actions cross depends on where the executor runs (streamed waypoints vs whole chunks), so
+"delay the action path" means a different relay in each placement. It is a small Substitution
+rather than a PythonExpression so test_launch_graph.py can still see which arguments it reads.
 """
 from __future__ import annotations
 
@@ -89,3 +94,39 @@ class _TypedArgument(Substitution):
 def typed(name: str, value_type: type) -> ParameterValue:
     """A launch argument as a parameter of an explicit type, instead of whatever YAML infers."""
     return ParameterValue(_TypedArgument(name, value_type), value_type=value_type)
+
+
+_TRUE = ('true', '1', 'yes', 'on')
+
+
+class _DegradeWhen(Substitution):
+    """'true' when the path's delay flag is set AND the executor sits where this relay matters."""
+
+    def __init__(self, flag: str, placement: str) -> None:
+        super().__init__()
+        self._flag = LaunchConfiguration(flag)
+        self._executor = LaunchConfiguration('executor')
+        self._placement = placement
+
+    @property
+    def sources(self) -> tuple[LaunchConfiguration, LaunchConfiguration]:
+        """The two launch arguments this reads, for test_launch_graph.py."""
+        return (self._flag, self._executor)
+
+    @property
+    def placement(self) -> str:
+        return self._placement
+
+    def describe(self) -> str:
+        return f"degrade_when('{self._flag.variable_name}', executor={self._placement!r})"
+
+    def perform(self, context) -> str:
+        on = self._flag.perform(context).strip().lower() in _TRUE
+        here = self._executor.perform(context).strip().lower() == self._placement
+        return 'true' if on and here else 'false'
+
+
+def degrade_when(flag: str, placement: str) -> ParameterValue:
+    """A relay's `enabled`: on only if `flag` (delay_obs / delay_act) is set and the launch's
+    `executor` argument equals `placement`."""
+    return ParameterValue(_DegradeWhen(flag, placement), value_type=bool)

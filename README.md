@@ -71,12 +71,23 @@ the delayed waypoints using zero-delay local state.
 | `/metrics/inference_ms`, `/metrics/delay_steps` | `std_msgs/Float32` — inference time; d_inf in control steps | controller → benchmark | per chunk |
 | `/metrics/obs_age_ms` | `std_msgs/Float32` — d_obs: age of the observation the policy uses (capture stamp to tick) | controller → benchmark | per tick |
 | `/metrics/waypoint_age_ms` | `std_msgs/Float32` — d_act: waypoint age on arrival at the reactive layer | reactive → benchmark | per waypoint |
+| `/policy/info` | `sensor_msgs/JointState` (latched) — `[chunk_size, action_dim, guided, absolute]` | controller → executor | once |
+| `/policy/request` | `sensor_msgs/JointState` — chunk request (`chunk_codec.py`), uplink | executor → controller | per request |
+| `/cmd/chunk` | `sensor_msgs/JointState` — whole action chunk (`chunk_codec.py`), downlink | controller → executor | per chunk |
+| `/metrics/chunk_age_ms`, `/metrics/request_lost` | `std_msgs/Float32` — chunk downlink delay; one per timed-out request | executor → benchmark | per event |
+
+The last four exist only with `executor:=robot`: the chunk executor then runs next to the robot
+(`executor_node`, over `remote_worker.py`) and the controller only serves chunks, so whole chunks
+cross the link instead of one waypoint per tick. The strategies are unchanged in both placements.
 
 Every networked link goes through an `evh_latency` relay, remapped via launch arguments
 (`/obs/image` → `/obs/image/delayed`, and on the action path `/cmd/waypoint` →
 `/cmd/waypoint/delayed`); nodes themselves are unaware of the injected delay. `delay_obs` /
 `delay_act` choose which path a condition degrades; the other path's relays stay in the graph in
-pass-through, so every placement pays the same relay floor.
+pass-through, so every placement pays the same relay floor. Loss is `loss_model:=iid` (each
+message independently) or `gilbert` (outages of `burst_ms` on average at the same average rate,
+one shared schedule across every relay, so an outage hits all topics at once;
+`evh_latency/channel.py`).
 
 UML diagrams of all of this — deployment, the node graph with its QoS, per-package internals, and
 sequence diagrams for the control cycle, async chunk execution, the episode boundary and bringup —
@@ -414,5 +425,6 @@ strategies, honestly measured request→arrival delay feeding RTC's forecast
 in both action modes (9/10 absolute, 7/10 delta at zero latency — see the table above), real
 guided inpainting for RTC on the DP backend, ONNX Runtime backends for ACT and DP, and delay
 placement: the action path is relayed too (`delay_obs` / `delay_act`), with observation,
-inference and action delay each measured where it happens. Next: robot-side chunk buffering
-and bursty-loss channel models. BID is still a stub. See per-package docstrings.
+inference and action delay each measured where it happens; executor placement (`executor:=policy`
+streams waypoints, `executor:=robot` buffers whole chunks next to the robot); and Gilbert–Elliott
+bursty loss. BID is still a stub. See per-package docstrings.

@@ -56,6 +56,8 @@ def _stub_controller(obs_sample=None, action=None, metrics=None, obs_age_s=None)
                                   clear=lambda: cleared.append(1),
                                   age=lambda now_s: obs_age_s),
         chunk_executor=FakeExecutor(action=action, metrics=metrics),
+        server=None,
+        _latest_obs=None,
         _t=0,
         pub_waypoint=_pub('waypoint'),
         pub_latency=_pub('latency'),
@@ -288,3 +290,31 @@ def test_no_observation_age_is_published_without_stamps():
     stub = _stub_controller(obs_sample=_obs(), obs_age_s=None)
     ControllerNode._tick(stub)
     assert stub.published['obs_age'] == []
+
+
+# ------------------------------------------------------ serving (executor:=robot)
+@requires_ros2
+def test_a_serving_controller_keeps_the_history_but_executes_nothing():
+    """With the executor on the robot side this node must not stream waypoints of its own: two
+    publishers on /cmd/waypoint would interleave two plans."""
+    from evh_controller.controller_node import ControllerNode
+
+    stub = _stub_controller(obs_sample=_obs(), obs_age_s=0.01)
+    stub.chunk_executor = None
+    ControllerNode._tick(stub)
+
+    assert stub.published['waypoint'] == []
+    assert stub._latest_obs is not None, 'requests are answered from this history'
+
+
+@requires_ros2
+def test_policy_info_announces_the_shape_the_robot_side_needs():
+    from evh_controller.controller_node import ControllerNode
+    from evh_controller.executor_node import policy_info_from
+
+    stub = _stub_controller()
+    stub.policy = types.SimpleNamespace(chunk_size=16, action_dim=7, guided_resampling=True,
+                                        absolute_actions=True)
+    info = policy_info_from(ControllerNode._policy_info_msg(stub).position)
+    assert (info.chunk_size, info.action_dim) == (16, 7)
+    assert info.guided_resampling and info.absolute_actions

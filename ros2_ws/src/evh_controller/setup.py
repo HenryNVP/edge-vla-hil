@@ -19,6 +19,7 @@ setup(
     entry_points={
         'console_scripts': [
             'controller_node = evh_controller.controller_node:main',
+            'executor_node = evh_controller.executor_node:main',
         ],
     },
 )

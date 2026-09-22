@@ -7,10 +7,11 @@ or set latency_ms=0 to measure the raw network only.
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
-from evh_bringup.launch_utils import typed
+from evh_bringup.launch_utils import degrade_when, typed
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -20,9 +21,13 @@ def generate_launch_description() -> LaunchDescription:
     delay_obs = typed('delay_obs', bool)
     delay_act = typed('delay_act', bool)
     jitter_model = LaunchConfiguration('jitter_model')
+    loss_model = LaunchConfiguration('loss_model')
+    burst_ms = typed('burst_ms', float)
     absolute = typed('absolute', bool)
     strict_mode_check = typed('strict_mode_check', bool)
     passthrough = typed('passthrough', bool)
+    executor = LaunchConfiguration('executor')
+    strategy = LaunchConfiguration('strategy')
     image_size = typed('image_size', int)
     env_name = LaunchConfiguration('env_name')
     max_episode_s = typed('max_episode_s', float)
@@ -35,7 +40,11 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('drop_prob', default_value='0.0'),
         DeclareLaunchArgument('delay_obs', default_value='true'),
         DeclareLaunchArgument('delay_act', default_value='false'),
+        DeclareLaunchArgument('executor', default_value='policy'),
+        DeclareLaunchArgument('strategy', default_value='synchronous'),   # executor:=robot only
         DeclareLaunchArgument('jitter_model', default_value='gaussian'),
+        DeclareLaunchArgument('loss_model', default_value='iid'),
+        DeclareLaunchArgument('burst_ms', default_value='100.0'),
         DeclareLaunchArgument('absolute', default_value='true'),
         DeclareLaunchArgument('strict_mode_check', default_value='true'),
         DeclareLaunchArgument('passthrough', default_value='false'),
@@ -63,19 +72,34 @@ def generate_launch_description() -> LaunchDescription:
                 'msg_type': msg_type, 'enabled': enabled,
                 'latency_ms': latency_ms, 'jitter_ms': jitter_ms,
                 'drop_prob': drop_prob, 'jitter_model': jitter_model,
+                'loss_model': loss_model, 'burst_ms': burst_ms,
             }])
 
     relay_img = relay('latency_image', '/obs/image', 'sensor_msgs/msg/Image', delay_obs)
     relay_wrist = relay('latency_wrist', '/obs/image_wrist', 'sensor_msgs/msg/Image', delay_obs)
     relay_proprio = relay(
         'latency_proprio', '/obs/proprio', 'sensor_msgs/msg/JointState', delay_obs)
-    # the action path: always relayed, degraded only when delay_act (see the docstring)
-    relay_waypoint = relay(
-        'latency_waypoint', '/cmd/waypoint', 'sensor_msgs/msg/JointState', delay_act)
+    # The action path. Which link carries the actions depends on the executor's placement:
+    # streamed waypoints (executor:=policy) or whole chunks (executor:=robot). All three relays
+    # are always in the graph so the hop count never changes; each degrades only its own link.
+    relay_waypoint = relay('latency_waypoint', '/cmd/waypoint', 'sensor_msgs/msg/JointState',
+                           degrade_when('delay_act', 'policy'))
+    relay_chunk = relay('latency_chunk', '/cmd/chunk', 'sensor_msgs/msg/JointState', delay_act)
+    # the chunk request is uplink traffic, so it rides with the observations
+    relay_request = relay(
+        'latency_request', '/policy/request', 'sensor_msgs/msg/JointState', delay_obs)
+
+    robot_side = IfCondition(PythonExpression(["'", executor, "' == 'robot'"]))
+    executor_node = Node(
+        package='evh_controller', executable='executor_node', name='evh_executor',
+        output='screen', condition=robot_side,
+        parameters=[{'strategy': strategy}],
+        remappings=[('/cmd/chunk', '/cmd/chunk/delayed')])
 
     reactive = Node(
         package='evh_reactive', executable='reactive_node', name='evh_reactive', output='screen',
         parameters=[{'passthrough': passthrough, 'absolute_waypoints': absolute}],
         remappings=[('/cmd/waypoint', '/cmd/waypoint/delayed')])
 
-    return LaunchDescription(args + [plant, relay_img, relay_wrist, relay_proprio, relay_waypoint, reactive])
+    return LaunchDescription(args + [plant, relay_img, relay_wrist, relay_proprio, relay_waypoint, relay_chunk,
+                         relay_request, executor_node, reactive])

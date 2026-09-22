@@ -10,10 +10,16 @@ controller.launch.py on the Jetson and host.launch.py (plant + reactive + relays
 
 Launch args:
   latency_ms, jitter_ms, drop_prob : network-condition knobs (passed to all relays)
+  executor    : policy (default) -> the chunk executor runs in the controller and streams one
+                waypoint per tick over the action path; robot -> it runs next to the robot
+                (executor_node), whole chunks cross the action path and requests the uplink.
   delay_obs, delay_act : which path the condition applies to. The other path's relays still run,
                 in pass-through, so every placement has the same graph and relay floor.
                 Defaults (true, false) reproduce the observation-only runs made before the
                 action relay existed.
+  loss_model  : iid | gilbert. gilbert drops whole outages of `burst_ms` on average at the same
+                average rate drop_prob, one shared state across every relay (see
+                evh_latency/channel.py)
   jitter_model : gaussian | uniform | lognormal. The first two are light-tailed, so a
                 delay forecast based on a quantile cannot differ from one based on a
                 max; lognormal supplies the heavy tail that separates them.
@@ -37,10 +43,11 @@ Launch args:
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
-from evh_bringup.launch_utils import typed
+from evh_bringup.launch_utils import degrade_when, typed
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -50,6 +57,8 @@ def generate_launch_description() -> LaunchDescription:
     delay_obs = typed('delay_obs', bool)
     delay_act = typed('delay_act', bool)
     jitter_model = LaunchConfiguration('jitter_model')
+    loss_model = LaunchConfiguration('loss_model')
+    burst_ms = typed('burst_ms', float)
     backend = LaunchConfiguration('backend')
     weights = LaunchConfiguration('weights')
     strategy = LaunchConfiguration('strategy')
@@ -57,6 +66,7 @@ def generate_launch_description() -> LaunchDescription:
     absolute = typed('absolute', bool)
     strict_mode_check = typed('strict_mode_check', bool)
     passthrough = typed('passthrough', bool)
+    executor = LaunchConfiguration('executor')
     image_size = typed('image_size', int)
     env_name = LaunchConfiguration('env_name')
     max_episode_s = typed('max_episode_s', float)
@@ -69,7 +79,10 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('drop_prob', default_value='0.0'),
         DeclareLaunchArgument('delay_obs', default_value='true'),
         DeclareLaunchArgument('delay_act', default_value='false'),
+        DeclareLaunchArgument('executor', default_value='policy'),
         DeclareLaunchArgument('jitter_model', default_value='gaussian'),
+        DeclareLaunchArgument('loss_model', default_value='iid'),
+        DeclareLaunchArgument('burst_ms', default_value='100.0'),
         DeclareLaunchArgument('backend', default_value='pytorch'),
         DeclareLaunchArgument('weights', default_value=''),
         DeclareLaunchArgument('strategy', default_value='synchronous'),
@@ -102,15 +115,29 @@ def generate_launch_description() -> LaunchDescription:
                 'msg_type': msg_type, 'enabled': enabled,
                 'latency_ms': latency_ms, 'jitter_ms': jitter_ms,
                 'drop_prob': drop_prob, 'jitter_model': jitter_model,
+                'loss_model': loss_model, 'burst_ms': burst_ms,
             }])
 
     relay_img = relay('latency_image', '/obs/image', 'sensor_msgs/msg/Image', delay_obs)
     relay_wrist = relay('latency_wrist', '/obs/image_wrist', 'sensor_msgs/msg/Image', delay_obs)
     relay_proprio = relay(
         'latency_proprio', '/obs/proprio', 'sensor_msgs/msg/JointState', delay_obs)
-    # the action path: always relayed, degraded only when delay_act (see the docstring)
-    relay_waypoint = relay(
-        'latency_waypoint', '/cmd/waypoint', 'sensor_msgs/msg/JointState', delay_act)
+    # The action path. Which link carries the actions depends on the executor's placement:
+    # streamed waypoints (executor:=policy) or whole chunks (executor:=robot). All three relays
+    # are always in the graph so the hop count never changes; each degrades only its own link.
+    relay_waypoint = relay('latency_waypoint', '/cmd/waypoint', 'sensor_msgs/msg/JointState',
+                           degrade_when('delay_act', 'policy'))
+    relay_chunk = relay('latency_chunk', '/cmd/chunk', 'sensor_msgs/msg/JointState', delay_act)
+    # the chunk request is uplink traffic, so it rides with the observations
+    relay_request = relay(
+        'latency_request', '/policy/request', 'sensor_msgs/msg/JointState', delay_obs)
+
+    robot_side = IfCondition(PythonExpression(["'", executor, "' == 'robot'"]))
+    executor_node = Node(
+        package='evh_controller', executable='executor_node', name='evh_executor',
+        output='screen', condition=robot_side,
+        parameters=[{'strategy': strategy}],
+        remappings=[('/cmd/chunk', '/cmd/chunk/delayed')])
 
     # controller consumes the DELAYED observations
     controller = Node(
@@ -118,12 +145,13 @@ def generate_launch_description() -> LaunchDescription:
         output='screen',
         parameters=[{
             'backend': backend, 'weights_path': weights, 'strategy': strategy,
-            'denoise_steps': denoise_steps,
+            'denoise_steps': denoise_steps, 'executor': executor,
         }],
         remappings=[
             ('/obs/image', '/obs/image/delayed'),
             ('/obs/image_wrist', '/obs/image_wrist/delayed'),
             ('/obs/proprio', '/obs/proprio/delayed'),
+            ('/policy/request', '/policy/request/delayed'),
         ])
 
     # reactive layer reads LOCAL (zero-delay) EE state, tracks delayed waypoints
@@ -133,4 +161,5 @@ def generate_launch_description() -> LaunchDescription:
         remappings=[('/cmd/waypoint', '/cmd/waypoint/delayed')])
 
     return LaunchDescription(
-        args + [plant, relay_img, relay_wrist, relay_proprio, relay_waypoint, controller, reactive])
+        args + [plant, relay_img, relay_wrist, relay_proprio, relay_waypoint, relay_chunk,
+                relay_request, controller, executor_node, reactive])

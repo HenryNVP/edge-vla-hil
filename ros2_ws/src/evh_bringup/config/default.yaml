@@ -25,6 +25,16 @@
     denoise_steps: 16       # dp backend: DDIM steps (0 = checkpoint default DDPM-100)
     prompt: "pick up the block"
     policy_absolute: "auto" # auto = read the checkpoint's stamp; true/false forces the convention
+    executor: "policy"      # policy = execute + stream waypoints here; robot = serve chunks only
+
+# Robot-side chunk executor (only with executor:=robot).
+/evh_executor:
+  ros__parameters:
+    strategy: "synchronous"
+    control_hz: 20.0
+    timeout_factor: 2.0     # a request times out after this x the slowest recent round trip
+    min_timeout_s: 0.25
+    first_timeout_s: 10.0   # before the first reply (model warm-up)
 
 /evh_reactive:
   ros__parameters:
@@ -46,6 +56,8 @@
     jitter_ms: 0.0
     jitter_model: "gaussian"
     drop_prob: 0.0
+    loss_model: "iid"       # iid | gilbert (bursty, shared state across relays)
+    burst_ms: 100.0         # gilbert: mean outage length
     reorder: false
     seed: 0
     enabled: true           # false = pass-through; set per path by delay_obs / delay_act

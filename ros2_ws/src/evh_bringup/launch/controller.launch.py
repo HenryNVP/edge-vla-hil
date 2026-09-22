@@ -7,7 +7,8 @@ machines on the same ROS_DOMAIN_ID over Ethernet, DDS discovers the topics autom
 Args:
   backend : pytorch | act | onnx | dp | dp_onnx
   weights : checkpoint path (dir/.ckpt) or .onnx path
-  strategy, denoise_steps : see hil.launch.py
+  strategy, denoise_steps, executor : see hil.launch.py (with executor:=robot, pass the
+                strategy to host.launch.py instead; this side only serves chunks)
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -22,20 +23,23 @@ def generate_launch_description() -> LaunchDescription:
     weights = LaunchConfiguration('weights')
     strategy = LaunchConfiguration('strategy')
     denoise_steps = typed('denoise_steps', int)
+    executor = LaunchConfiguration('executor')
 
     return LaunchDescription([
         DeclareLaunchArgument('backend', default_value='onnx'),
         DeclareLaunchArgument('weights', default_value=''),
         DeclareLaunchArgument('strategy', default_value='rtc'),
         DeclareLaunchArgument('denoise_steps', default_value='16'),
+        DeclareLaunchArgument('executor', default_value='policy'),
         Node(
             package='evh_controller', executable='controller_node', name='evh_controller',
             output='screen',
             parameters=[{'backend': backend, 'weights_path': weights, 'strategy': strategy,
-                         'denoise_steps': denoise_steps}],
+                         'denoise_steps': denoise_steps, 'executor': executor}],
             remappings=[
                 ('/obs/image', '/obs/image/delayed'),
                 ('/obs/image_wrist', '/obs/image_wrist/delayed'),
                 ('/obs/proprio', '/obs/proprio/delayed'),
+                ('/policy/request', '/policy/request/delayed'),
             ]),
     ])

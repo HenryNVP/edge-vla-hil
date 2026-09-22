@@ -37,7 +37,10 @@ GRAPH_LAUNCHES = ['hil.launch.py', 'host.launch.py']     # the two that run plan
 PACKAGES = ['evh_plant', 'evh_controller', 'evh_reactive', 'evh_latency', 'evh_bringup']
 
 OBS_RELAYED = {'/obs/image', '/obs/image_wrist', '/obs/proprio'}
-ACT_RELAYED = {'/cmd/waypoint'}
+# the action path: streamed waypoints (executor:=policy) or whole chunks (executor:=robot)
+ACT_RELAYED = {'/cmd/waypoint', '/cmd/chunk'}
+UPLINK_RELAYED = {'/policy/request'}      # chunk requests, robot-side execution only
+NETWORKED = OBS_RELAYED | ACT_RELAYED | UPLINK_RELAYED
 
 
 # ------------------------------------------------------------------------ loading
@@ -50,8 +53,8 @@ def _load(filename):
     return module.generate_launch_description()
 
 
-def _context(ld):
-    """A LaunchContext with every declared argument set to its default."""
+def _context(ld, **overrides):
+    """A LaunchContext with every declared argument at its default, except `overrides`."""
     from launch import LaunchContext
     from launch.actions import DeclareLaunchArgument
 
@@ -59,6 +62,8 @@ def _context(ld):
     for entity in ld.entities:
         if isinstance(entity, DeclareLaunchArgument):
             entity.execute(ctx)
+    for name, value in overrides.items():
+        ctx.launch_configurations[name] = str(value)
     return ctx
 
 
@@ -73,13 +78,15 @@ def _launch_configs(value):
     """The LaunchConfiguration objects a parameter value reads, seeing through typed()."""
     from launch.substitutions import LaunchConfiguration
 
-    from evh_bringup.launch_utils import _TypedArgument
+    from evh_bringup.launch_utils import _DegradeWhen, _TypedArgument
 
     inner = _unwrap(value)
     subs = [inner] if not isinstance(inner, (list, tuple)) else list(inner)
     for sub in subs:
         if isinstance(sub, _TypedArgument):
             yield sub.source
+        elif isinstance(sub, _DegradeWhen):
+            yield from sub.sources
         elif isinstance(sub, LaunchConfiguration):
             yield sub
 
@@ -105,9 +112,16 @@ def _value_type(value):
     return value.value_type if isinstance(value, ParameterValue) else None
 
 
-def _nodes(ld):
+def _nodes(ld, ctx=None):
+    """The Nodes a launch would start under `ctx` (defaults if None); all of them if ctx is
+    False, conditions ignored."""
     from launch_ros.actions import Node
-    return [e for e in ld.entities if isinstance(e, Node)]
+
+    nodes = [e for e in ld.entities if isinstance(e, Node)]
+    if ctx is False:
+        return nodes
+    ctx = ctx if ctx is not None else _context(ld)
+    return [n for n in nodes if n.condition is None or n.condition.evaluate(ctx)]
 
 
 def _declared(ld):
@@ -152,11 +166,12 @@ def _remaps(ctx, node):
 
 
 def _relays(ctx, ld):
-    return [n for n in _nodes(ld) if _perform(ctx, n._Node__package) == 'evh_latency']
+    return [n for n in _nodes(ld, ctx) if _perform(ctx, n._Node__package) == 'evh_latency']
 
 
-def _only(ctx, ld, package):
-    matches = [n for n in _nodes(ld) if _perform(ctx, n._Node__package) == package]
+def _only(ctx, ld, package, executable=None):
+    matches = [n for n in _nodes(ld, ctx) if _perform(ctx, n._Node__package) == package
+               and (executable is None or _perform(ctx, n._Node__node_executable) == executable)]
     assert len(matches) == 1, f'expected exactly one {package} node, got {len(matches)}'
     return matches[0]
 
@@ -181,7 +196,7 @@ def test_every_launch_configuration_used_is_declared(filename):
     ctx = _context(ld)
     declared = {a._DeclareLaunchArgument__name for a in _declared(ld)}
 
-    for node in _nodes(ld):
+    for node in _nodes(ld, False):
         for param, arg in _param_refs(ctx, node).items():
             assert arg in declared, (
                 f'{filename}: parameter {param!r} reads undeclared launch arg {arg!r}')
@@ -229,26 +244,36 @@ def test_exactly_the_networked_links_are_relayed(filename):
     ctx = _context(ld)
     relayed = {_params(ctx, r)['input_topic'] for r in _relays(ctx, ld)}
 
-    assert relayed == OBS_RELAYED | ACT_RELAYED, (
-        f'{filename}: relayed topics changed: {sorted(relayed)}')
+    assert relayed == NETWORKED, f'{filename}: relayed topics changed: {sorted(relayed)}'
     assert '/obs/ee_pose' not in relayed
     assert '/cmd/action' not in relayed, 'the reactive->plant link is local, not networked'
 
 
+def _enabled(ctx, ld):
+    return {_params(ctx, r)['input_topic']: _params(ctx, r)['enabled'] == 'true'
+            for r in _relays(ctx, ld)}
+
+
 @requires_ros2
 @pytest.mark.parametrize('filename', GRAPH_LAUNCHES)
-def test_each_path_is_switched_by_its_own_placement_argument(filename):
-    """Placement is swept by enabling relays, not by adding or removing them. A relay wired to
-    the wrong switch would degrade the other path and the placement curves would swap labels."""
+@pytest.mark.parametrize('executor', ['policy', 'robot'])
+@pytest.mark.parametrize('delay_obs,delay_act', [
+    ('true', 'false'), ('false', 'true'), ('true', 'true'), ('false', 'false')])
+def test_each_link_degrades_only_under_its_own_placement(filename, executor, delay_obs,
+                                                        delay_act):
+    """Placement is swept by enabling relays, never by adding or removing them. A relay on the
+    wrong switch would degrade the other path and the placement curves would swap labels; the
+    action path is the waypoint link when streaming and the chunk link when buffering."""
     ld = _load(filename)
-    ctx = _context(ld)
+    ctx = _context(ld, executor=executor, delay_obs=delay_obs, delay_act=delay_act)
+    on = _enabled(ctx, ld)
+    obs, act = delay_obs == 'true', delay_act == 'true'
 
-    for relay in _relays(ctx, ld):
-        topic = _params(ctx, relay)['input_topic']
-        expected = 'delay_act' if topic in ACT_RELAYED else 'delay_obs'
-        assert _param_refs(ctx, relay).get('enabled') == expected, (
-            f'{filename}: relay on {topic} is switched by '
-            f'{_param_refs(ctx, relay).get("enabled")!r}, expected {expected!r}')
+    for topic in OBS_RELAYED | UPLINK_RELAYED:
+        assert on[topic] is obs, f'{topic} under {executor}/{delay_obs}/{delay_act}'
+    assert on['/cmd/chunk'] is act
+    assert on['/cmd/waypoint'] is (act and executor == 'policy'), (
+        'with the executor on the robot side the waypoint link is local and must not be delayed')
 
 
 @requires_ros2
@@ -262,6 +287,7 @@ def test_placement_defaults_reproduce_the_observation_only_runs(filename):
 
     assert _perform(ctx, defaults['delay_obs']) == 'true'
     assert _perform(ctx, defaults['delay_act']) == 'false'
+    assert _perform(ctx, defaults['executor']) == 'policy', 'the validated baseline placement'
 
 
 @requires_ros2
@@ -280,6 +306,25 @@ def test_the_reactive_layer_reads_the_delayed_waypoint(filename):
 
 @requires_ros2
 @pytest.mark.parametrize('filename', GRAPH_LAUNCHES)
+def test_the_robot_side_executor_runs_only_when_asked_for(filename):
+    ld = _load(filename)
+
+    def execs(ctx):
+        return [_perform(ctx, n._Node__node_executable) for n in _nodes(ld, ctx)]
+
+    assert 'executor_node' not in execs(_context(ld))
+    ctx = _context(ld, executor='robot')
+    assert 'executor_node' in execs(ctx)
+    node = _only(ctx, ld, 'evh_controller', 'executor_node')
+    relays = {_params(ctx, r)['input_topic']: _params(ctx, r)['output_topic']
+              for r in _relays(ctx, ld)}
+    assert _remaps(ctx, node) == {'/cmd/chunk': relays['/cmd/chunk']}, (
+        'the executor must read the relayed chunks, or the action path is never degraded')
+    assert _param_refs(ctx, node).get('strategy') == 'strategy'
+
+
+@requires_ros2
+@pytest.mark.parametrize('filename', GRAPH_LAUNCHES)
 def test_all_relays_share_the_network_condition_arguments(filename):
     """One degradation knob per condition: a relay wired to its own arg (or to none) would leave
     part of the observation path undegraded and flatten the sweep curve."""
@@ -291,6 +336,12 @@ def test_all_relays_share_the_network_condition_arguments(filename):
         assert refs.get('latency_ms') == 'latency_ms'
         assert refs.get('jitter_ms') == 'jitter_ms'
         assert refs.get('drop_prob') == 'drop_prob'
+        assert refs.get('loss_model') == 'loss_model', (
+            'a relay on its own loss model would break the shared outage state')
+        assert refs.get('burst_ms') == 'burst_ms'
+        assert 'seed' not in _params(ctx, relay), (
+            'every relay must keep the default seed: the Gilbert-Elliott outage schedule is '
+            'shared only because all relays derive it from the same seed')
 
 
 @requires_ros2
@@ -302,7 +353,7 @@ def test_the_controller_subscribes_to_exactly_the_relay_outputs():
 
     outputs = {_params(ctx, r)['input_topic']: _params(ctx, r)['output_topic']
                for r in _relays(ctx, ld)
-               if _params(ctx, r)['input_topic'] in OBS_RELAYED}
+               if _params(ctx, r)['input_topic'] in OBS_RELAYED | UPLINK_RELAYED}
     remaps = _remaps(ctx, _only(ctx, ld, 'evh_controller'))
 
     assert remaps == outputs, (
@@ -316,7 +367,7 @@ def test_the_controller_reads_delayed_topics_not_raw_ones(filename):
     ctx = _context(ld)
     remaps = _remaps(ctx, _only(ctx, ld, 'evh_controller'))
 
-    assert set(remaps) == OBS_RELAYED
+    assert set(remaps) == OBS_RELAYED | UPLINK_RELAYED
     assert all(dst == f'{src}/delayed' for src, dst in remaps.items())
 
 
@@ -338,7 +389,7 @@ def test_every_launched_executable_is_a_registered_console_script(filename):
     ld = _load(filename)
     ctx = _context(ld)
 
-    for node in _nodes(ld):
+    for node in _nodes(ld, False):
         package = _perform(ctx, node._Node__package)
         executable = _perform(ctx, node._Node__node_executable)
         scripts = _console_scripts(package)
@@ -388,7 +439,7 @@ def test_non_string_parameters_declare_their_type_at_the_launch_boundary(filenam
     ld = _load(filename)
     ctx = _context(ld)
 
-    for node in _nodes(ld):
+    for node in _nodes(ld, False):
         package = _perform(ctx, node._Node__package)
         executable = _perform(ctx, node._Node__node_executable)
         declared = _declared_param_types(package, executable)
@@ -436,6 +487,7 @@ def _declared_param_defaults(package: str, module: str) -> dict:
 CONFIGURED_NODES = [
     ('/evh_plant', 'evh_plant', 'plant_node'),
     ('/evh_controller', 'evh_controller', 'controller_node'),
+    ('/evh_executor', 'evh_controller', 'executor_node'),
     ('/evh_reactive', 'evh_reactive', 'reactive_node'),
 ]
 
