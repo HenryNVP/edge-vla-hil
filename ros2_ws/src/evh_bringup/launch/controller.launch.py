@@ -5,8 +5,8 @@ machines on the same ROS_DOMAIN_ID over Ethernet, DDS discovers the topics autom
 *physical* network replaces the software latency relay (or stacks with it).
 
 Args:
-  backend : pytorch | act | onnx | dp | tensorrt
-  weights : checkpoint path (dir/.ckpt), .onnx, or .engine path
+  backend : pytorch | act | onnx | dp | dp_onnx
+  weights : checkpoint path (dir/.ckpt) or .onnx path
   strategy, denoise_steps : see hil.launch.py
 """
 from launch import LaunchDescription
@@ -24,7 +24,7 @@ def generate_launch_description() -> LaunchDescription:
     denoise_steps = typed('denoise_steps', int)
 
     return LaunchDescription([
-        DeclareLaunchArgument('backend', default_value='tensorrt'),
+        DeclareLaunchArgument('backend', default_value='onnx'),
         DeclareLaunchArgument('weights', default_value=''),
         DeclareLaunchArgument('strategy', default_value='rtc'),
         DeclareLaunchArgument('denoise_steps', default_value='16'),

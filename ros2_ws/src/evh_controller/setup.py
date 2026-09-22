@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer='henry',
     maintainer_email='henrynguyen.vp@gmail.com',
-    description='ACT policy inference node (PyTorch fallback + TensorRT). HiL Controller side.',
+    description='ACT policy inference node (PyTorch, ONNX Runtime, diffusion_policy backends). HiL Controller side.',
     license='MIT',
     entry_points={
         'console_scripts': [

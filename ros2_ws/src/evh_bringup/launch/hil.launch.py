@@ -11,7 +11,7 @@ Launch args:
   jitter_model : gaussian | uniform | lognormal. The first two are light-tailed, so a
                 delay forecast based on a quantile cannot differ from one based on a
                 max; lognormal supplies the heavy tail that separates them.
-  backend     : pytorch | act | onnx | dp | tensorrt   (dp = diffusion_policy-repo checkpoint,
+  backend     : pytorch | act | onnx | dp | dp_onnx   (dp = diffusion_policy-repo checkpoint,
                 the real one; onnx = ACT exported via scripts/export_onnx.py, the Jetson fast
                 path -- see policy.py module docstring)
   weights     : checkpoint path (e.g. /ws/checkpoints/dp_lift_ph_image_cnn.ckpt), .onnx, or .engine

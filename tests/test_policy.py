@@ -12,7 +12,6 @@ from evh_controller.policy import (
     ACTBackend,
     ONNXBackend,
     PyTorchBackend,
-    TensorRTBackend,
     act_action_dim,
     make_policy,
     resolve_absolute,
@@ -32,7 +31,6 @@ def _dummy_obs():
     ('pytorch', PyTorchBackend),
     ('act', ACTBackend),
     ('onnx', ONNXBackend),
-    ('tensorrt', TensorRTBackend),
 ])
 def test_make_policy_returns_backend(backend, cls):
     policy = make_policy(backend, weights_path='')
@@ -43,7 +41,6 @@ def test_make_policy_aliases():
     assert isinstance(make_policy('torch', ''), PyTorchBackend)
     assert isinstance(make_policy('act_lerobot', ''), ACTBackend)
     assert isinstance(make_policy('act_onnx', ''), ONNXBackend)
-    assert isinstance(make_policy('trt', ''), TensorRTBackend)
 
 
 def test_make_policy_rejects_unknown():
@@ -51,7 +48,7 @@ def test_make_policy_rejects_unknown():
         make_policy('jax', '')
 
 
-@pytest.mark.parametrize('backend', ['pytorch', 'act', 'onnx', 'tensorrt'])
+@pytest.mark.parametrize('backend', ['pytorch', 'act', 'onnx'])
 def test_predict_chunk_shape_and_dtype(backend):
     policy = make_policy(backend, '')
     chunk = policy.predict(_dummy_obs())

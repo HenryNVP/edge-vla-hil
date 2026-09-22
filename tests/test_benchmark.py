@@ -70,7 +70,7 @@ def test_summary_reports_zero_throughput_without_traffic():
 
 @requires_ros2
 @pytest.mark.parametrize('backend,expected', [('dp', 'true'), ('pytorch', 'false'),
-                                              ('tensorrt', 'false')])
+                                              ('onnx', 'false')])
 def test_auto_absolute_follows_the_backend(backend, expected):
     from evh_bringup.benchmark import resolve_absolute
 

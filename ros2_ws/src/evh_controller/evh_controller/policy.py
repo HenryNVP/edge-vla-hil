@@ -19,7 +19,6 @@ Interchangeable inference paths behind one interface so the rest of the system n
   * PyTorchBackend  -- LeRobot diffusion checkpoint, runs anywhere (dev + Jetson fallback).
   * DiffusionPolicyRepoBackend (dp_repo_policy.py) -- real-stanford/diffusion_policy robomimic
                        image checkpoints (the project's actual Lift policy).
-  * TensorRTBackend -- serialized .engine built from an exported ONNX policy (Jetson fast path).
 
 Observation contract: a dict whose values may carry a history axis (stacked over the last
 `n_obs_steps` control ticks, oldest first — the controller maintains the history):
@@ -497,25 +496,6 @@ class PyTorchBackend(ChunkPolicy):
         return np.asarray(chunk, dtype=np.float32)
 
 
-class TensorRTBackend(ChunkPolicy):
-    def __init__(self, engine_path: str, denoise_steps: int = 5) -> None:
-        self.engine_path = engine_path
-        self.action_dim = 7
-        self.chunk_size = 16
-        self.denoise_steps = denoise_steps
-        self._engine = None
-        self._load()
-
-    def _load(self) -> None:
-        """TODO: deserialize TRT engine + allocate bindings (see scripts/build_trt_engine.py)."""
-        self._engine = None  # STUB
-
-    def predict(self, obs: dict) -> np.ndarray:
-        if self._engine is None:
-            return np.zeros((self.chunk_size, self.action_dim), dtype=np.float32)  # STUB
-        raise NotImplementedError
-
-
 class ONNXBackend(ChunkPolicy):
     """ACT exported to ONNX (scripts/export_onnx.py), run through ONNX Runtime.
 
@@ -638,6 +618,4 @@ def make_policy(backend: str, weights_path: str, denoise_steps: int = 16,
         from evh_controller.dp_onnx_policy import DiffusionONNXBackend
         return DiffusionONNXBackend(weights_path, absolute=absolute,
                                     denoise_steps=denoise_steps)
-    if backend in ('tensorrt', 'trt'):
-        return TensorRTBackend(weights_path)
     raise ValueError(f'unknown backend: {backend!r}')
