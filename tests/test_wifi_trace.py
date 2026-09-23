@@ -104,3 +104,42 @@ def test_start_and_stop_are_not_counted_as_loss():
     server = _rows('proprio', range(10, 200), at, 0.005)      # receiver joined 0.5 s late
     stats = analyze(robot, server, trim_s=1.0)['streams']['proprio']
     assert stats['gilbert']['loss'] == 0.0
+
+
+def _sent_rows(stream, n, rate, t0=1000.0):
+    return [{'stream': f'sent:{stream}', 'seq': str(i), 'sent': str(t0 + i / rate),
+             'recv': '', 't1': '', 't2': '', 't3': '', 't4': ''} for i in range(n)]
+
+
+def _recv_rows(stream, seqs, rate, delay, t0=1000.0):
+    return [{'stream': stream, 'seq': str(i), 'sent': str(t0 + i / rate),
+             'recv': str(t0 + i / rate + delay), 't1': '', 't2': '', 't3': '', 't4': ''}
+            for i in seqs]
+
+
+def _probes(n=50, t0=1000.0):
+    return [{'stream': 'probe', 'seq': '', 'sent': '', 'recv': '',
+             't1': str(t0 + k * 0.1), 't2': str(t0 + k * 0.1 + 0.002),
+             't3': str(t0 + k * 0.1 + 0.0025), 't4': str(t0 + k * 0.1 + 0.0045)}
+            for k in range(n)]
+
+
+def test_a_sender_that_kept_its_cadence_is_not_flagged():
+    robot = _probes() + _sent_rows('proprio', 400, 20.0)
+    server = _recv_rows('proprio', range(400), 20.0, 0.004)
+    out = analyze(robot, server)
+    s = out['streams']['proprio']
+    assert s['offered_hz'] == pytest.approx(20.0, abs=0.5)
+    assert not s['saturated'] and not out['saturated']
+
+
+def test_a_sender_that_fell_behind_is_flagged_not_reported_as_channel_loss():
+    """The 2026-09-23 failure: the robot offered ~11 Hz of a nominal 20 and the result looked
+    like a plausible lossy channel. The fit still runs, but nothing may use it unflagged."""
+    robot = _probes() + _sent_rows('proprio', 220, 11.0)
+    server = _recv_rows('proprio', range(220), 11.0, 0.004)
+    out = analyze(robot, server)
+    s = out['streams']['proprio']
+    assert s['offered_hz'] == pytest.approx(11.0, abs=0.5)
+    assert s['offered_ratio'] == pytest.approx(0.55, abs=0.05)
+    assert s['saturated'] and out['saturated']

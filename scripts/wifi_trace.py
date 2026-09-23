@@ -36,6 +36,23 @@ Two modes.
 A message counts as lost when its sequence number never arrives; a burst is a run of consecutive
 lost sequence numbers, converted to milliseconds by the stream's period. The logic below is
 importable without ROS (rclpy is imported only inside `record`), so the fast suite tests it.
+
+**The recorder must not be the bottleneck, and it silently was.** The first three 10-minute
+sessions (2026-09-23) produced plausible-looking WiFi numbers that were entirely an artefact of
+this script: a single-threaded `spin_once` loop capped BOTH machines at ~50 callbacks/s, so the
+robot side offered only 56% of its nominal 60 Hz of traffic (40% under load) and drained about
+half of what arrived. The readings that resulted — 450 ms minimum RTT, near-LOS worse than
+far-NLOS, 56% loss on the 20 Hz waypoint stream against 16% on the 5 Hz chunk stream on the same
+air — are the signature of a saturated event loop, not a radio. Three things now prevent it:
+
+  * payloads are generated once, not per message (a 21 KB `np.random.randint` per frame at 40 Hz
+    was pure overhead: the channel does not care whether the bytes are fresh);
+  * callbacks run on a MultiThreadedExecutor with a reentrant group, so a slow image publish
+    cannot delay the probe pong or a subscription;
+  * `record` measures its OWN achieved send rate and says so, and `analyze` refuses to report a
+    stream whose sender fell below `MIN_OFFERED_RATIO` of nominal without flagging it
+    (`saturated` in the JSON, a loud line on the console). A saturated trace is not a channel
+    measurement and must not become relay parameters.
 """
 from __future__ import annotations
 
@@ -56,6 +73,7 @@ STREAMS = {
     'chunk': ('down', 5.0, (16, 7)),
 }
 PROBE_HZ = 10.0
+MIN_OFFERED_RATIO = 0.95   # below this, the sender — not the link — set the traffic rate
 
 
 # --------------------------------------------------------------------- analysis
@@ -153,16 +171,23 @@ def analyze(robot_rows: list[dict], server_rows: list[dict], label: str = '',
             continue
         first, last = min(window), max(window)
         rows = [r for r in rows if first <= int(r['seq']) <= last]
+        # Did the SENDER keep its own cadence? If not, this stream measures that machine's event
+        # loop and nothing about the link — see the module docstring.
+        offered_hz = len(window) / (t1 - t0) if t1 > t0 else 0.0
+        offered_ratio = offered_hz / rate
         # receive time is on the receiver's clock; convert to the sender's before differencing
         to_sender = off.offset_s if direction == 'up' else -off.offset_s
         delays = [float(r['recv']) - to_sender - float(r['sent']) for r in rows]
         sent, runs = loss_runs([int(r['seq']) for r in rows], first, last)
         out['streams'][name] = {
             'direction': direction, 'rate_hz': rate, 'sent': sent, 'received': len(rows),
+            'offered_hz': offered_hz, 'offered_ratio': offered_ratio,
+            'saturated': offered_ratio < MIN_OFFERED_RATIO,
             'delay_ms': quantiles_ms(delays),
             'burst_lengths': {str(k): runs.count(k) for k in sorted(set(runs))},
             'gilbert': fit_gilbert(sent, runs, 1.0 / rate),
         }
+    out['saturated'] = any(s['saturated'] for s in out['streams'].values())
     return out
 
 
@@ -176,9 +201,18 @@ FIELDS = ['stream', 'seq', 'sent', 'recv', 't1', 't2', 't3', 't4']
 
 
 def record(role: str, seconds: float, out: str) -> None:
-    """Publish this side's streams, log everything received. Needs a sourced ROS 2."""
+    """Publish this side's streams, log everything received. Needs a sourced ROS 2.
+
+    Every design choice here is about not becoming the bottleneck (module docstring): payloads are
+    built once, callbacks are reentrant on a multi-threaded executor, and rows are buffered in
+    memory and written at the end rather than formatted inline.
+    """
+    import threading
+
     import numpy as np
     import rclpy
+    from rclpy.callback_groups import ReentrantCallbackGroup
+    from rclpy.executors import MultiThreadedExecutor
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from sensor_msgs.msg import Image, JointState
 
@@ -186,11 +220,11 @@ def record(role: str, seconds: float, out: str) -> None:
                      history=QoSHistoryPolicy.KEEP_LAST)
     rclpy.init()
     node = rclpy.create_node(f'wifi_trace_{role}')
-    fh = open(out, 'w', newline='')
-    log = csv.DictWriter(fh, FIELDS)
-    log.writeheader()
+    group = ReentrantCallbackGroup()
     mine = 'up' if role == 'robot' else 'down'
     seqs = dict.fromkeys(STREAMS, 0)
+    rows: list[tuple] = []                 # (stream, seq, sent, recv, t1, t2, t3, t4)
+    lock = threading.Lock()
 
     def now():
         return time.time()
@@ -200,62 +234,105 @@ def record(role: str, seconds: float, out: str) -> None:
 
     def on_msg(name):
         def cb(msg):
+            t = now()
             sent = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-            log.writerow({'stream': name, 'seq': int(msg.header.frame_id), 'sent': sent,
-                          'recv': now()})
+            with lock:
+                rows.append((name, int(msg.header.frame_id), sent, t, '', '', '', ''))
         return cb
 
-    pubs = {}
     for name, (direction, rate, shape) in STREAMS.items():
         cls = Image if len(shape) == 3 else JointState
-        if direction == mine:
-            pubs[name] = (node.create_publisher(cls, f'/trace/{name}', qos), cls, shape)
-
-            def send(name=name):
-                pub, cls, shape = pubs[name]
-                msg = cls()
-                if cls is Image:
-                    msg.height, msg.width, msg.encoding = shape[0], shape[1], 'rgb8'
-                    msg.step = shape[1] * 3
-                    msg.data = np.random.randint(0, 255, int(np.prod(shape)), np.uint8).tobytes()
-                else:
-                    msg.position = np.random.rand(int(np.prod(shape))).tolist()
-                msg.header.frame_id = str(seqs[name])
-                t = now()
-                stamp(msg, t)
-                pub.publish(msg)
-                log.writerow({'stream': f'sent:{name}', 'seq': seqs[name], 'sent': t})
-                seqs[name] += 1
-            node.create_timer(1.0 / rate, send)
+        if direction != mine:
+            node.create_subscription(cls, f'/trace/{name}', on_msg(name), qos,
+                                     callback_group=group)
+            continue
+        pub = node.create_publisher(cls, f'/trace/{name}', qos)
+        # One payload per stream, reused: a fresh 21 KB random array per frame at 40 Hz was the
+        # single largest cost in the loop, and the link cannot tell the difference.
+        if cls is Image:
+            payload = np.random.randint(0, 255, int(np.prod(shape)), np.uint8).tobytes()
         else:
-            node.create_subscription(cls, f'/trace/{name}', on_msg(name), qos)
+            payload = np.random.rand(int(np.prod(shape))).tolist()
+
+        def send(name=name, pub=pub, cls=cls, shape=shape, payload=payload):
+            msg = cls()
+            if cls is Image:
+                msg.height, msg.width, msg.encoding = shape[0], shape[1], 'rgb8'
+                msg.step = shape[1] * 3
+                msg.data = payload
+            else:
+                msg.position = payload
+            with lock:
+                seq = seqs[name]
+                seqs[name] = seq + 1
+            msg.header.frame_id = str(seq)
+            t = now()
+            stamp(msg, t)
+            pub.publish(msg)
+            with lock:
+                rows.append((f'sent:{name}', seq, t, '', '', '', '', ''))
+        node.create_timer(1.0 / rate, send, callback_group=group)
 
     # ping-pong probes for the clock offset: robot t1 -> server (t2, t3) -> robot t4
     if role == 'robot':
         probe_pub = node.create_publisher(JointState, '/trace/probe', qos)
 
         def on_pong(msg):
+            t4 = now()
             t1, t2, t3 = msg.position[:3]
-            log.writerow({'stream': 'probe', 't1': t1, 't2': t2, 't3': t3, 't4': now()})
-        node.create_subscription(JointState, '/trace/pong', on_pong, qos)
-        node.create_timer(1.0 / PROBE_HZ, lambda: probe_pub.publish(JointState(position=[now()])))
+            with lock:
+                rows.append(('probe', '', '', '', t1, t2, t3, t4))
+        node.create_subscription(JointState, '/trace/pong', on_pong, qos, callback_group=group)
+        node.create_timer(1.0 / PROBE_HZ,
+                          lambda: probe_pub.publish(JointState(position=[now()])),
+                          callback_group=group)
     else:
         pong_pub = node.create_publisher(JointState, '/trace/pong', qos)
 
         def on_probe(msg):
             t2 = now()
             pong_pub.publish(JointState(position=[msg.position[0], t2, now()]))
-        node.create_subscription(JointState, '/trace/probe', on_probe, qos)
+        node.create_subscription(JointState, '/trace/probe', on_probe, qos, callback_group=group)
 
-    end = time.time() + seconds
+    executor = MultiThreadedExecutor(num_threads=6)
+    executor.add_node(node)
+    t_start, end = time.time(), time.time() + seconds
     try:
         while rclpy.ok() and time.time() < end:
-            rclpy.spin_once(node, timeout_sec=0.01)
+            executor.spin_once(timeout_sec=0.05)
     finally:
-        fh.close()
+        elapsed = time.time() - t_start
+        executor.remove_node(node)
         node.destroy_node()
         rclpy.shutdown()
-    print(f'[wifi_trace] {role}: wrote {out}')
+        with open(out, 'w', newline='') as fh:
+            w = csv.writer(fh)
+            w.writerow(FIELDS)
+            w.writerows(rows)
+    print(f'[wifi_trace] {role}: wrote {out} ({len(rows)} rows in {elapsed:.1f}s)')
+    report_offered(seqs, elapsed, mine)
+
+
+def report_offered(seqs: dict, elapsed: float, mine: str) -> None:
+    """Say whether this machine actually produced the traffic it was asked to produce.
+
+    A recorder that cannot keep its own cadence is measuring itself. Printed at the end of every
+    run so a saturated session is caught on the spot instead of at analysis time.
+    """
+    bad = []
+    for name, (direction, rate, _shape) in STREAMS.items():
+        if direction != mine:
+            continue
+        got = seqs[name] / elapsed if elapsed > 0 else 0.0
+        flag = '' if got >= MIN_OFFERED_RATIO * rate else '  <-- SATURATED'
+        print(f'[wifi_trace]   {name:9s} sent {got:5.2f}/{rate:.0f} Hz'
+              f' ({100 * got / rate:3.0f}%){flag}')
+        if flag:
+            bad.append(name)
+    if bad:
+        print(f'[wifi_trace] WARNING: this machine could not offer its nominal load ({", ".join(bad)}).\n'
+              '[wifi_trace] The trace measures this recorder, not the link — do not use it for '
+              'channel parameters.')
 
 
 def main(argv=None) -> None:
@@ -283,8 +360,14 @@ def main(argv=None) -> None:
         burst = f"{g['burst_ms']:.0f} ms" if g['burst_ms'] is not None else '-'
         p95 = f"{d['p95']:.1f}" if d['p95'] is not None else '-'
         p50 = f"{d['p50']:.1f}" if d['p50'] is not None else '-'
+        sat = (f"  <-- SENDER AT {100 * s['offered_ratio']:.0f}% OF {s['rate_hz']:.0f} Hz"
+               if s['saturated'] else '')
         print(f"  {name:9s} {s['direction']:4s} delay p50 {p50} p95 {p95} ms  "
-              f"loss {100 * g['loss']:.2f}%  mean burst {burst}")
+              f"loss {100 * g['loss']:.2f}%  mean burst {burst}{sat}")
+    if result['saturated']:
+        print('\n  WARNING: at least one sender fell behind its own cadence, so these numbers\n'
+              '  describe the recording machines, not the link. Do not use them as channel\n'
+              '  parameters — see the note at the top of scripts/wifi_trace.py.')
     if args.json:
         with open(args.json, 'w') as fh:
             json.dump(result, fh, indent=2)
