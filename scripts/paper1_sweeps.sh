@@ -6,17 +6,17 @@
 #     (co-located 85/100), after the timing fixes in CLAUDE.md invariants 9-11.
 #   * Streamed action-path delay collapses success between 0 and 200 ms, so E1 resolves 50 and
 #     100 ms; robot-side execution and observation-path delay hold to 800 ms, so E1 reaches 1600.
-#   * 15% and even 50% loss in 2 s outages cost little success at zero delay (the arm holds its
-#     last absolute target and the 20 s horizon absorbs the lost time): E2 keeps 15% and 50%
-#     and reads time-to-success from the per-episode log, not only the success rate.
+#   * 15% and even 50% loss in 2 s outages cost little SUCCESS at zero delay (the arm holds its
+#     last absolute target and the 20 s horizon absorbs the lost time), so E2 keeps only 50% and
+#     reads time-to-success from the per-episode log rather than the success rate alone.
 #
 # Every cell: Square, DP at 4 DDIM steps, reactive layer on unless E3 says off, and TRIALS
 # episodes (default 30). 30 is enough for the large effects BECAUSE comparisons are paired:
-# scene k is the same scene in every cell. Cells whose interval still straddles a conclusion get
-# topped up afterwards with a second pass into <name>_topup.csv (same labels, pooled in analysis;
-# --resume would otherwise skip them as done).
-# Scene k is identical in every cell (same plant seed), so cells compare episode by episode
-# via <out>.episodes.csv. --resume makes the whole script restartable after an interruption.
+# scene k is the same scene in every cell (same plant seed, fresh plant per cell), so conditions
+# compare episode by episode through <out>.episodes.csv. Cells whose interval still straddles a
+# conclusion get topped up afterwards with a second pass into <name>_topup.csv (same labels,
+# pooled in analysis; --resume would otherwise skip them as already done).
+# --resume also makes the whole script restartable after an interruption.
 #
 # Run inside the host image, one run at a time on the GPU (parallel runs change inference time):
 #   docker run -d --name evh_paper1 --gpus all --network host -e ROS_DOMAIN_ID=120 \
