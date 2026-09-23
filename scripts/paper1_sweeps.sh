@@ -10,7 +10,11 @@
 #     last absolute target and the 20 s horizon absorbs the lost time): E2 keeps 15% and 50%
 #     and reads time-to-success from the per-episode log, not only the success rate.
 #
-# Every cell: Square, DP at 4 DDIM steps, 60 episodes, reactive layer on unless E3 says off.
+# Every cell: Square, DP at 4 DDIM steps, reactive layer on unless E3 says off, and TRIALS
+# episodes (default 30). 30 is enough for the large effects BECAUSE comparisons are paired:
+# scene k is the same scene in every cell. Cells whose interval still straddles a conclusion get
+# topped up afterwards with a second pass into <name>_topup.csv (same labels, pooled in analysis;
+# --resume would otherwise skip them as done).
 # Scene k is identical in every cell (same plant seed), so cells compare episode by episode
 # via <out>.episodes.csv. --resume makes the whole script restartable after an interruption.
 #
@@ -25,40 +29,44 @@ WHICH=${1:-all}
 OUT=/ws/outputs/paper1
 mkdir -p "$OUT"
 STRATS=synchronous,naive_async,temporal_ensemble,rtc
+TRIALS=${TRIALS:-30}
 COMMON="--backend dp --weights /ws/checkpoints/dp_square_ph_image_cnn.ckpt --absolute true \
   --env NutAssemblySquare --max_episode_s 20 --denoise_steps 4 \
-  --trials 60 --duration 1800 --resume --log_dir $OUT/logs"
+  --trials $TRIALS --duration 1800 --resume --log_dir $OUT/logs"
 
 sweep() { ros2 run evh_bringup benchmark $COMMON "$@"; }
 
-# ---------------------------------------------------------------- E1 (RQ1): 112 cells
+# ---------------------------------------------------------------- E1 (RQ1): 104 cells
+# 1600 ms only for the buffered executor: streamed execution is already at 0.0 by 800 ms, so the
+# extra level would buy nothing but 8 cells of timeouts
 if [ "$WHICH" = e1 ] || [ "$WHICH" = all ]; then
-  for ex in policy robot; do
-    for pl in act obs; do
-      sweep --sweep latency --values 0,50,100,200,400,800,1600 --placement $pl --executor $ex \
-        --strategies $STRATS --reactive_modes on --out $OUT/e1.csv
-    done
+  for pl in act obs; do
+    sweep --sweep latency --values 0,50,100,200,400,800 --placement $pl --executor policy \
+      --strategies $STRATS --reactive_modes on --out $OUT/e1.csv
+    sweep --sweep latency --values 0,50,100,200,400,800,1600 --placement $pl --executor robot \
+      --strategies $STRATS --reactive_modes on --out $OUT/e1.csv
   done
 fi
 
-# ---------------------------------------------------------------- E2 (RQ2): 104 cells
+# ---------------------------------------------------------------- E2 (RQ2): 64 cells
 if [ "$WHICH" = e2 ] || [ "$WHICH" = all ]; then
   for ex in policy robot; do
-    # equal mean one-way delay (100 ms, both paths), different tails; network_aware is here
-    # as a diagnostic of RTC's forecast, not as a method
+    # equal mean one-way delay (100 ms, both paths), different tails. network_aware is NOT here:
+    # its quantile forecast is paper 2's method, and only a diagnostic for this one
     sweep --sweep latency --values 100 --placement both --executor $ex \
-      --strategies $STRATS,network_aware --reactive_modes on --out $OUT/e2_jitter.csv
+      --strategies $STRATS --reactive_modes on --out $OUT/e2_jitter.csv
     sweep --sweep latency --values 100 --jitter_ms 30 --jitter_model gaussian --placement both \
-      --executor $ex --strategies $STRATS,network_aware --reactive_modes on --out $OUT/e2_jitter.csv
+      --executor $ex --strategies $STRATS --reactive_modes on --out $OUT/e2_jitter.csv
     sweep --sweep latency --values 70 --jitter_ms 30 --jitter_model lognormal --placement both \
-      --executor $ex --strategies $STRATS,network_aware --reactive_modes on --out $OUT/e2_jitter.csv
+      --executor $ex --strategies $STRATS --reactive_modes on --out $OUT/e2_jitter.csv
     sweep --sweep latency --values 50 --jitter_ms 50 --jitter_model lognormal --placement both \
-      --executor $ex --strategies $STRATS,network_aware --reactive_modes on --out $OUT/e2_jitter.csv
-    # equal average loss, different burstiness
-    sweep --sweep drop --values 0.15,0.5 --loss_model iid --placement both --executor $ex \
+      --executor $ex --strategies $STRATS --reactive_modes on --out $OUT/e2_jitter.csv
+    # equal average loss, different burstiness. 50% only: 15% and 50% both left success intact at
+    # zero delay in the pilot, so the cheaper half of the axis had nothing to separate
+    sweep --sweep drop --values 0.5 --loss_model iid --placement both --executor $ex \
       --strategies $STRATS --reactive_modes on --out $OUT/e2_loss.csv
     for burst in 100 500 2000; do
-      sweep --sweep drop --values 0.15,0.5 --loss_model gilbert --burst_ms $burst --placement both \
+      sweep --sweep drop --values 0.5 --loss_model gilbert --burst_ms $burst --placement both \
         --executor $ex --strategies $STRATS --reactive_modes on --out $OUT/e2_loss.csv
     done
   done
