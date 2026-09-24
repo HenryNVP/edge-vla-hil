@@ -72,6 +72,17 @@ STREAMS = {
     'waypoint': ('down', 20.0, (7,)),
     'chunk': ('down', 5.0, (16, 7)),
 }
+# Bytes per camera frame. The default is the testbed's raw 84x84x3, which MEASURABLY SATURATES a
+# WiFi link: two of them at 20 Hz is 6.8 Mbit/s of payload in 640 UDP datagrams/s (16 DDS fragments
+# per frame), and on 2026-09-23 that back-pressured the sender to 64-70% of its own cadence on an
+# idle link and 32-39% on a busy one, with send stalls up to 1.8 s. The same recorder offers 100%
+# on loopback, so the ceiling is the radio, not this process.
+#
+# A deployed stack does not send raw frames for exactly this reason (openpi resizes client-side
+# "to minimize bandwidth and latency"). To measure the CHANNEL rather than its saturation point,
+# pass a compressed frame size: --image-bytes 2600 is JPEG q80 at this resolution (104 KB/s, 80
+# datagrams/s) and leaves the link with headroom to show its own delay and loss.
+IMAGE_BYTES_RAW = 84 * 84 * 3
 PROBE_HZ = 10.0
 MIN_OFFERED_RATIO = 0.95   # below this, the sender — not the link — set the traffic rate
 
@@ -200,7 +211,7 @@ def read_csv(path: str) -> list[dict]:
 FIELDS = ['stream', 'seq', 'sent', 'recv', 't1', 't2', 't3', 't4']
 
 
-def record(role: str, seconds: float, out: str) -> None:
+def record(role: str, seconds: float, out: str, image_bytes: int = IMAGE_BYTES_RAW) -> None:
     """Publish this side's streams, log everything received. Needs a sourced ROS 2.
 
     Every design choice here is about not becoming the bottleneck (module docstring): payloads are
@@ -250,15 +261,17 @@ def record(role: str, seconds: float, out: str) -> None:
         # One payload per stream, reused: a fresh 21 KB random array per frame at 40 Hz was the
         # single largest cost in the loop, and the link cannot tell the difference.
         if cls is Image:
-            payload = np.random.randint(0, 255, int(np.prod(shape)), np.uint8).tobytes()
+            payload = np.random.randint(0, 255, image_bytes, np.uint8).tobytes()
         else:
             payload = np.random.rand(int(np.prod(shape))).tolist()
 
         def send(name=name, pub=pub, cls=cls, shape=shape, payload=payload):
             msg = cls()
             if cls is Image:
-                msg.height, msg.width, msg.encoding = shape[0], shape[1], 'rgb8'
-                msg.step = shape[1] * 3
+                # a compressed frame is opaque bytes on the wire; describe it as one row so the
+                # declared size matches what is actually sent
+                msg.height, msg.width, msg.encoding = 1, len(payload), 'mono8'
+                msg.step = len(payload)
                 msg.data = payload
             else:
                 msg.position = payload
@@ -342,6 +355,9 @@ def main(argv=None) -> None:
     r.add_argument('--role', choices=['robot', 'server'], required=True)
     r.add_argument('--seconds', type=float, default=600.0)
     r.add_argument('--out', required=True)
+    r.add_argument('--image-bytes', type=int, default=IMAGE_BYTES_RAW,
+                   help='bytes per camera frame (default %(default)s = raw 84x84x3, which '
+                        'saturates WiFi; try 2600 for JPEG q80)')
     a = sub.add_parser('analyze')
     a.add_argument('--robot', required=True)
     a.add_argument('--server', required=True)
@@ -350,7 +366,7 @@ def main(argv=None) -> None:
     args = p.parse_args(argv)
 
     if args.mode == 'record':
-        record(args.role, args.seconds, args.out)
+        record(args.role, args.seconds, args.out, args.image_bytes)
         return
     result = analyze(read_csv(args.robot), read_csv(args.server), args.label)
     print(f"[{result['label']}] clock offset {result['offset_ms']:+.2f} ms, "
