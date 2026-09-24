@@ -512,7 +512,8 @@ def run_sweep(args) -> None:
                f'backend:={args.backend}', f'weights:={args.weights}',
                f'strategy:={strategy}', f'passthrough:={"false" if reactive else "true"}',
                f'absolute:={absolute}', f'env_name:={args.env}',
-               f'max_episode_s:={args.max_episode_s}']
+               f'max_episode_s:={args.max_episode_s}',
+               f'image_quality:={args.image_quality}']
         if args.video_dir:
             cmd += [f'video:={os.path.join(args.video_dir, label + ".mp4")}',
                     f'video_duration:={args.video_duration}']
@@ -628,6 +629,9 @@ def main(argv=None) -> None:
     p.add_argument('--env', default='Lift', help='robosuite task, e.g. NutAssemblySquare')
     p.add_argument('--max_episode_s', type=float, default=20.0,
                    help='episode horizon; a timeout is a recorded failure')
+    p.add_argument('--image_quality', type=int, default=0,
+                   help='0 = raw images (what the frozen paper-1 cells used); 1-100 = JPEG at '
+                        'that quality, which is LOSSY and changes what the policy sees')
     p.add_argument('--denoise_steps', type=int, default=16,
                    help='dp backend DDIM steps; inference time is held fixed across a sweep')
     p.add_argument('--backend', default='pytorch')

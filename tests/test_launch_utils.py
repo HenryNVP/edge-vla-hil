@@ -88,3 +88,36 @@ def test_bool_spellings_are_left_to_launch_ros_and_all_work(raw, expected):
 def test_whitespace_around_a_value_is_tolerated():
     assert _evaluate('latency_ms', '  40.0  ', float) == 40.0
     assert _evaluate('image_size', ' 84 ', int) == 84
+
+
+# ------------------------------------------------- the image topics' message type
+# The relay is type-generic and has to be TOLD which type it carries, while the plant and the
+# controller each pick their own class from the same `image_quality` argument. DDS pairs nothing
+# across a type mismatch and says nothing about it, so all three have to be derived from one place.
+def _image_type(raw):
+    from launch import LaunchContext
+
+    from evh_bringup.launch_utils import image_msg_type
+    ctx = LaunchContext()
+    ctx.launch_configurations['image_quality'] = raw
+    return image_msg_type().evaluate(ctx)
+
+
+@requires_ros2
+@pytest.mark.parametrize('raw,expected', [
+    ('0', 'sensor_msgs/msg/Image'),
+    ('0.0', 'sensor_msgs/msg/Image'),
+    ('1', 'sensor_msgs/msg/CompressedImage'),
+    ('80', 'sensor_msgs/msg/CompressedImage'),
+    ('100', 'sensor_msgs/msg/CompressedImage'),
+])
+def test_the_relay_carries_the_type_image_quality_selects(raw, expected):
+    assert _image_type(raw) == expected
+
+
+@requires_ros2
+def test_a_fractional_image_quality_is_refused_rather_than_truncated():
+    """Silently reading 79.5 as 79 would leave the relay's type right but the quality a guess."""
+    from evh_bringup.launch_utils import LaunchArgumentTypeError
+    with pytest.raises(LaunchArgumentTypeError):
+        _image_type('79.5')

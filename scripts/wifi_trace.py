@@ -80,8 +80,16 @@ STREAMS = {
 #
 # A deployed stack does not send raw frames for exactly this reason (openpi resizes client-side
 # "to minimize bandwidth and latency"). To measure the CHANNEL rather than its saturation point,
-# pass a compressed frame size: --image-bytes 2600 is JPEG q80 at this resolution (104 KB/s, 80
-# datagrams/s) and leaves the link with headroom to show its own delay and loss.
+# pass a compressed frame size. Measured over 200 real Square frames at 84x84:
+#
+#     quality   bytes p50   uplink (2 cams @20Hz)   mean abs error
+#       raw        21168          847 KB/s                 -
+#        95         3235          129 KB/s               1.45
+#        90         2460           98 KB/s               1.81
+#        80         1906           76 KB/s               2.33
+#
+# so --image-bytes 2600 is about JPEG q90, and each frame then fits in two DDS fragments instead
+# of sixteen, which is what takes the pressure off the radio.
 IMAGE_BYTES_RAW = 84 * 84 * 3
 PROBE_HZ = 10.0
 MIN_OFFERED_RATIO = 0.95   # below this, the sender — not the link — set the traffic rate

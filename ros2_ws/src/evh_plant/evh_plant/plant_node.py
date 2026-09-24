@@ -39,11 +39,11 @@ from rclpy.qos import (
     QoSReliabilityPolicy,
 )
 from rclpy.qos_event import SubscriptionEventCallbacks
-from sensor_msgs.msg import Image, JointState
+from sensor_msgs.msg import CompressedImage, Image, JointState
 from std_msgs.msg import Bool, Empty
 
 from evh_plant.env_factory import EnvSpec, build_env, eef_to_control_quat
-from evh_plant.messages import PlantObservation
+from evh_plant.messages import RAW_QUALITY, PlantObservation
 from evh_plant.phase import seconds_to_phase
 from evh_plant.sim_thread import SimThread
 from evh_plant.video import VideoRecorder
@@ -121,6 +121,9 @@ class PlantNode(Node):
         # comma-separated; first camera -> /obs/image, second (if any) -> /obs/image_wrist
         self.declare_parameter('camera', 'agentview,robot0_eye_in_hand')
         self.declare_parameter('image_size', 84)       # DP checkpoints are trained at 84x84
+        # 0 = raw Image; 1-100 = JPEG CompressedImage at that quality. Lossy, so it changes what
+        # the policy sees and not only what the link carries — see messages.RAW_QUALITY.
+        self.declare_parameter('image_quality', 0)
         self.declare_parameter('seed', 0)
         self.declare_parameter('max_episode_s', 20.0)  # episode horizon; timeout counts as failure
         # True -> OSC control_delta=False: /cmd/action is an absolute EE pose target
@@ -135,6 +138,8 @@ class PlantNode(Node):
         self.control_hz = self.get_parameter('control_hz').value
         self.action_hz = self.get_parameter('action_hz').value
         self.img_size = int(self.get_parameter('image_size').value)
+        self.img_quality = int(self.get_parameter('image_quality').value)
+        img_cls = Image if self.img_quality <= RAW_QUALITY else CompressedImage
         self.cameras = [c.strip() for c in str(self.get_parameter('camera').value).split(',')
                         if c.strip()]
         self.camera = self.cameras[0]
@@ -147,8 +152,8 @@ class PlantNode(Node):
             float(self.get_parameter('video_duration').value))
 
         # --- publishers ---
-        self.pub_image = self.create_publisher(Image, '/obs/image', 10)
-        self.pub_wrist = (self.create_publisher(Image, '/obs/image_wrist', 10)
+        self.pub_image = self.create_publisher(img_cls, '/obs/image', 10)
+        self.pub_wrist = (self.create_publisher(img_cls, '/obs/image_wrist', 10)
                           if len(self.cameras) > 1 else None)
         self.pub_joint = self.create_publisher(JointState, '/obs/joint_state', 10)
         self.pub_proprio = self.create_publisher(JointState, '/obs/proprio', 10)
@@ -358,8 +363,8 @@ class PlantNode(Node):
             if obs is None:
                 return   # obs dict carried no image; nothing to publish this tick
 
-        self.pub_image.publish(obs.image_msg(now))
-        wrist_msg = obs.wrist_msg(now)
+        self.pub_image.publish(obs.image_msg(now, self.img_quality))
+        wrist_msg = obs.wrist_msg(now, self.img_quality)
         if self.pub_wrist is not None and wrist_msg is not None:
             self.pub_wrist.publish(wrist_msg)
         self.recorder.record(obs.frame)

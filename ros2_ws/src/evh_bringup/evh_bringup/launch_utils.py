@@ -130,3 +130,34 @@ def degrade_when(flag: str, placement: str) -> ParameterValue:
     """A relay's `enabled`: on only if `flag` (delay_obs / delay_act) is set and the launch's
     `executor` argument equals `placement`."""
     return ParameterValue(_DegradeWhen(flag, placement), value_type=bool)
+
+
+class _ImageMsgType(Substitution):
+    """The observation image topics' ROS type, which `image_quality` decides.
+
+    The relay is type-generic but has to be told which type it carries, and DDS pairs nothing
+    across a type mismatch — silently. So the relay's type is derived from the same launch argument
+    the plant and controller read, rather than written out three times.
+    """
+
+    def __init__(self, name: str = 'image_quality') -> None:
+        super().__init__()
+        self._name = name
+        self._source = LaunchConfiguration(name)
+
+    @property
+    def source(self) -> LaunchConfiguration:
+        """The launch argument this reads, for test_launch_graph.py."""
+        return self._source
+
+    def describe(self) -> str:
+        return f"image_msg_type('{self._name}')"
+
+    def perform(self, context) -> str:
+        quality = int(_normalize(self._name, self._source.perform(context), int))
+        return 'sensor_msgs/msg/Image' if quality <= 0 else 'sensor_msgs/msg/CompressedImage'
+
+
+def image_msg_type(name: str = 'image_quality') -> ParameterValue:
+    """A relay's `msg_type` for an observation image link, derived from `image_quality`."""
+    return ParameterValue(_ImageMsgType(name), value_type=str)

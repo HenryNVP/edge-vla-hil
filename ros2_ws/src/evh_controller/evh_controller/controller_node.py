@@ -53,12 +53,13 @@ from rclpy.qos import (
     QoSReliabilityPolicy,
     qos_profile_sensor_data,
 )
-from sensor_msgs.msg import Image, JointState
+from sensor_msgs.msg import CompressedImage, Image, JointState
 from std_msgs.msg import Bool, Empty, Float32
 
 from evh_controller.chunk_codec import CodecError, decode_request, encode_chunk
 from evh_controller.chunk_executor import make_executor
 from evh_controller.chunk_server import ChunkServer
+from evh_controller.image_codec import RAW_QUALITY, decode_image
 from evh_controller.inference_worker import InferenceWorker
 from evh_controller.obs_buffer import ObsBuffer
 from evh_controller.phase import seconds_to_phase
@@ -126,11 +127,15 @@ class ControllerNode(Node):
         self.declare_parameter('policy_absolute', 'auto')    # auto (from checkpoint) | true | false
         self.declare_parameter('executor', 'policy')         # policy | robot (see docstring)
         self.declare_parameter('tick_phase_ms', 10.0)  # tick this long after the plant publishes
+        # must match the plant's image_quality: 0 = raw Image, 1-100 = JPEG CompressedImage. DDS
+        # pairs nothing across mismatched types, so a disagreement silences the image topics.
+        self.declare_parameter('image_quality', 0)
 
         backend = self.get_parameter('backend').value
         weights = self.get_parameter('weights_path').value
         strategy = self.get_parameter('strategy').value
         self.control_hz = self.get_parameter('control_hz').value
+        self.img_quality = int(self.get_parameter('image_quality').value)
         denoise_steps = int(self.get_parameter('denoise_steps').value)
         absolute = _parse_absolute(self.get_parameter('policy_absolute').value)
         self.placement = str(self.get_parameter('executor').value).strip().lower()
@@ -159,9 +164,10 @@ class ControllerNode(Node):
         self.obs = ObsBuffer(self.policy.n_obs_steps, self.policy.needs_wrist)
         self._t = 0   # control timestep counter
 
-        self.create_subscription(Image, '/obs/image', self._on_image, qos_profile_sensor_data)
+        img_cls = Image if self.img_quality <= RAW_QUALITY else CompressedImage
+        self.create_subscription(img_cls, '/obs/image', self._on_image, qos_profile_sensor_data)
         self.create_subscription(
-            Image, '/obs/image_wrist', self._on_wrist, qos_profile_sensor_data)
+            img_cls, '/obs/image_wrist', self._on_wrist, qos_profile_sensor_data)
         self.create_subscription(
             JointState, '/obs/proprio', self._on_proprio, qos_profile_sensor_data)
         # eval-plane signal from the plant; deliberately NOT routed through the latency relay
@@ -193,13 +199,11 @@ class ControllerNode(Node):
         self.create_timer(1.0 / self.control_hz, self._tick)
 
     # ------------------------------------------------------------- callbacks
-    def _on_image(self, msg: Image) -> None:
-        self.obs.put('image', np.frombuffer(msg.data, np.uint8).reshape(
-            msg.height, msg.width, 3), _stamp_s(msg))
+    def _on_image(self, msg) -> None:
+        self.obs.put('image', decode_image(msg), _stamp_s(msg))
 
-    def _on_wrist(self, msg: Image) -> None:
-        self.obs.put('wrist', np.frombuffer(msg.data, np.uint8).reshape(
-            msg.height, msg.width, 3), _stamp_s(msg))
+    def _on_wrist(self, msg) -> None:
+        self.obs.put('wrist', decode_image(msg), _stamp_s(msg))
 
     def _on_proprio(self, msg: JointState) -> None:
         self.obs.put('proprio', np.asarray(msg.position, dtype=np.float32), _stamp_s(msg))

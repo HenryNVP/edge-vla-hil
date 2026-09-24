@@ -47,7 +47,7 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
-from evh_bringup.launch_utils import degrade_when, typed
+from evh_bringup.launch_utils import degrade_when, image_msg_type, typed
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -68,6 +68,7 @@ def generate_launch_description() -> LaunchDescription:
     passthrough = typed('passthrough', bool)
     executor = LaunchConfiguration('executor')
     image_size = typed('image_size', int)
+    image_quality = typed('image_quality', int)
     env_name = LaunchConfiguration('env_name')
     max_episode_s = typed('max_episode_s', float)
     video = LaunchConfiguration('video')
@@ -91,6 +92,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('strict_mode_check', default_value='true'),
         DeclareLaunchArgument('passthrough', default_value='false'),
         DeclareLaunchArgument('image_size', default_value='84'),
+        DeclareLaunchArgument('image_quality', default_value='0'),
         DeclareLaunchArgument('env_name', default_value='Lift'),
         DeclareLaunchArgument('max_episode_s', default_value='20.0'),
         DeclareLaunchArgument('video', default_value=''),
@@ -101,6 +103,7 @@ def generate_launch_description() -> LaunchDescription:
         package='evh_plant', executable='plant_node', name='evh_plant', output='screen',
         parameters=[{
             'image_size': image_size, 'absolute_actions': absolute,
+            'image_quality': image_quality,
             'env_name': env_name, 'max_episode_s': max_episode_s,
             'strict_mode_check': strict_mode_check,
             'video_path': video, 'video_duration': video_duration,
@@ -118,8 +121,8 @@ def generate_launch_description() -> LaunchDescription:
                 'loss_model': loss_model, 'burst_ms': burst_ms,
             }])
 
-    relay_img = relay('latency_image', '/obs/image', 'sensor_msgs/msg/Image', delay_obs)
-    relay_wrist = relay('latency_wrist', '/obs/image_wrist', 'sensor_msgs/msg/Image', delay_obs)
+    relay_img = relay('latency_image', '/obs/image', image_msg_type(), delay_obs)
+    relay_wrist = relay('latency_wrist', '/obs/image_wrist', image_msg_type(), delay_obs)
     relay_proprio = relay(
         'latency_proprio', '/obs/proprio', 'sensor_msgs/msg/JointState', delay_obs)
     # The action path. Which link carries the actions depends on the executor's placement:
@@ -146,6 +149,7 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{
             'backend': backend, 'weights_path': weights, 'strategy': strategy,
             'denoise_steps': denoise_steps, 'executor': executor,
+            'image_quality': image_quality,
         }],
         remappings=[
             ('/obs/image', '/obs/image/delayed'),

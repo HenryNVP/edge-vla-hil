@@ -287,3 +287,52 @@ def test_the_plant_and_controller_share_one_phase_grid():
     for now in (0.0, 3.21, 1790000000.0371, 77.7777):
         for offset in (0.0, 0.01, 0.049):
             assert plant(now, 0.05, offset) == controller(now, 0.05, offset)
+
+
+# --------------------------------------------------------------- image codec
+# The encoder lives in evh_plant, the decoder in evh_controller (which ships to the Jetson and
+# must not import the simulator package). Both halves are pinned here because the way this fails
+# is silent: cv2 is BGR and the policy is RGB, so a disagreement yields plausible images with red
+# and blue exchanged, which no shape check would catch.
+def test_raw_and_compressed_quality_thresholds_agree():
+    from evh_controller import image_codec
+    from evh_plant import messages
+    assert image_codec.RAW_QUALITY == messages.RAW_QUALITY
+    assert image_codec.JPEG_FORMAT == messages.JPEG_FORMAT
+    for q in (0, 1, 50, 80, 100):
+        assert image_codec.image_msg_type(q) == messages.image_msg_type(q)
+
+
+@requires_ros2
+def test_a_raw_frame_round_trips_unchanged():
+    import numpy as np
+    from builtin_interfaces.msg import Time
+
+    from evh_controller.image_codec import decode_image
+    from evh_plant.messages import to_image_msg
+    rng = np.random.default_rng(0)
+    frame = rng.integers(0, 255, (84, 84, 3), dtype=np.uint8)
+    assert np.array_equal(decode_image(to_image_msg(frame, Time())), frame)
+
+
+@requires_ros2
+def test_a_jpeg_frame_round_trips_with_channels_in_the_right_order():
+    """A smooth colour ramp, so JPEG error stays small and a channel swap cannot hide in it."""
+    import numpy as np
+    from builtin_interfaces.msg import Time
+
+    from evh_controller.image_codec import decode_image
+    from evh_plant.messages import to_compressed_image_msg
+    y, x = np.mgrid[0:84, 0:84]
+    frame = np.stack([(x * 3) % 256, (y * 3) % 256, np.full_like(x, 40)], -1).astype(np.uint8)
+
+    msg = to_compressed_image_msg(frame, Time(), quality=80)
+    assert msg.format == 'jpeg'
+    assert len(msg.data) < frame.nbytes / 4      # compression actually happened
+
+    out = decode_image(msg)
+    assert out.shape == frame.shape and out.dtype == np.uint8
+    # per-channel means survive; a red/blue swap would move them by ~200 levels
+    for c in range(3):
+        assert abs(float(out[..., c].mean()) - float(frame[..., c].mean())) < 6.0
+    assert float(np.abs(out.astype(int) - frame.astype(int)).mean()) < 8.0

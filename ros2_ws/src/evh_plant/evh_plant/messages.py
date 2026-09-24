@@ -19,9 +19,17 @@ from dataclasses import dataclass
 
 import numpy as np
 from geometry_msgs.msg import PoseStamped
-from sensor_msgs.msg import Image, JointState
+from sensor_msgs.msg import CompressedImage, Image, JointState
 
 IDENTITY_QUAT = (0.0, 0.0, 0.0, 1.0)   # [x, y, z, w]
+
+# JPEG quality for the compressed observation path. 0 means "send raw", which is the default
+# because compression is LOSSY: it changes what the policy consumes, not just what the link
+# carries, so enabling it for a measured run is a change to the observation and needs its own
+# validation. Raw 84x84x3 is 21168 B per frame; two of those at 20 Hz is 6.8 Mbit/s in ~640 UDP
+# datagrams/s, which measurably saturates a WiFi link (see scripts/wifi_trace.py). q80 is ~2.6 KB.
+RAW_QUALITY = 0
+JPEG_FORMAT = 'jpeg'
 
 
 def upright(frame) -> np.ndarray | None:
@@ -72,11 +80,11 @@ class PlantObservation:
         )
 
     # ----------------------------------------------------------------- packing
-    def image_msg(self, stamp) -> Image:
-        return to_image_msg(self.frame, stamp)
+    def image_msg(self, stamp, quality: int = RAW_QUALITY):
+        return _pack_frame(self.frame, stamp, quality)
 
-    def wrist_msg(self, stamp) -> Image | None:
-        return None if self.wrist is None else to_image_msg(self.wrist, stamp)
+    def wrist_msg(self, stamp, quality: int = RAW_QUALITY):
+        return None if self.wrist is None else _pack_frame(self.wrist, stamp, quality)
 
     def joint_state_msg(self, stamp) -> JointState:
         msg = JointState()
@@ -111,3 +119,49 @@ def to_image_msg(frame: np.ndarray, stamp) -> Image:
     msg.step = msg.width * 3
     msg.data = frame.tobytes()
     return msg
+
+
+def _pack_frame(frame: np.ndarray, stamp, quality: int):
+    """Raw Image at quality 0, JPEG CompressedImage otherwise."""
+    return (to_image_msg(frame, stamp) if int(quality) <= RAW_QUALITY
+            else to_compressed_image_msg(frame, stamp, quality))
+
+
+def to_compressed_image_msg(frame: np.ndarray, stamp, quality: int) -> CompressedImage:
+    """JPEG-encode an upright RGB frame. `format` is 'jpeg' so any ROS tool can read it.
+
+    cv2 works in BGR, so the channels are swapped on the way in and back on the way out
+    (`decode_image`); getting that wrong is silent — the policy sees plausible images with red and
+    blue exchanged.
+    """
+    import cv2  # only needed on the compressed path; keeps the fast suite importable without it
+    ok, buf = cv2.imencode('.jpg', frame[:, :, ::-1],
+                           [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+    if not ok:
+        raise ValueError(f'JPEG encode failed for a {frame.shape} frame')
+    msg = CompressedImage()
+    msg.header.stamp = stamp
+    msg.format = JPEG_FORMAT
+    msg.data = buf.tobytes()
+    return msg
+
+
+def decode_image(msg) -> np.ndarray:
+    """Upright RGB uint8 [H, W, 3] from either an Image or a CompressedImage.
+
+    One decoder for both so the consumer does not branch on the transport, and so a topic that
+    changed type cannot be read with the wrong unpacking.
+    """
+    if hasattr(msg, 'format'):
+        import cv2
+        frame = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise ValueError(f'could not decode a {len(msg.data)}-byte {msg.format!r} frame')
+        return np.ascontiguousarray(frame[:, :, ::-1])
+    return np.frombuffer(msg.data, np.uint8).reshape(msg.height, msg.width, 3)
+
+
+def image_msg_type(quality: int) -> str:
+    """The ROS type name the observation image topics carry at this quality setting."""
+    return ('sensor_msgs/msg/Image' if int(quality) <= RAW_QUALITY
+            else 'sensor_msgs/msg/CompressedImage')

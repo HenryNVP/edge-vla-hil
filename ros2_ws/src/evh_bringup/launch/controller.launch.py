@@ -23,6 +23,7 @@ def generate_launch_description() -> LaunchDescription:
     weights = LaunchConfiguration('weights')
     strategy = LaunchConfiguration('strategy')
     denoise_steps = typed('denoise_steps', int)
+    image_quality = typed('image_quality', int)
     executor = LaunchConfiguration('executor')
 
     return LaunchDescription([
@@ -30,11 +31,13 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('weights', default_value=''),
         DeclareLaunchArgument('strategy', default_value='rtc'),
         DeclareLaunchArgument('denoise_steps', default_value='16'),
+        DeclareLaunchArgument('image_quality', default_value='0'),
         DeclareLaunchArgument('executor', default_value='policy'),
         Node(
             package='evh_controller', executable='controller_node', name='evh_controller',
             output='screen',
             parameters=[{'backend': backend, 'weights_path': weights, 'strategy': strategy,
+                         'image_quality': image_quality,
                          'denoise_steps': denoise_steps, 'executor': executor}],
             remappings=[
                 ('/obs/image', '/obs/image/delayed'),
