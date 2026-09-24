@@ -32,7 +32,8 @@ STRATS=synchronous,naive_async,temporal_ensemble,rtc
 TRIALS=${TRIALS:-30}
 COMMON="--backend dp --weights /ws/checkpoints/dp_square_ph_image_cnn.ckpt --absolute true \
   --env NutAssemblySquare --max_episode_s 20 --denoise_steps 4 \
-  --trials $TRIALS --duration 1800 --resume --log_dir $OUT/logs"
+  --trials $TRIALS --duration 1800 --resume --log_dir $OUT/logs \
+  --image_quality 0"
 
 sweep() { ros2 run evh_bringup benchmark $COMMON "$@"; }
 

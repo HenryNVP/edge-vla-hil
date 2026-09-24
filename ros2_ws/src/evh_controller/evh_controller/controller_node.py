@@ -129,7 +129,7 @@ class ControllerNode(Node):
         self.declare_parameter('tick_phase_ms', 10.0)  # tick this long after the plant publishes
         # must match the plant's image_quality: 0 = raw Image, 1-100 = JPEG CompressedImage. DDS
         # pairs nothing across mismatched types, so a disagreement silences the image topics.
-        self.declare_parameter('image_quality', 0)
+        self.declare_parameter('image_quality', 90)
 
         backend = self.get_parameter('backend').value
         weights = self.get_parameter('weights_path').value

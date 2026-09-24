@@ -31,7 +31,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('weights', default_value=''),
         DeclareLaunchArgument('strategy', default_value='rtc'),
         DeclareLaunchArgument('denoise_steps', default_value='16'),
-        DeclareLaunchArgument('image_quality', default_value='0'),
+        DeclareLaunchArgument('image_quality', default_value='90'),
         DeclareLaunchArgument('executor', default_value='policy'),
         Node(
             package='evh_controller', executable='controller_node', name='evh_controller',

@@ -92,7 +92,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('strict_mode_check', default_value='true'),
         DeclareLaunchArgument('passthrough', default_value='false'),
         DeclareLaunchArgument('image_size', default_value='84'),
-        DeclareLaunchArgument('image_quality', default_value='0'),
+        DeclareLaunchArgument('image_quality', default_value='90'),
         DeclareLaunchArgument('env_name', default_value='Lift'),
         DeclareLaunchArgument('max_episode_s', default_value='20.0'),
         DeclareLaunchArgument('video', default_value=''),

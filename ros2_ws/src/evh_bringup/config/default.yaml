@@ -9,7 +9,7 @@
     action_hz: 250.0        # physics / action apply rate; must divide MuJoCo's 2 ms timestep
     camera: "agentview,robot0_eye_in_hand"  # first -> /obs/image, second -> /obs/image_wrist
     image_size: 84          # DP checkpoints are trained at 84x84
-    image_quality: 0        # 0 = raw Image; 1-100 = JPEG CompressedImage (lossy: see messages.py)
+    image_quality: 90       # JPEG quality; 0 = raw Image. q90 measured to cost no success
     seed: 0
     max_episode_s: 20.0     # episode horizon (sim control steps); timeout = recorded failure
     absolute_actions: true  # abs-action policy: OSC control_delta=False (DP Lift checkpoint)
@@ -28,7 +28,7 @@
     policy_absolute: "auto" # auto = read the checkpoint's stamp; true/false forces the convention
     executor: "policy"      # policy = execute + stream waypoints here; robot = serve chunks only
     tick_phase_ms: 10.0     # tick this long after the plant publishes on the 50 ms grid (phase.py)
-    image_quality: 0        # must match the plant's: a type mismatch silences the image topics
+    image_quality: 90       # must match the plant's: a type mismatch silences the image topics
 
 # Robot-side chunk executor (only with executor:=robot).
 /evh_executor:

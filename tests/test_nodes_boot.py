@@ -16,8 +16,9 @@ def test_plant_boots_and_publishes(ros):
     import rclpy
     from geometry_msgs.msg import PoseStamped
     from rclpy.parameter import Parameter
-    from sensor_msgs.msg import Image, JointState
+    from sensor_msgs.msg import CompressedImage, Image, JointState
 
+    from evh_plant.messages import RAW_QUALITY
     from evh_plant.plant_node import PlantNode
 
     # modest action rate: the boot test drives everything on ONE executor thread, so a 200 Hz
@@ -25,7 +26,13 @@ def test_plant_boots_and_publishes(ros):
     node = PlantNode(parameter_overrides=[Parameter('action_hz', value=50.0)])
     got = {'image': False, 'joint': False, 'ee_pose': False, 'proprio': False}
     sub_node = rclpy.create_node('plant_probe')
-    sub_node.create_subscription(Image, '/obs/image', lambda _m: got.update(image=True), 10)
+    # Derive the image type from the node's OWN parameter rather than naming one: DDS pairs nothing
+    # across a type mismatch and reports nothing, so a probe that hardcodes Image simply sees an
+    # empty topic when the plant is compressing. That is how this test failed when the default
+    # moved to JPEG, and deriving it is what stops the test drifting from the default again.
+    img_cls = (Image if int(node.get_parameter('image_quality').value) <= RAW_QUALITY
+               else CompressedImage)
+    sub_node.create_subscription(img_cls, '/obs/image', lambda _m: got.update(image=True), 10)
     sub_node.create_subscription(
         JointState, '/obs/joint_state', lambda _m: got.update(joint=True), 10)
     sub_node.create_subscription(

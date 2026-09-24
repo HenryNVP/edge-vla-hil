@@ -474,3 +474,24 @@ def test_resume_skips_complete_rows_and_reruns_truncated_ones(tmp_path):
     _append_csv(out, argparse.Namespace(label='cut', **tags), {'trials': 12, 'truncated': True})
     assert completed_labels(out) == {'done'}
     assert completed_labels(str(tmp_path / 'missing.csv')) == set()
+
+
+def test_the_observation_quality_is_recorded_in_the_results():
+    """A lossy observation path is provenance, not a footnote.
+
+    The graph now defaults to JPEG q90 (measured to cost no success: 0.88 raw vs 0.87 q90 over 60
+    paired episodes), while the frozen paper-1 cells were recorded on raw frames and pass
+    `--image_quality 0` explicitly. Two sets of numbers in one directory therefore differ in a way
+    no other column shows, so the setting travels with every row.
+    """
+    from evh_bringup.benchmark import _TAG_COLUMNS
+    assert 'image_quality' in _TAG_COLUMNS
+
+
+def test_the_frozen_sweeps_pin_raw_images_rather_than_inheriting_the_default():
+    """The default moved after those cells were recorded; the scripts must say so themselves."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1]
+    for name in ('paper1_sweeps.sh', 'paper1_e3ext.sh'):
+        text = (root / 'scripts' / name).read_text()
+        assert '--image_quality 0' in text, f'{name} no longer pins raw images'

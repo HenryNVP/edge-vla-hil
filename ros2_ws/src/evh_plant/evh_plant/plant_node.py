@@ -123,7 +123,7 @@ class PlantNode(Node):
         self.declare_parameter('image_size', 84)       # DP checkpoints are trained at 84x84
         # 0 = raw Image; 1-100 = JPEG CompressedImage at that quality. Lossy, so it changes what
         # the policy sees and not only what the link carries — see messages.RAW_QUALITY.
-        self.declare_parameter('image_quality', 0)
+        self.declare_parameter('image_quality', 90)
         self.declare_parameter('seed', 0)
         self.declare_parameter('max_episode_s', 20.0)  # episode horizon; timeout counts as failure
         # True -> OSC control_delta=False: /cmd/action is an absolute EE pose target
