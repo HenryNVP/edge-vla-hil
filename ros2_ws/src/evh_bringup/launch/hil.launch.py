@@ -53,6 +53,8 @@ from evh_bringup.launch_utils import degrade_when, image_msg_type, typed
 def generate_launch_description() -> LaunchDescription:
     latency_ms = typed('latency_ms', float)
     jitter_ms = typed('jitter_ms', float)
+    jitter_burst_ms = typed('jitter_burst_ms', float)
+    jitter_bad_frac = typed('jitter_bad_frac', float)
     drop_prob = typed('drop_prob', float)
     delay_obs = typed('delay_obs', bool)
     delay_act = typed('delay_act', bool)
@@ -82,6 +84,8 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('delay_act', default_value='false'),
         DeclareLaunchArgument('executor', default_value='policy'),
         DeclareLaunchArgument('jitter_model', default_value='gaussian'),
+        DeclareLaunchArgument('jitter_burst_ms', default_value='150.0'),
+        DeclareLaunchArgument('jitter_bad_frac', default_value='0.05'),
         DeclareLaunchArgument('loss_model', default_value='iid'),
         DeclareLaunchArgument('burst_ms', default_value='100.0'),
         DeclareLaunchArgument('backend', default_value='pytorch'),
@@ -119,6 +123,7 @@ def generate_launch_description() -> LaunchDescription:
                 'latency_ms': latency_ms, 'jitter_ms': jitter_ms,
                 'drop_prob': drop_prob, 'jitter_model': jitter_model,
                 'loss_model': loss_model, 'burst_ms': burst_ms,
+                'jitter_burst_ms': jitter_burst_ms, 'jitter_bad_frac': jitter_bad_frac,
             }])
 
     relay_img = relay('latency_image', '/obs/image', image_msg_type(), delay_obs)

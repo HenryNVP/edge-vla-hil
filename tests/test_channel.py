@@ -121,3 +121,71 @@ def test_an_unknown_loss_model_is_refused():
     """Unlike a jitter typo, a loss-model typo would silently turn a burst condition into iid."""
     with pytest.raises(ValueError):
         Channel(drop_prob=0.1, loss_model='burst')
+
+
+# ------------------------------------------------- autocorrelated (bursty) delay
+# Measured on a real 5 GHz link (2026-09-25): one-way delay has a lag-1 autocorrelation of
+# 0.75-0.79 and slow samples arrive in episodes of ~3 messages. The other three jitter models draw
+# per message, so they cannot reproduce that at any parameter setting -- which is why this one
+# exists, and why these tests check the CORRELATION and not just the marginal distribution.
+def _series(ch, n=40000, period_s=0.05, t0=1000.0):
+    return [ch.delay_ms(t0 + i * period_s) for i in range(n)]
+
+
+def _lag1(xs):
+    import statistics
+    m, var = statistics.mean(xs), statistics.pvariance(xs)
+    if var == 0.0:
+        return 0.0
+    return sum((xs[i] - m) * (xs[i + 1] - m) for i in range(len(xs) - 1)) / ((len(xs) - 1) * var)
+
+
+def test_burst_jitter_is_autocorrelated_where_lognormal_is_not():
+    from evh_latency.channel import Channel
+    burst = _series(Channel(latency_ms=20.0, jitter_ms=250.0, jitter_model='burst',
+                            jitter_burst_ms=150.0, jitter_bad_frac=0.05, seed=3))
+    iid = _series(Channel(latency_ms=20.0, jitter_ms=250.0, jitter_model='lognormal', seed=3))
+    assert _lag1(burst) > 0.3, 'burst delay should persist across messages'
+    assert abs(_lag1(iid)) < 0.05, 'lognormal draws are independent by construction'
+
+
+def test_burst_jitter_spends_about_the_requested_fraction_of_time_slow():
+    from evh_latency.channel import Channel
+    xs = _series(Channel(latency_ms=20.0, jitter_ms=250.0, jitter_model='burst',
+                         jitter_burst_ms=150.0, jitter_bad_frac=0.10, seed=5))
+    slow = sum(1 for x in xs if x > 20.0) / len(xs)
+    assert 0.07 < slow < 0.13, slow
+
+
+def test_burst_jitter_leaves_the_good_periods_exactly_nominal():
+    """A real link is not slightly slow all the time; it is nominal, then briefly bad."""
+    from evh_latency.channel import Channel
+    xs = _series(Channel(latency_ms=20.0, jitter_ms=250.0, jitter_model='burst',
+                         jitter_burst_ms=150.0, jitter_bad_frac=0.05, seed=7))
+    assert min(xs) == 20.0
+    assert sum(1 for x in xs if x == 20.0) / len(xs) > 0.9
+
+
+def test_burst_is_off_unless_asked_for():
+    """Every other model ignores t_s entirely, so existing call sites keep working unchanged."""
+    from evh_latency.channel import Channel
+    ch = Channel(latency_ms=10.0, jitter_ms=5.0, jitter_model='gaussian', seed=1)
+    assert ch.delay_ms() >= 0.0
+    flat = Channel(latency_ms=10.0, jitter_ms=5.0, jitter_model='burst', jitter_bad_frac=0.0, seed=1)
+    assert _series(flat, n=500) == [10.0] * 500
+
+
+def test_the_delay_is_piecewise_constant_not_redrawn_per_message():
+    """The point of the model: a slow episode is a queue that stays full, so consecutive slow
+    messages share a delay. Under a per-message draw almost every slow neighbour would differ.
+
+    Not `exactly one value per run`: sampling at 50 ms can miss a good period shorter than that,
+    which merges two genuine episodes into one apparent run.
+    """
+    from evh_latency.channel import Channel
+    xs = _series(Channel(latency_ms=20.0, jitter_ms=250.0, jitter_model='burst',
+                         jitter_burst_ms=400.0, jitter_bad_frac=0.2, seed=11), n=8000)
+    pairs = [(a, b) for a, b in zip(xs, xs[1:]) if a > 20.0 and b > 20.0]
+    assert len(pairs) > 200, 'expected plenty of consecutive slow messages'
+    changed = sum(1 for a, b in pairs if a != b)
+    assert changed / len(pairs) < 0.1, f'{changed}/{len(pairs)} slow neighbours disagreed'

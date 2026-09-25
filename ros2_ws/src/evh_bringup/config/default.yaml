@@ -58,7 +58,9 @@
   ros__parameters:
     latency_ms: 0.0
     jitter_ms: 0.0
-    jitter_model: "gaussian"
+    jitter_model: "gaussian"  # gaussian|uniform|lognormal|burst
+    jitter_burst_ms: 150.0  # burst: mean slow episode (measured on real WiFi: ~150 ms)
+    jitter_bad_frac: 0.05   # burst: fraction of time the link is in a slow episode
     drop_prob: 0.0
     loss_model: "iid"       # iid | gilbert (bursty, shared state across relays)
     burst_ms: 100.0         # gilbert: mean outage length

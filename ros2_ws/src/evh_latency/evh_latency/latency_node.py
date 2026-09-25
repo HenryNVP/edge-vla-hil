@@ -67,7 +67,9 @@ class LatencyNode(Node):
         self.declare_parameter('msg_type', 'sensor_msgs/msg/Image')
         self.declare_parameter('latency_ms', 0.0)
         self.declare_parameter('jitter_ms', 0.0)
-        self.declare_parameter('jitter_model', 'gaussian')   # gaussian|uniform|lognormal
+        self.declare_parameter('jitter_model', 'gaussian')  # gaussian|uniform|lognormal|burst
+        self.declare_parameter('jitter_burst_ms', 150.0)     # burst: mean slow episode
+        self.declare_parameter('jitter_bad_frac', 0.05)      # burst: fraction slow
         self.declare_parameter('drop_prob', 0.0)
         self.declare_parameter('loss_model', 'iid')          # iid|gilbert
         self.declare_parameter('burst_ms', 100.0)            # gilbert: mean outage length
@@ -89,6 +91,8 @@ class LatencyNode(Node):
         self.loss_model = self.get_parameter('loss_model').value
         self.channel = Channel(
             latency_ms=self.latency_ms, jitter_ms=self.jitter_ms, jitter_model=self.jitter_model,
+            jitter_burst_ms=float(self.get_parameter('jitter_burst_ms').value),
+            jitter_bad_frac=float(self.get_parameter('jitter_bad_frac').value),
             drop_prob=self.drop_prob, loss_model=self.loss_model,
             burst_ms=float(self.get_parameter('burst_ms').value),
             seed=int(self.get_parameter('seed').value))
@@ -119,7 +123,7 @@ class LatencyNode(Node):
         if self.channel.dropped(now):
             return  # dropped
 
-        delay_s = self.channel.delay_ms() / 1e3
+        delay_s = self.channel.delay_ms(now) / 1e3
         release = now + delay_s
         if not self.reorder:
             release = max(release, self._last_release)   # preserve order (no overtaking)

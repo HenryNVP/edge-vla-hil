@@ -506,6 +506,8 @@ def run_sweep(args) -> None:
         cmd = ['ros2', 'launch', 'evh_bringup', 'hil.launch.py',
                *(f'{k}:={v}' for k, v in knobs.items()),
                f'jitter_model:={args.jitter_model}',
+               f'jitter_burst_ms:={args.jitter_burst_ms}',
+               f'jitter_bad_frac:={args.jitter_bad_frac}',
                f'loss_model:={args.loss_model}', f'burst_ms:={args.burst_ms}',
                f'delay_obs:={delay_obs}', f'delay_act:={delay_act}',
                f'executor:={args.executor}', f'denoise_steps:={args.denoise_steps}',
@@ -591,7 +593,11 @@ def main(argv=None) -> None:
                    help='iid drops, or gilbert outages of --burst_ms on average at the same '
                         'average rate --drop_prob')
     p.add_argument('--burst_ms', type=float, default=100.0, help='gilbert mean outage length')
-    p.add_argument('--jitter_model', choices=['gaussian', 'uniform', 'lognormal'],
+    p.add_argument('--jitter_burst_ms', type=float, default=150.0,
+                   help='burst jitter: mean slow-episode length (real WiFi measured ~150 ms)')
+    p.add_argument('--jitter_bad_frac', type=float, default=0.05,
+                   help='burst jitter: fraction of time in a slow episode')
+    p.add_argument('--jitter_model', choices=['gaussian', 'uniform', 'lognormal', 'burst'],
                    default='gaussian',
                    help='gaussian/uniform are light-tailed; lognormal supplies the heavy tail a '
                         'quantile delay forecast needs in order to differ from a max')
