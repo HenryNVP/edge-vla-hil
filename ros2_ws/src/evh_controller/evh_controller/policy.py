@@ -601,9 +601,58 @@ class ONNXBackend(ChunkPolicy):
         return np.asarray(chunk[:n], dtype=np.float32)
 
 
+class TruncatedChunkPolicy(ChunkPolicy):
+    """A policy whose chunks are cut to the first `max_actions`, and which says so.
+
+    Exists to make the chunk HORIZON an experimental factor. The measured design rule from E1 is a
+    ratio -- buffered execution survives while the chunk outlasts the round trip, and overlap-based
+    methods need roughly twice that -- but every cell was recorded at one chunk length, so the
+    ratio is inferred rather than measured. Varying the delay changes the numerator; this changes
+    the denominator, at fixed delay, which is what separates "delay matters" from "delay relative
+    to the horizon matters".
+
+    Truncation happens here rather than in the executor so that `chunk_size` is consistent
+    everywhere downstream: the inference worker's buffer, the latched /policy/info a robot-side
+    executor reads, and RTC's frozen-prefix arithmetic all take it from this attribute.
+    """
+
+    def __init__(self, inner: ChunkPolicy, max_actions: int) -> None:
+        if max_actions < 1:
+            raise ValueError(f'max_actions must be >= 1, got {max_actions}')
+        self._inner = inner
+        self.action_dim = inner.action_dim
+        self.chunk_size = min(inner.chunk_size, max_actions)
+        self.denoise_steps = inner.denoise_steps
+        self.n_obs_steps = inner.n_obs_steps
+        self.needs_wrist = inner.needs_wrist
+        self.absolute_actions = inner.absolute_actions
+        self.guided_resampling = inner.guided_resampling
+
+    def predict(self, obs: dict) -> np.ndarray:
+        return np.asarray(self._inner.predict(obs))[:self.chunk_size]
+
+    def predict_inpaint(self, obs: dict, prefix: np.ndarray,
+                        weights: np.ndarray) -> np.ndarray:
+        return np.asarray(self._inner.predict_inpaint(obs, prefix, weights))[:self.chunk_size]
+
+
 def make_policy(backend: str, weights_path: str, denoise_steps: int = 16,
-                absolute: bool | None = None) -> ChunkPolicy:
-    """`absolute` overrides the action convention a backend derives for itself (None = derive)."""
+                absolute: bool | None = None, max_chunk_actions: int = 0) -> ChunkPolicy:
+    """`absolute` overrides the action convention a backend derives for itself (None = derive).
+
+    `max_chunk_actions` > 0 truncates every chunk to that many actions, making the chunk horizon
+    an experimental factor (see TruncatedChunkPolicy).
+    """
+    policy = _make_backend(backend, weights_path, denoise_steps, absolute)
+    if max_chunk_actions and max_chunk_actions < policy.chunk_size:
+        logger.info('truncating chunks from %d to %d actions',
+                    policy.chunk_size, max_chunk_actions)
+        return TruncatedChunkPolicy(policy, max_chunk_actions)
+    return policy
+
+
+def _make_backend(backend: str, weights_path: str, denoise_steps: int,
+                  absolute: bool | None) -> ChunkPolicy:
     backend = backend.lower()
     if backend in ('pytorch', 'torch', 'fallback'):
         return PyTorchBackend(weights_path)

@@ -23,6 +23,7 @@ def generate_launch_description() -> LaunchDescription:
     weights = LaunchConfiguration('weights')
     strategy = LaunchConfiguration('strategy')
     denoise_steps = typed('denoise_steps', int)
+    max_chunk_actions = typed('max_chunk_actions', int)
     image_quality = typed('image_quality', int)
     executor = LaunchConfiguration('executor')
 
@@ -31,6 +32,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('weights', default_value=''),
         DeclareLaunchArgument('strategy', default_value='rtc'),
         DeclareLaunchArgument('denoise_steps', default_value='16'),
+        DeclareLaunchArgument('max_chunk_actions', default_value='0'),
         DeclareLaunchArgument('image_quality', default_value='90'),
         DeclareLaunchArgument('executor', default_value='policy'),
         Node(
@@ -38,6 +40,7 @@ def generate_launch_description() -> LaunchDescription:
             output='screen',
             parameters=[{'backend': backend, 'weights_path': weights, 'strategy': strategy,
                          'image_quality': image_quality,
+                         'max_chunk_actions': max_chunk_actions,
                          'denoise_steps': denoise_steps, 'executor': executor}],
             remappings=[
                 ('/obs/image', '/obs/image/delayed'),

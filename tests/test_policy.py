@@ -150,3 +150,63 @@ def test_a_seven_dim_act_head_still_needs_its_stamp(tmp_path):
     assert stamped_absolute('act', str(tmp_path)) is None
     (tmp_path / POLICY_SIDECAR).write_text('{"absolute_actions": false}')
     assert stamped_absolute('act', str(tmp_path)) is False
+
+
+# ------------------------------------------------------- chunk-horizon truncation
+# E1's design rule is a RATIO (buffered execution survives while the chunk outlasts the round trip;
+# overlap methods need about twice that), but every cell was recorded at one chunk length, so the
+# ratio was inferred from the delay axis alone. Truncation makes the denominator a factor too.
+class _FakeChunkPolicy:
+    action_dim = 7
+    chunk_size = 15
+    denoise_steps = 4
+    n_obs_steps = 2
+    needs_wrist = True
+    absolute_actions = True
+    guided_resampling = True
+
+    def predict(self, obs):
+        import numpy as np
+        return np.arange(15 * 7, dtype=np.float32).reshape(15, 7)
+
+    def predict_inpaint(self, obs, prefix, weights):
+        return self.predict(obs)
+
+
+def test_truncation_cuts_the_chunk_and_reports_the_shorter_size():
+    from evh_controller.policy import TruncatedChunkPolicy
+    p = TruncatedChunkPolicy(_FakeChunkPolicy(), 8)
+    assert p.chunk_size == 8
+    assert p.predict({}).shape == (8, 7)
+    assert p.predict_inpaint({}, None, None).shape == (8, 7)
+
+
+def test_truncation_keeps_the_PREFIX_of_the_chunk_not_a_sample_of_it():
+    """The first k actions are the ones nearest the observation; any other slice is a different
+    policy, not a shorter horizon."""
+    import numpy as np
+
+    from evh_controller.policy import TruncatedChunkPolicy
+    inner = _FakeChunkPolicy()
+    out = TruncatedChunkPolicy(inner, 5).predict({})
+    assert np.array_equal(out, inner.predict({})[:5])
+
+
+def test_truncation_carries_every_contract_the_controller_reads():
+    """chunk_size, the action convention and the guidance flag all travel downstream — to the
+    inference buffer, the latched /policy/info and RTC's prefix arithmetic."""
+    from evh_controller.policy import TruncatedChunkPolicy
+    inner = _FakeChunkPolicy()
+    p = TruncatedChunkPolicy(inner, 4)
+    for attr in ('action_dim', 'denoise_steps', 'n_obs_steps', 'needs_wrist',
+                 'absolute_actions', 'guided_resampling'):
+        assert getattr(p, attr) == getattr(inner, attr), attr
+
+
+def test_asking_for_more_than_the_policy_gives_is_a_no_op_and_zero_is_refused():
+    import pytest as _pytest
+
+    from evh_controller.policy import TruncatedChunkPolicy
+    assert TruncatedChunkPolicy(_FakeChunkPolicy(), 99).chunk_size == 15
+    with _pytest.raises(ValueError):
+        TruncatedChunkPolicy(_FakeChunkPolicy(), 0)

@@ -130,6 +130,9 @@ class ControllerNode(Node):
         # must match the plant's image_quality: 0 = raw Image, 1-100 = JPEG CompressedImage. DDS
         # pairs nothing across mismatched types, so a disagreement silences the image topics.
         self.declare_parameter('image_quality', 90)
+        # 0 = use the checkpoint's full chunk; k > 0 truncates to k actions, which makes
+        # the chunk HORIZON a factor instead of a constant (see TruncatedChunkPolicy).
+        self.declare_parameter('max_chunk_actions', 0)
 
         backend = self.get_parameter('backend').value
         weights = self.get_parameter('weights_path').value
@@ -142,8 +145,9 @@ class ControllerNode(Node):
         if self.placement not in ('policy', 'robot'):
             raise ValueError(f"executor must be policy|robot, got {self.placement!r}")
 
-        self.policy = make_policy(backend, weights, denoise_steps=denoise_steps,
-                                  absolute=absolute)
+        self.policy = make_policy(
+            backend, weights, denoise_steps=denoise_steps, absolute=absolute,
+            max_chunk_actions=int(self.get_parameter('max_chunk_actions').value))
         self.worker = InferenceWorker(self.policy)
         if self.placement == 'policy':
             self.chunk_executor = make_executor(strategy, self.worker, self.policy)

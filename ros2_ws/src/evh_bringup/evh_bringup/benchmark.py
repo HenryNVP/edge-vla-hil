@@ -303,7 +303,8 @@ def run_record(args) -> dict:
 
 
 _TAG_COLUMNS = ['condition', 'strategy', 'latency_ms', 'jitter_ms', 'jitter_model', 'drop_prob',
-                'loss_model', 'burst_ms', 'placement', 'executor', 'reactive', 'image_quality']
+                'loss_model', 'burst_ms', 'placement', 'executor', 'reactive', 'image_quality',
+                'max_chunk_actions']
 _METRIC_COLUMNS = ['trials', 'success_rate', 'infer_ms_mean', 'infer_ms_p95', 'waypoint_hz',
                    'loop_hz', 'wp_step_mm', 'wp_jerk_mm', 'wp_gap_p95_ms',
                    'd_obs_ms_p50', 'd_obs_ms_p95', 'd_chunk_steps_p50', 'd_chunk_steps_p95',
@@ -348,7 +349,8 @@ def _append_csv(path: str, args, s: dict) -> None:
                     getattr(args, 'jitter_model', 'gaussian'), getattr(args, 'drop_prob', 0.0),
                     getattr(args, 'loss_model', 'iid'), getattr(args, 'burst_ms', 100.0),
                     getattr(args, 'placement', 'obs'), getattr(args, 'executor', 'policy'),
-                    args.reactive, getattr(args, 'image_quality', 0)]
+                    args.reactive, getattr(args, 'image_quality', 0),
+                    getattr(args, 'max_chunk_actions', 0)]
                    + [s.get(k, float('nan')) for k in _METRIC_COLUMNS]
                    + [s.get('truncated', False)])
 
@@ -515,7 +517,8 @@ def run_sweep(args) -> None:
                f'strategy:={strategy}', f'passthrough:={"false" if reactive else "true"}',
                f'absolute:={absolute}', f'env_name:={args.env}',
                f'max_episode_s:={args.max_episode_s}',
-               f'image_quality:={args.image_quality}']
+               f'image_quality:={args.image_quality}',
+               f'max_chunk_actions:={args.max_chunk_actions}']
         if args.video_dir:
             cmd += [f'video:={os.path.join(args.video_dir, label + ".mp4")}',
                     f'video_duration:={args.video_duration}']
@@ -635,6 +638,9 @@ def main(argv=None) -> None:
     p.add_argument('--env', default='Lift', help='robosuite task, e.g. NutAssemblySquare')
     p.add_argument('--max_episode_s', type=float, default=20.0,
                    help='episode horizon; a timeout is a recorded failure')
+    p.add_argument('--max_chunk_actions', type=int, default=0,
+                   help='truncate every chunk to k actions (0 = the checkpoint default), '
+                        'which makes the chunk horizon an experimental factor')
     p.add_argument('--image_quality', type=int, default=90,
                    help='JPEG quality for the observation path; 0 = raw. Default 90, measured to '
                         'cost nothing (0.88 raw vs 0.87 q90 over 60 paired episodes, p=1.0). The '

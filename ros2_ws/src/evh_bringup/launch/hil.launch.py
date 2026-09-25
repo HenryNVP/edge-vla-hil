@@ -65,6 +65,7 @@ def generate_launch_description() -> LaunchDescription:
     weights = LaunchConfiguration('weights')
     strategy = LaunchConfiguration('strategy')
     denoise_steps = typed('denoise_steps', int)
+    max_chunk_actions = typed('max_chunk_actions', int)
     absolute = typed('absolute', bool)
     strict_mode_check = typed('strict_mode_check', bool)
     passthrough = typed('passthrough', bool)
@@ -92,6 +93,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('weights', default_value=''),
         DeclareLaunchArgument('strategy', default_value='synchronous'),
         DeclareLaunchArgument('denoise_steps', default_value='16'),
+        DeclareLaunchArgument('max_chunk_actions', default_value='0'),
         DeclareLaunchArgument('absolute', default_value='true'),
         DeclareLaunchArgument('strict_mode_check', default_value='true'),
         DeclareLaunchArgument('passthrough', default_value='false'),
@@ -107,7 +109,7 @@ def generate_launch_description() -> LaunchDescription:
         package='evh_plant', executable='plant_node', name='evh_plant', output='screen',
         parameters=[{
             'image_size': image_size, 'absolute_actions': absolute,
-            'image_quality': image_quality,
+            'image_quality': image_quality, 'max_chunk_actions': max_chunk_actions,
             'env_name': env_name, 'max_episode_s': max_episode_s,
             'strict_mode_check': strict_mode_check,
             'video_path': video, 'video_duration': video_duration,

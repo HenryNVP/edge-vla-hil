@@ -29,6 +29,7 @@
     executor: "policy"      # policy = execute + stream waypoints here; robot = serve chunks only
     tick_phase_ms: 10.0     # tick this long after the plant publishes on the 50 ms grid (phase.py)
     image_quality: 90       # must match the plant's: a type mismatch silences the image topics
+    max_chunk_actions: 0    # 0 = the checkpoint's full chunk; k truncates to k actions
 
 # Robot-side chunk executor (only with executor:=robot).
 /evh_executor:
