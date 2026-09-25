@@ -93,6 +93,8 @@ STREAMS = {
 IMAGE_BYTES_RAW = 84 * 84 * 3
 PROBE_HZ = 10.0
 MIN_OFFERED_RATIO = 0.95   # below this, the sender — not the link — set the traffic rate
+SUB_QUEUE_DEPTH = 500      # the recorder observes; it must not drop superseded messages
+PROBE_CONSISTENCY_TOL = 0.08   # observed vs implied round-trip completion
 
 
 # --------------------------------------------------------------------- analysis
@@ -207,7 +209,40 @@ def analyze(robot_rows: list[dict], server_rows: list[dict], label: str = '',
             'gilbert': fit_gilbert(sent, runs, 1.0 / rate),
         }
     out['saturated'] = any(s['saturated'] for s in out['streams'].values())
+    out.update(_probe_consistency(out, probes, trim_s))
     return out
+
+
+def _probe_consistency(out: dict, probes: list, trim_s: float) -> dict:
+    """Cross-check the per-stream loss against the probe round trip, which traverses both ways.
+
+    A probe completes only if its request and its reply both survive, so observed round-trip
+    completion should be about (1 - up_loss) x (1 - down_loss). When the streams claim much more
+    loss than the probes saw, the extra is not on the link: it is the recorder dropping superseded
+    messages, and it scales with message rate. That is exactly how the 2026-09-25 traces were
+    caught claiming 26% loss on a 20 Hz stream while probes completed 80%.
+
+    Reported, not raised: a real asymmetric link can move this a little, and the point is to make
+    the disagreement visible instead of letting a loss figure through unexamined.
+    """
+    ups = [t for t in out['streams'].values() if t['direction'] == 'up']
+    downs = [t for t in out['streams'].values() if t['direction'] == 'down']
+    if not ups or not downs or len(probes) < 2:
+        return {}
+    # The probes get their OWN trimmed window, from their own send stamps. Measuring them against a
+    # stream's window silently mixes two different spans and the ratio comes out above 1.
+    first, last = min(p[0] for p in probes), max(p[0] for p in probes)
+    lo, hi = first + trim_s, last - trim_s
+    if hi <= lo:
+        return {}
+    seen = sum(1 for p in probes if lo <= p[0] <= hi)
+    expected = PROBE_HZ * (hi - lo) + 1
+    observed = seen / expected
+    up_ok = 1.0 - statistics.mean(t['gilbert']['loss'] for t in ups)
+    down_ok = 1.0 - statistics.mean(t['gilbert']['loss'] for t in downs)
+    implied = up_ok * down_ok
+    return {'probe_completion': observed, 'probe_completion_implied': implied,
+            'loss_inconsistent': bool(observed - implied > PROBE_CONSISTENCY_TOL)}
 
 
 def read_csv(path: str) -> list[dict]:
@@ -235,8 +270,18 @@ def record(role: str, seconds: float, out: str, image_bytes: int = IMAGE_BYTES_R
     from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from sensor_msgs.msg import Image, JointState
 
-    qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
-                     history=QoSHistoryPolicy.KEEP_LAST)
+    # PUBLISH exactly as the testbed does: best-effort, depth 1, newest-wins.
+    pub_qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                         history=QoSHistoryPolicy.KEEP_LAST)
+    # SUBSCRIBE with a deep queue instead. The instrument must not confuse "superseded in my own
+    # depth-1 queue" with "lost on the link": measured on 2026-09-25, a depth-1 reader reported 26%
+    # loss on the 20 Hz waypoint stream against 12% on the 5 Hz chunk stream on the same air, and
+    # the 10 Hz probe round trip completed 80% where those two figures imply 61%. The excess was
+    # rate-dependent, which is the signature of the reader dropping superseded messages during a
+    # delay burst, not of a radio. Still BEST_EFFORT, so nothing is retransmitted and real loss
+    # stays real; only the local overwrite goes away.
+    sub_qos = QoSProfile(depth=SUB_QUEUE_DEPTH, reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                         history=QoSHistoryPolicy.KEEP_LAST)
     rclpy.init()
     node = rclpy.create_node(f'wifi_trace_{role}')
     group = ReentrantCallbackGroup()
@@ -262,10 +307,10 @@ def record(role: str, seconds: float, out: str, image_bytes: int = IMAGE_BYTES_R
     for name, (direction, rate, shape) in STREAMS.items():
         cls = Image if len(shape) == 3 else JointState
         if direction != mine:
-            node.create_subscription(cls, f'/trace/{name}', on_msg(name), qos,
+            node.create_subscription(cls, f'/trace/{name}', on_msg(name), sub_qos,
                                      callback_group=group)
             continue
-        pub = node.create_publisher(cls, f'/trace/{name}', qos)
+        pub = node.create_publisher(cls, f'/trace/{name}', pub_qos)
         # One payload per stream, reused: a fresh 21 KB random array per frame at 40 Hz was the
         # single largest cost in the loop, and the link cannot tell the difference.
         if cls is Image:
@@ -296,24 +341,26 @@ def record(role: str, seconds: float, out: str, image_bytes: int = IMAGE_BYTES_R
 
     # ping-pong probes for the clock offset: robot t1 -> server (t2, t3) -> robot t4
     if role == 'robot':
-        probe_pub = node.create_publisher(JointState, '/trace/probe', qos)
+        probe_pub = node.create_publisher(JointState, '/trace/probe', pub_qos)
 
         def on_pong(msg):
             t4 = now()
             t1, t2, t3 = msg.position[:3]
             with lock:
                 rows.append(('probe', '', '', '', t1, t2, t3, t4))
-        node.create_subscription(JointState, '/trace/pong', on_pong, qos, callback_group=group)
+        node.create_subscription(JointState, '/trace/pong', on_pong, sub_qos,
+                                 callback_group=group)
         node.create_timer(1.0 / PROBE_HZ,
                           lambda: probe_pub.publish(JointState(position=[now()])),
                           callback_group=group)
     else:
-        pong_pub = node.create_publisher(JointState, '/trace/pong', qos)
+        pong_pub = node.create_publisher(JointState, '/trace/pong', pub_qos)
 
         def on_probe(msg):
             t2 = now()
             pong_pub.publish(JointState(position=[msg.position[0], t2, now()]))
-        node.create_subscription(JointState, '/trace/probe', on_probe, qos, callback_group=group)
+        node.create_subscription(JointState, '/trace/probe', on_probe, sub_qos,
+                                 callback_group=group)
 
     executor = MultiThreadedExecutor(num_threads=6)
     executor.add_node(node)
@@ -388,6 +435,12 @@ def main(argv=None) -> None:
                if s['saturated'] else '')
         print(f"  {name:9s} {s['direction']:4s} delay p50 {p50} p95 {p95} ms  "
               f"loss {100 * g['loss']:.2f}%  mean burst {burst}{sat}")
+    if result.get('loss_inconsistent'):
+        print(f"\n  WARNING: probe round trips completed {100 * result['probe_completion']:.0f}% "
+              f"but the per-stream losses imply {100 * result['probe_completion_implied']:.0f}%.\n"
+              '  The excess is the recorder dropping superseded messages, not the link. Use the\n'
+              '  DELAY figures; re-record with the current subscriber queue depth before using the\n'
+              '  loss figures as channel parameters.')
     if result['saturated']:
         print('\n  WARNING: at least one sender fell behind its own cadence, so these numbers\n'
               '  describe the recording machines, not the link. Do not use them as channel\n'

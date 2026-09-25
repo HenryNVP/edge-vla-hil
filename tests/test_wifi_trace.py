@@ -7,7 +7,14 @@ or every one-way delay is off by the offset.
 import random
 
 import pytest
-from wifi_trace import analyze, estimate_offset, fit_gilbert, loss_runs, quantiles_ms
+from wifi_trace import (
+    PROBE_HZ,
+    analyze,
+    estimate_offset,
+    fit_gilbert,
+    loss_runs,
+    quantiles_ms,
+)
 
 from evh_latency.channel import GilbertElliott
 
@@ -143,3 +150,46 @@ def test_a_sender_that_fell_behind_is_flagged_not_reported_as_channel_loss():
     assert s['offered_hz'] == pytest.approx(11.0, abs=0.5)
     assert s['offered_ratio'] == pytest.approx(0.55, abs=0.05)
     assert s['saturated'] and out['saturated']
+
+
+# --------------------------------------------- the probe consistency cross-check
+# A probe completes only if both directions survive, so it bounds the per-direction loss
+# independently of message rate. That is what caught the 2026-09-25 traces: a depth-1 subscriber
+# reported 26% loss on a 20 Hz stream against 12% on a 5 Hz stream on the same air, while probes
+# completed 80% where those figures imply 61%.
+def _two_way(up_loss, down_loss, probe_keep, n=600, rate=20.0, t0=1000.0):
+    """Build a robot/server pair with known loss per direction and a known probe completion."""
+    robot, server = [], []
+    for k in range(int(PROBE_HZ * n / rate)):
+        if k % max(1, int(1 / probe_keep)) != 0 and probe_keep < 1.0:
+            continue
+        t1 = t0 + k / PROBE_HZ
+        robot.append({'stream': 'probe', 'seq': '', 'sent': '', 'recv': '',
+                      't1': str(t1), 't2': str(t1 + .002), 't3': str(t1 + .0025),
+                      't4': str(t1 + .0045)})
+    for name, loss, up in (('proprio', up_loss, True), ('waypoint', down_loss, False)):
+        sender, receiver = (robot, server) if up else (server, robot)
+        keep = max(1, round(1 / (1 - loss))) if loss else 1
+        for i in range(n):
+            t = t0 + i / rate
+            sender.append({'stream': f'sent:{name}', 'seq': str(i), 'sent': str(t), 'recv': '',
+                           't1': '', 't2': '', 't3': '', 't4': ''})
+            if loss == 0 or i % keep:
+                receiver.append({'stream': name, 'seq': str(i), 'sent': str(t),
+                                 'recv': str(t + .004), 't1': '', 't2': '', 't3': '', 't4': ''})
+    return robot, server
+
+
+def test_consistent_loss_and_probe_completion_is_not_flagged():
+    robot, server = _two_way(0.0, 0.0, 1.0)
+    out = analyze(robot, server)
+    assert not out['loss_inconsistent']
+
+
+def test_streams_claiming_far_more_loss_than_the_probes_saw_is_flagged():
+    """Both streams drop half their messages while every probe completes — impossible on a link."""
+    robot, server = _two_way(0.5, 0.5, 1.0)
+    out = analyze(robot, server)
+    assert out['probe_completion'] > 0.9
+    assert out['probe_completion_implied'] < 0.3
+    assert out['loss_inconsistent']
