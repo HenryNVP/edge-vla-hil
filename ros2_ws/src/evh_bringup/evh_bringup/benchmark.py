@@ -338,13 +338,44 @@ def _append_episodes(path: str, label: str, episodes) -> None:
             w.writerow([label, scene, int(success), f'{wall_s:.2f}'])
 
 
+class ColumnDriftError(RuntimeError):
+    """The CSV being appended to was written with a different set of columns."""
+
+
+def _check_header(path: str, columns: list[str]) -> None:
+    """Refuse to append rows that do not line up with the header already in the file.
+
+    A sweep is many processes over many hours: each cell is a fresh `ros2 run`, so editing this
+    module mid-sweep means later cells write a different number of fields than the header the first
+    cell wrote. Every value then lands one column to the left and the file still parses — on
+    2026-09-23 that put a trials count of 30 into `success_rate` and shifted every metric, which
+    looks like a result rather than a mistake. Checking costs one read and makes it loud.
+
+    The per-episode log is immune (fixed four-column schema), so the underlying data survives this;
+    it is the derived summary that silently rots.
+    """
+    with open(path, newline='') as f:
+        existing = next(csv.reader(f), None)
+    if existing is not None and existing != columns:
+        added = [c for c in columns if c not in existing]
+        removed = [c for c in existing if c not in columns]
+        raise ColumnDriftError(
+            f'{path} was written with {len(existing)} columns, this process has {len(columns)}'
+            + (f'; added {added}' if added else '') + (f'; removed {removed}' if removed else '')
+            + '. Appending would shift every value. Write to a new --out, or finish the sweep with '
+              'the code it started under.')
+
+
 def _append_csv(path: str, args, s: dict) -> None:
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     new = not os.path.exists(path)
+    columns = _TAG_COLUMNS + _METRIC_COLUMNS + ['truncated']
+    if not new:
+        _check_header(path, columns)
     with open(path, 'a', newline='') as f:
         w = csv.writer(f)
         if new:
-            w.writerow(_TAG_COLUMNS + _METRIC_COLUMNS + ['truncated'])
+            w.writerow(columns)
         w.writerow([args.label, args.strategy, args.latency_ms, args.jitter_ms,
                     getattr(args, 'jitter_model', 'gaussian'), getattr(args, 'drop_prob', 0.0),
                     getattr(args, 'loss_model', 'iid'), getattr(args, 'burst_ms', 100.0),

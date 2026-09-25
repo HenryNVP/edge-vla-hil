@@ -495,3 +495,44 @@ def test_the_frozen_sweeps_pin_raw_images_rather_than_inheriting_the_default():
     for name in ('paper1_sweeps.sh', 'paper1_e3ext.sh'):
         text = (root / 'scripts' / name).read_text()
         assert '--image_quality 0' in text, f'{name} no longer pins raw images'
+
+
+# ----------------------------------------------------- CSV column drift
+# A sweep is many processes over many hours and each cell is a fresh `ros2 run`. Editing benchmark.py
+# mid-sweep once put a trials count of 30 into `success_rate` and shifted every metric one column
+# left, in a file that still parsed cleanly. The per-episode log survived (fixed schema); the summary
+# did not. These pin the guard.
+def test_appending_with_the_same_columns_is_allowed(tmp_path):
+    from evh_bringup.benchmark import _check_header
+    p = tmp_path / 'sweep.csv'
+    p.write_text('a,b,c\n1,2,3\n')
+    _check_header(str(p), ['a', 'b', 'c'])       # must not raise
+
+
+def test_appending_after_a_column_was_added_is_refused_and_names_it(tmp_path):
+    import pytest as _pytest
+
+    from evh_bringup.benchmark import ColumnDriftError, _check_header
+    p = tmp_path / 'sweep.csv'
+    p.write_text('a,b,c\n1,2,3\n')
+    with _pytest.raises(ColumnDriftError) as exc:
+        _check_header(str(p), ['a', 'b', 'c', 'image_quality'])
+    assert 'image_quality' in str(exc.value)
+
+
+def test_appending_after_a_column_was_removed_is_also_refused(tmp_path):
+    import pytest as _pytest
+
+    from evh_bringup.benchmark import ColumnDriftError, _check_header
+    p = tmp_path / 'sweep.csv'
+    p.write_text('a,b,c\n1,2,3\n')
+    with _pytest.raises(ColumnDriftError):
+        _check_header(str(p), ['a', 'c'])
+
+
+def test_an_empty_file_is_not_treated_as_drift(tmp_path):
+    """A zero-byte file from an interrupted run should be written fresh, not refused."""
+    from evh_bringup.benchmark import _check_header
+    p = tmp_path / 'sweep.csv'
+    p.write_text('')
+    _check_header(str(p), ['a', 'b'])
