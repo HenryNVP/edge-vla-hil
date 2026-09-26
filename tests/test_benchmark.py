@@ -4,6 +4,7 @@ waypoint_hz is the headline chunk-execution metric (rate of NEW cognitive comman
 well-defined at the degraded end of the curve — a NaN there silently drops the most interesting
 point from the plot — hence count-over-window rather than 1/mean(inter-arrival).
 """
+import textwrap
 import math
 
 import pytest
@@ -536,3 +537,48 @@ def test_an_empty_file_is_not_treated_as_drift(tmp_path):
     p = tmp_path / 'sweep.csv'
     p.write_text('')
     _check_header(str(p), ['a', 'b'])
+
+
+def test_the_episode_horizon_is_recorded_in_the_results():
+    """The horizon is an experimental factor now, so it cannot live only in the launch command.
+
+    E6 varies `max_episode_s` at a fixed delay to test whether the success collapse at long delay is
+    the deadline cutting a continuous slowdown or a second failure mode. That makes the horizon the
+    independent variable, and two cells differing only in it would otherwise be indistinguishable in
+    the CSV -- the same hole that voided the first chunk-horizon sweep.
+    """
+    from evh_bringup.benchmark import _TAG_COLUMNS
+    assert 'max_episode_s' in _TAG_COLUMNS
+
+
+def test_every_recorded_column_is_supplied_by_the_per_cell_namespace():
+    """The durable form of a bug that has now cost two sweeps.
+
+    `_append_csv` reads its tag columns off the per-cell Namespace with `getattr(args, name,
+    <default>)`, so a column the sweep loop forgets to pass does not raise -- it silently records the
+    default, and the CSV then claims a condition that did not run. `max_chunk_actions` did exactly
+    this: every row said 0 while the cells were truncating correctly. Rather than trusting the
+    comment in the loop, read the Namespace the loop actually builds and require it to cover the
+    columns, so adding a factor without wiring it fails here instead of after three GPU hours.
+    """
+    import ast
+    import inspect
+    from evh_bringup import benchmark
+    from evh_bringup.benchmark import _TAG_COLUMNS
+
+    src = inspect.getsource(benchmark.run_sweep)
+    tree = ast.parse(textwrap.dedent(src))
+    namespaces = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute) and node.func.attr == 'Namespace'
+    ]
+    assert namespaces, 'no argparse.Namespace construction found in run_sweep()'
+    supplied = {kw.arg for ns in namespaces for kw in ns.keywords}
+
+    # `condition` is the label, written from args.label; the rest must be passed by name.
+    required = set(_TAG_COLUMNS) - {'condition'}
+    missing = sorted(required - supplied)
+    assert not missing, (
+        f'run_sweep() builds its per-cell Namespace without {missing}; _append_csv would record the '
+        f'getattr default and the CSV would claim a condition that did not run')

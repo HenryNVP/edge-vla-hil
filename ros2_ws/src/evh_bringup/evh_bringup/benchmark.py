@@ -304,7 +304,7 @@ def run_record(args) -> dict:
 
 _TAG_COLUMNS = ['condition', 'strategy', 'latency_ms', 'jitter_ms', 'jitter_model', 'drop_prob',
                 'loss_model', 'burst_ms', 'placement', 'executor', 'reactive', 'image_quality',
-                'max_chunk_actions']
+                'max_chunk_actions', 'max_episode_s']
 _METRIC_COLUMNS = ['trials', 'success_rate', 'infer_ms_mean', 'infer_ms_p95', 'waypoint_hz',
                    'loop_hz', 'wp_step_mm', 'wp_jerk_mm', 'wp_gap_p95_ms',
                    'd_obs_ms_p50', 'd_obs_ms_p95', 'd_chunk_steps_p50', 'd_chunk_steps_p95',
@@ -381,7 +381,8 @@ def _append_csv(path: str, args, s: dict) -> None:
                     getattr(args, 'loss_model', 'iid'), getattr(args, 'burst_ms', 100.0),
                     getattr(args, 'placement', 'obs'), getattr(args, 'executor', 'policy'),
                     args.reactive, getattr(args, 'image_quality', 0),
-                    getattr(args, 'max_chunk_actions', 0)]
+                    getattr(args, 'max_chunk_actions', 0),
+                    getattr(args, 'max_episode_s', 20.0)]
                    + [s.get(k, float('nan')) for k in _METRIC_COLUMNS]
                    + [s.get('truncated', False)])
 
@@ -584,7 +585,8 @@ def run_sweep(args) -> None:
                     # every field _append_csv records has to be here: a missing one falls through
                     # to its getattr default and the CSV claims a condition that did not run
                     image_quality=args.image_quality,
-                    max_chunk_actions=args.max_chunk_actions))
+                    max_chunk_actions=args.max_chunk_actions,
+                    max_episode_s=args.max_episode_s))
                 if row.get('truncated'):
                     failures.append((label, f"hit the {args.duration:.0f}s cap at "
                                             f"{row['trials']}/{args.trials} episodes"))
