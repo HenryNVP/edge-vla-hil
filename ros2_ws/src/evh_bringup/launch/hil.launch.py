@@ -109,7 +109,7 @@ def generate_launch_description() -> LaunchDescription:
         package='evh_plant', executable='plant_node', name='evh_plant', output='screen',
         parameters=[{
             'image_size': image_size, 'absolute_actions': absolute,
-            'image_quality': image_quality, 'max_chunk_actions': max_chunk_actions,
+            'image_quality': image_quality,
             'env_name': env_name, 'max_episode_s': max_episode_s,
             'strict_mode_check': strict_mode_check,
             'video_path': video, 'video_duration': video_duration,
@@ -156,7 +156,7 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{
             'backend': backend, 'weights_path': weights, 'strategy': strategy,
             'denoise_steps': denoise_steps, 'executor': executor,
-            'image_quality': image_quality,
+            'image_quality': image_quality, 'max_chunk_actions': max_chunk_actions,
         }],
         remappings=[
             ('/obs/image', '/obs/image/delayed'),

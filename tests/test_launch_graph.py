@@ -526,3 +526,36 @@ def test_the_task_and_its_horizon_reach_the_plant(filename):
 
     assert refs.get('env_name') == 'env_name'
     assert refs.get('max_episode_s') == 'max_episode_s'
+
+
+@requires_ros2
+@pytest.mark.parametrize('filename', LAUNCH_FILES)
+def test_every_parameter_a_launch_file_passes_is_declared_by_the_node_receiving_it(filename):
+    """A parameter sent to a node that never declares it is silently ignored.
+
+    This is how E5 was lost. `max_chunk_actions` was patched into hil.launch.py one block too
+    early and landed on evh_plant, which does not declare it; the controller kept its default of 0,
+    the chunk was never truncated, and a 3.5 h sweep of four horizon levels recorded four identical
+    conditions. Nothing raised: rclpy accepts an undeclared override and no node reads it.
+
+    The typed-parameter test above cannot catch this — it skips any parameter whose declared type is
+    unknown, which is exactly the case for one the node never declares.
+    """
+    ld = _load(filename)
+    ctx = _context(ld)
+
+    for node in _nodes(ld, False):
+        package = _perform(ctx, node._Node__package)
+        executable = _perform(ctx, node._Node__node_executable)
+        declared = set(_declared_param_defaults(package, executable))
+        if not declared:
+            continue            # executable we cannot parse; other tests cover the wiring
+        for params in (node._Node__parameters or []):
+            if not isinstance(params, dict):
+                continue        # a yaml file path, not an inline override
+            for key in params:
+                name = key if isinstance(key, str) else _perform(ctx, key)
+                assert name in declared, (
+                    f'{filename}: passes {name!r} to {package}/{executable}, which never declares '
+                    f'it — rclpy ignores the override silently and the node keeps its default. '
+                    f'Did it belong on a different node in this launch file?')

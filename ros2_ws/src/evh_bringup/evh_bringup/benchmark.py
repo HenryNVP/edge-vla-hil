@@ -579,7 +579,12 @@ def run_sweep(args) -> None:
                     latency_ms=knobs['latency_ms'], jitter_ms=knobs['jitter_ms'],
                     jitter_model=args.jitter_model, drop_prob=knobs['drop_prob'],
                     loss_model=args.loss_model, burst_ms=args.burst_ms,
-                    placement=args.placement, executor=args.executor, reactive=reactive, strategy=strategy, trials_target=args.trials))
+                    placement=args.placement, executor=args.executor, reactive=reactive,
+                    strategy=strategy, trials_target=args.trials,
+                    # every field _append_csv records has to be here: a missing one falls through
+                    # to its getattr default and the CSV claims a condition that did not run
+                    image_quality=args.image_quality,
+                    max_chunk_actions=args.max_chunk_actions))
                 if row.get('truncated'):
                     failures.append((label, f"hit the {args.duration:.0f}s cap at "
                                             f"{row['trials']}/{args.trials} episodes"))
