@@ -169,11 +169,15 @@ def main() -> None:
     p.add_argument('--tasks', default='0,1,2,3,4,5,6,7,8,9')
     p.add_argument('--episodes', type=int, default=10, help='per task')
     p.add_argument('--strategies', default='synchronous,naive_async,rtc')
-    p.add_argument('--delays', default='5,10,25')
+    p.add_argument('--delays', default='5,10,25',
+                   help='ticks, or trace:<session>:<scale> to replay a recorded WiFi session')
     p.add_argument('--chunk', type=int, default=50, help='actions kept per chunk (<= 50)')
     p.add_argument('--world-speed', type=float, default=1.0)
     p.add_argument('--deadline', type=int, default=280, help='ticks; libero_object limit is 280')
     p.add_argument('--guidance', type=float, default=10.0, help='LeRobot docs: 10 for 10 steps')
+    p.add_argument('--s-wait', type=int, default=10,
+                   help='coverage-aware family: waiting-mode chunk length (the policy tolerates '
+                        'about 10 open-loop steps)')
     p.add_argument('--rtc-horizon', type=int, default=10,
                    help='RTC: actions played between requests and the soft-mask horizon s '
                         '(LeRobot docs: 8-12)')
@@ -190,7 +194,7 @@ def main() -> None:
     from lerobot.policies.factory import make_policy, make_pre_post_processors
     from lerobot.policies.rtc import RTCConfig
     from lerobot.configs.types import RTCAttentionSchedule
-    from sil_step import StepWorker, fixed_delay, run_episode
+    from sil_step import StepWorker, TraceDelay, make_delay, make_strategy, run_episode
 
     tasks = [int(x) for x in args.tasks.split(',')]
     sys.argv = [sys.argv[0], f'--policy.path={args.policy}', '--env.type=libero',
@@ -240,7 +244,7 @@ def main() -> None:
         w = csv.writer(f)
         if new:
             w.writerow(EPISODE_COLUMNS)
-        for d in [int(x) for x in args.delays.split(',')]:
+        for d in args.delays.split(','):
             for strategy in args.strategies.split(','):
                 label = (f'strat={strategy}_d={d}_k={policy.chunk_size}_alpha={args.world_speed:g}'
                          f'_deadline={args.deadline}'
@@ -254,13 +258,17 @@ def main() -> None:
                     for scene in range(args.episodes):
                         obs = env.reset()
                         policy.new_episode(task_text, seed=scene)
-                        worker = StepWorker(policy, fixed_delay(d))
+                        delay = make_delay(d)
+                        if isinstance(delay, TraceDelay):
+                            delay.for_episode(1000 * t + scene)   # paired across strategies
+                        worker = StepWorker(policy, delay)
                         if strategy == 'rtc':
                             executor = RTCExecutor(worker, policy,
                                                    exec_horizon_min=args.rtc_horizon,
                                                    replan_every=args.rtc_horizon)
                         else:
-                            executor = make_executor(strategy, worker, policy)
+                            executor = make_strategy(strategy, worker, policy, args.s_wait,
+                                                     s_min=args.rtc_horizon)
                         ep = run_episode(env, obs, policy, executor, worker,
                                          deadline_ticks=args.deadline,
                                          world_speed=args.world_speed, absolute=False,

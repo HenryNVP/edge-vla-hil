@@ -164,3 +164,62 @@ def test_in_delta_mode_an_idle_tick_holds_instead_of_repeating_the_last_delta():
     first_chunk_end = 4 + H
     assert np.array_equal(env.actions[first_chunk_end], marker)
     assert ep.path_m == 0.0, 'no target path is defined for deltas'
+
+
+# ------------------------------------------------------------------ WiFi trace replay
+def _trace(lost_image=(), lost_chunk=(), offset=5.0):
+    """Robot sends an image every 50 ms (20 ms uplink); the server sends a chunk every 200 ms
+    (10 ms downlink); the server clock runs `offset` s ahead; probes see a symmetric 5 ms each way."""
+    robot, server = [], []
+    for k in range(200):
+        s = 100.0 + 0.05 * k
+        robot.append(dict(stream='sent:image', seq=k, sent=s, recv='', t1='', t2='', t3='', t4=''))
+        if k not in lost_image:
+            server.append(dict(stream='image', seq=k, sent=s, recv=s + 0.020 + offset))
+    for k in range(50):
+        c = 100.0 + 0.2 * k
+        server.append(dict(stream='sent:chunk', seq=k, sent=c + offset, recv=''))
+        if k not in lost_chunk:
+            robot.append(dict(stream='chunk', seq=k, sent=c + offset, recv=c + 0.010,
+                              t1='', t2='', t3='', t4=''))
+    for k in range(20):
+        t1 = 100.0 + k
+        robot.append(dict(stream='probe', seq='', sent='', recv='', t1=t1, t2=t1 + 0.005 + offset,
+                          t3=t1 + 0.006 + offset, t4=t1 + 0.011))
+    return robot, server
+
+
+def test_a_round_trip_is_uplink_plus_inference_plus_the_downlink_delay_of_that_moment():
+    from sil_step import wifi_rtt_ms
+    robot, server = _trace()
+    _t, rtt = wifi_rtt_ms(robot, server, inference_ms=80.0, trim_s=0.5)
+    # 20 ms up + 80 ms inference + 10 ms down; the 5 Hz send schedule is not charged
+    assert np.allclose(rtt, 110.0, atol=1.0)
+
+
+def test_a_lost_message_costs_the_wait_for_the_next_one_that_arrived():
+    from sil_step import wifi_rtt_ms
+    robot, server = _trace(lost_image={40})
+    t, rtt = wifi_rtt_ms(robot, server, inference_ms=80.0, trim_s=0.5)
+    i = int(np.argmin(np.abs(t - (0.05 * 40 - 0.5))))
+    assert rtt[i] == pytest.approx(160.0, abs=1.0)      # waits one image period (50 ms) more
+
+
+def test_trace_delay_is_paired_by_episode_and_scales_only_the_network():
+    from sil_step import TraceDelay
+    times = np.arange(0, 600, 0.05)
+    rtt = np.full_like(times, 280.0)                    # 80 ms inference + 200 ms network
+    a = TraceDelay(times, rtt, seed=3).for_episode(7)
+    b = TraceDelay(times, rtt, seed=3).for_episode(7)
+    assert a.offset_s == b.offset_s                    # same channel for every strategy
+    assert a(0) == 6                                   # 280 ms -> 6 ticks of 50 ms
+    assert TraceDelay(times, rtt, scale=2.0)(0) == 10  # 80 + 2 * 200 = 480 ms -> 10 ticks
+
+
+def test_make_strategy_passes_the_coverage_aware_knobs_and_leaves_others_alone():
+    from sil_step import make_strategy
+    policy = FakePolicy()
+    worker = StepWorker(policy, fixed_delay(2))
+    ex = make_strategy('coverage_aware', worker, policy, s_wait=3, s_min=5)
+    assert ex.s_wait == 3 and ex.s_min == 5
+    assert make_strategy('synchronous', worker, policy, s_wait=3).name == 'synchronous'
