@@ -178,6 +178,8 @@ def main() -> None:
                    help='RTC: actions played between requests and the soft-mask horizon s '
                         '(LeRobot docs: 8-12)')
     args = p.parse_args()
+    import run_manifest
+    run_manifest.record(args.out, {'kind': 'libero_lerobot', 'config': vars(args)})
 
     import torch
     from evh_controller.chunk_executor import RTCExecutor, make_executor

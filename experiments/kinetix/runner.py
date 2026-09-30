@@ -22,6 +22,7 @@ import time
 
 sys.path.insert(0, 'src')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'scripts'))
 
 import flax.nnx as nnx  # noqa: E402
 import jax  # noqa: E402
@@ -163,6 +164,8 @@ def main() -> None:
     p.add_argument('--resume', action='store_true',
                    help='skip configurations already in --out with a row for every level')
     args = p.parse_args()
+    import run_manifest
+    run_manifest.record(args.out, {'kind': 'kinetix', 'config': vars(args)})
 
     setup = load()
     run = make_ours(setup)

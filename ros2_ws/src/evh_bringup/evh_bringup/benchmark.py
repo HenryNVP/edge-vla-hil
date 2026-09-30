@@ -641,6 +641,24 @@ def run_sweep(args) -> None:
 
 
 # ----------------------------------------------------------------------- main
+def _record_manifest(args) -> None:
+    """Provenance for the sweep's CSV (scripts/run_manifest.py): commit, config, versions.
+
+    Best effort by design: the installed package does not ship scripts/, so it is found through
+    the source tree the symlink-install points at, and a missing file only warns. A sweep must
+    never fail because its paperwork did.
+    """
+    repo = os.path.realpath(__file__)
+    for _ in range(5):                      # evh_bringup/evh_bringup/src/ros2_ws -> repo root
+        repo = os.path.dirname(repo)
+    try:
+        sys.path.insert(0, os.path.join(repo, 'scripts'))
+        import run_manifest
+        run_manifest.record(args.out, {'kind': 'ros_benchmark', 'config': vars(args)})
+    except Exception as exc:                # noqa: BLE001 - provenance must not stop a sweep
+        print(f'[benchmark] WARNING: no run manifest written ({exc})', flush=True)
+
+
 def main(argv=None) -> None:
     argv = argv if argv is not None else sys.argv[1:]
     p = argparse.ArgumentParser(description='EdgeVLA-HiL benchmark')
@@ -716,6 +734,7 @@ def main(argv=None) -> None:
     args = p.parse_args(argv)
 
     if args.sweep:
+        _record_manifest(args)
         run_sweep(args)
     else:
         run_record(args)

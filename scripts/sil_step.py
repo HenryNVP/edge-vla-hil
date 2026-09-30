@@ -231,6 +231,8 @@ def main() -> None:
     p.add_argument('--episodes', type=int, default=30)
     p.add_argument('--seed', type=int, default=0, help='the plant default; scene k follows it')
     args = p.parse_args()
+    import run_manifest
+    run_manifest.record(args.out, {'kind': 'sil_step', 'config': vars(args)})
 
     from evh_controller.chunk_executor import make_executor
     from evh_controller.policy import make_policy

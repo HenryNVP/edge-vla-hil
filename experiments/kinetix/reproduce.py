@@ -19,6 +19,7 @@ import time
 
 sys.path.insert(0, 'src')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'scripts'))
 
 import jax  # noqa: E402
 
@@ -36,6 +37,8 @@ def main() -> None:
     p.add_argument('--num-evals', type=int, default=2048)
     p.add_argument('--start', type=int, default=0, help='resume from this POINTS index')
     args = p.parse_args()
+    import run_manifest
+    run_manifest.record(args.out, {'kind': 'kinetix_reproduce', 'config': vars(args)})
     setup = runner.load()
     ours_fn, theirs_fn = runner.make_ours(setup), runner.make_official(setup)
     rngs = jax.random.split(jax.random.key(0), len(setup.level_paths))
