@@ -38,6 +38,56 @@ def eef_to_control_quat(eef_quat) -> np.ndarray:
     ])
 
 
+def quat_to_axisangle(q) -> np.ndarray:
+    """Quaternion [x, y, z, w] -> axis-angle (axis * angle). Canonical (shortest-path) hemisphere.
+
+    Duplicated from evh_reactive.transforms rather than shared: the two packages are deployed on
+    different machines and neither depends on the other. test_plant_node.py asserts they agree.
+    """
+    q = np.asarray(q, dtype=np.float64)
+    n = np.linalg.norm(q)
+    if n < 1e-12:
+        return np.zeros(3)
+    q = q / n
+    if q[3] < 0.0:
+        q = -q
+    s = np.linalg.norm(q[:3])
+    if s < 1e-12:
+        return np.zeros(3)
+    return (q[:3] / s) * (2.0 * np.arctan2(s, q[3]))
+
+
+def hold_action(obs: dict | None, absolute: bool, action_dim: int) -> np.ndarray:
+    """Neutral action for 'no command yet' (episode start / just after reset).
+
+    Delta mode: zeros = don't move. Absolute mode (OSC control_delta=False): zeros would be an
+    ABSOLUTE target at the world origin (0,0,0), yanking the arm off the table (invariant 2) — so
+    command the CURRENT EE pose instead, i.e. a genuine hold. Gripper stays 0 (neutral/open at
+    episode start).
+
+    The orientation goes out in the OSC's tool frame, not the frame `robot0_eef_quat` reports:
+    the reported one is 90 degrees off about z, and commanding it twists the arm for as long as
+    the hold lasts (invariant 7).
+
+    Shared by the plant node and the ROS-free step harness (scripts/sil_step.py), so the two
+    cannot drift apart on the one action whose mistake is a lurch.
+    """
+    action = np.zeros(action_dim, dtype=np.float32)
+    if absolute and obs is not None and action_dim >= 6:
+        try:
+            ee_pos = np.asarray(obs['robot0_eef_pos'], dtype=np.float32)
+            ee_quat = obs['robot0_eef_quat']
+        except KeyError as exc:
+            # a .get() default here would silently reintroduce the origin lurch this function
+            # exists to prevent; never happens for a robosuite robot env
+            raise RuntimeError(
+                f'absolute-mode hold needs {exc} in the obs dict — refusing to fall back '
+                'to a zero action, which OSC would read as the world origin') from None
+        action[:3] = ee_pos
+        action[3:6] = quat_to_axisangle(eef_to_control_quat(ee_quat)).astype(np.float32)
+    return action
+
+
 @dataclass(frozen=True)
 class EnvSpec:
     """Everything `build_env` needs, so the node's parameter block is the only place they're read."""

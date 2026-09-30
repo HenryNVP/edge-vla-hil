@@ -8,8 +8,10 @@ Responsibilities (HiL "Plant" side):
     fall back to a hold when that stream goes stale (deadline QoS) or was computed for the
     episode that just ended (post-reset blanking),
   * manage episodes: on task success OR horizon timeout, publish the outcome on /eval/success
-    (std_msgs/Bool, True/False — the recorder needs BOTH for an honest success rate), reset the
-    env, and announce the boundary on /episode/reset so downstream nodes clear their state,
+    (std_msgs/Bool, True/False — the recorder needs BOTH for an honest success rate), preceded by
+    the episode's SIMULATED duration on /eval/episode_s (the deadline is enforced in sim time, and
+    the recorder's wall clock disagrees with it by seconds), reset the env, and announce the
+    boundary on /episode/reset so downstream nodes clear their state,
   * cross-check the policy's action mode against ours and abort on a disagreement.
 
 The node is deliberately unaware of the network boundary; latency is injected downstream by
@@ -40,9 +42,11 @@ from rclpy.qos import (
 )
 from rclpy.qos_event import SubscriptionEventCallbacks
 from sensor_msgs.msg import CompressedImage, Image, JointState
-from std_msgs.msg import Bool, Empty
+from std_msgs.msg import Bool, Empty, Float32
 
-from evh_plant.env_factory import EnvSpec, build_env, eef_to_control_quat
+from evh_plant.env_factory import EnvSpec, build_env, hold_action
+# re-exported under its old name: tests and evh_reactive's agreement check import it from here
+from evh_plant.env_factory import quat_to_axisangle as _quat_to_axisangle  # noqa: F401
 from evh_plant.messages import RAW_QUALITY, PlantObservation
 from evh_plant.phase import seconds_to_phase
 from evh_plant.sim_thread import SimThread
@@ -71,25 +75,6 @@ ACTION_QOS = QoSProfile(depth=10, reliability=QoSReliabilityPolicy.RELIABLE,
 # tick, up to 50 ms, plus inference). Blanking is close to free: /cmd/action is a 250 Hz stream, so
 # discarding a legitimate command merely waits 4 ms for the next one.
 RESET_BLANKING_S = 0.02
-
-
-def _quat_to_axisangle(q: np.ndarray) -> np.ndarray:
-    """Quaternion [x, y, z, w] -> axis-angle (axis * angle). Canonical (shortest-path) hemisphere.
-
-    Duplicated from evh_reactive.transforms rather than shared: the two packages are deployed on
-    different machines and neither depends on the other. test_plant_node.py asserts they agree.
-    """
-    q = np.asarray(q, dtype=np.float64)
-    n = np.linalg.norm(q)
-    if n < 1e-12:
-        return np.zeros(3)
-    q = q / n
-    if q[3] < 0.0:
-        q = -q
-    s = np.linalg.norm(q[:3])
-    if s < 1e-12:
-        return np.zeros(3)
-    return (q[:3] / s) * (2.0 * np.arctan2(s, q[3]))
 
 
 def mode_mismatch_message(plant_absolute: bool, policy_absolute: bool) -> str | None:
@@ -159,6 +144,7 @@ class PlantNode(Node):
         self.pub_proprio = self.create_publisher(JointState, '/obs/proprio', 10)
         self.pub_ee_pose = self.create_publisher(PoseStamped, '/obs/ee_pose', 10)
         self.pub_success = self.create_publisher(Bool, '/eval/success', 10)
+        self.pub_episode_s = self.create_publisher(Float32, '/eval/episode_s', 10)
         self.pub_reset = self.create_publisher(Empty, '/episode/reset', 10)
 
         # Physics does not run on the executor at all: it has its own thread (SimThread, below),
@@ -298,31 +284,8 @@ class PlantNode(Node):
         return action[:self._action_dim].astype(np.float32)
 
     def _hold_action(self) -> np.ndarray:
-        """Neutral action for 'no command yet' (episode start / just after reset).
-
-        Delta mode: zeros = don't move. Absolute mode (OSC control_delta=False): zeros would be an
-        ABSOLUTE target at the world origin (0,0,0), yanking the arm off the table until the
-        reactive layer's first /cmd/action lands (~one inference latency) — so command the CURRENT
-        EE pose instead, i.e. a genuine hold. Gripper stays 0 (neutral/open at episode start).
-
-        The orientation goes out in the OSC's tool frame, not the frame `robot0_eef_quat` reports:
-        the reported one is 90 degrees off about z, and commanding it twists the arm for as long as
-        the hold lasts (invariant 7) — the start of every episode, and any /cmd/action silence.
-        """
-        action = np.zeros(self._action_dim, dtype=np.float32)
-        if self.absolute_actions and self._obs is not None and self._action_dim >= 6:
-            try:
-                ee_pos = np.asarray(self._obs['robot0_eef_pos'], dtype=np.float32)
-                ee_quat = self._obs['robot0_eef_quat']
-            except KeyError as exc:
-                # a .get() default here would silently reintroduce the origin lurch this
-                # function exists to prevent; never happens for a robosuite robot env
-                raise RuntimeError(
-                    f'absolute-mode hold needs {exc} in the obs dict — refusing to fall back '
-                    'to a zero action, which OSC would read as the world origin') from None
-            action[:3] = ee_pos
-            action[3:6] = _quat_to_axisangle(eef_to_control_quat(ee_quat)).astype(np.float32)
-        return action
+        """Neutral action for 'no command yet'; see env_factory.hold_action (invariants 2, 7)."""
+        return hold_action(self._obs, self.absolute_actions, self._action_dim)
 
     # --------------------------------------------------------------- episodes
     def _step_physics(self) -> None:
@@ -335,6 +298,12 @@ class PlantNode(Node):
         success = (bool(self._env._check_success())
                    if hasattr(self._env, '_check_success') else False)
         if success or done:
+            # robosuite counts control steps in env.timestep and ends the episode on it, so this
+            # is the duration the deadline was measured against. Published first: the recorder
+            # pairs the two streams by order, one of each per episode.
+            steps = getattr(self._env, 'timestep', None)
+            self.pub_episode_s.publish(Float32(
+                data=float('nan') if steps is None else float(steps) / float(self.action_hz)))
             self.pub_success.publish(Bool(data=success))
             self._reset_episode()
 

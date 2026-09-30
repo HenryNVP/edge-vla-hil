@@ -111,9 +111,15 @@ class Recorder(Node):
         # episode k is the same scene in every cell: that pairing is what makes cell-to-cell
         # comparisons sensitive (see _append_episodes)
         self._episodes: list[tuple[int, bool, float]] = []
+        # the plant's simulated duration per closed episode, one per /eval/success and published
+        # just before it; paired by ORDER in `episodes`, not by arrival time, since two topics
+        # carry no ordering guarantee between them
+        self._episode_sim_s: list[float] = []
         self._episode_start = time.perf_counter()
 
         self.create_subscription(Bool, '/eval/success', self._on_success, 10)
+        self.create_subscription(Float32, '/eval/episode_s',
+                                 lambda m: self._episode_sim_s.append(float(m.data)), 10)
         self.create_subscription(Float32, '/metrics/inference_ms', self._on_infer, 10)
         self.create_subscription(JointState, '/cmd/waypoint', self._on_waypoint, WAYPOINT_QOS)
         self.create_subscription(JointState, '/cmd/action', self._on_action, 10)
@@ -131,9 +137,16 @@ class Recorder(Node):
         self.create_subscription(Float32, '/metrics/request_lost', self._on_lost, 10)
 
     @property
-    def episodes(self) -> list[tuple[int, bool, float]]:
-        """(scene index, success, wall seconds) per closed episode, in order."""
-        return list(self._episodes)
+    def episodes(self) -> list[tuple[int, bool, float, float]]:
+        """(scene index, success, wall seconds, simulated seconds) per closed episode, in order.
+
+        Simulated seconds is what the episode deadline is enforced against; wall seconds is the
+        gap between outcome messages, so it includes the reset and delivery jitter (E6's 20 s
+        timeouts logged 17.5-23.3 s). NaN where the plant's duration never arrived.
+        """
+        sim = self._episode_sim_s
+        return [(k, ok, wall, sim[i] if i < len(sim) else float('nan'))
+                for i, (k, ok, wall) in enumerate(self._episodes)]
 
     @property
     def trials(self) -> int:
@@ -323,19 +336,24 @@ def _append_episodes(path: str, label: str, episodes) -> None:
     Scene k is identical across every cell of a sweep (same plant seed, fresh plant per cell),
     so two conditions can be compared episode by episode (McNemar) instead of only by their
     rates, which at 10-60 episodes per cell is the difference between seeing an effect and not.
-    The first episode is measured from recorder start, not from its own reset, so its duration
-    is an upper bound.
+    The first episode is measured from recorder start, not from its own reset, so its wall
+    duration is an upper bound; its simulated duration (`sim_s`) is exact.
     """
     if not episodes:
         return
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     new = not os.path.exists(path)
+    if not new:
+        _check_header(path, _EPISODE_COLUMNS)
     with open(path, 'a', newline='') as f:
         w = csv.writer(f)
         if new:
-            w.writerow(['condition', 'scene', 'success', 'wall_s'])
-        for scene, success, wall_s in episodes:
-            w.writerow([label, scene, int(success), f'{wall_s:.2f}'])
+            w.writerow(_EPISODE_COLUMNS)
+        for scene, success, wall_s, sim_s in episodes:
+            w.writerow([label, scene, int(success), f'{wall_s:.2f}', f'{sim_s:.3f}'])
+
+
+_EPISODE_COLUMNS = ['condition', 'scene', 'success', 'wall_s', 'sim_s']
 
 
 class ColumnDriftError(RuntimeError):
@@ -351,8 +369,8 @@ def _check_header(path: str, columns: list[str]) -> None:
     2026-09-23 that put a trials count of 30 into `success_rate` and shifted every metric, which
     looks like a result rather than a mistake. Checking costs one read and makes it loud.
 
-    The per-episode log is immune (fixed four-column schema), so the underlying data survives this;
-    it is the derived summary that silently rots.
+    The per-episode log goes through the same check since it gained `sim_s`: an episodes file
+    written before that has four columns and must not be appended to with five.
     """
     with open(path, newline='') as f:
         existing = next(csv.reader(f), None)

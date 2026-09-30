@@ -31,6 +31,7 @@ def _blank_recorder():
     rec._req_lost = 0
     rec._d_act_ms = []
     rec._episodes = []
+    rec._episode_sim_s = []
     rec._episode_start = 0.0
     return rec
 
@@ -421,8 +422,8 @@ def test_episodes_are_logged_in_scene_order_next_to_the_summary(tmp_path):
     out = str(tmp_path / 'sweep.csv')
     path = _episodes_path(out)
     assert path.endswith('sweep.episodes.csv')
-    _append_episodes(path, 'a', [(0, True, 9.5), (1, False, 20.1)])
-    _append_episodes(path, 'b', [(0, False, 20.0)])
+    _append_episodes(path, 'a', [(0, True, 9.5, 9.1), (1, False, 20.1, 20.0)])
+    _append_episodes(path, 'b', [(0, False, 20.0, 20.0)])
     with open(path) as fh:
         rows = list(csv.DictReader(fh))
     assert [(r['condition'], r['scene'], r['success']) for r in rows] == [
@@ -439,6 +440,39 @@ def test_the_recorder_numbers_episodes_as_they_close():
     for outcome in (True, False, True):
         Recorder._on_success(rec, Bool(data=outcome))
     assert [(k, ok) for k, ok, _ in rec._episodes] == [(0, True), (1, False), (2, True)]
+
+
+@requires_ros2
+def test_simulated_durations_pair_with_outcomes_by_order():
+    """One /eval/episode_s per /eval/success, published just before it. Pairing is by order so
+    that the two topics interleaving differently cannot shift a duration onto the wrong episode."""
+    import math
+
+    from std_msgs.msg import Bool
+
+    from evh_bringup.benchmark import Recorder
+
+    rec = _blank_recorder()
+    Recorder._on_success(rec, Bool(data=True))       # its duration arrives late
+    rec._episode_sim_s += [9.2, 20.0]
+    Recorder._on_success(rec, Bool(data=False))
+    Recorder._on_success(rec, Bool(data=True))       # duration never arrived
+    eps = Recorder.episodes.fget(rec)
+    assert [(k, ok, sim) for k, ok, _, sim in eps][:2] == [(0, True, 9.2), (1, False, 20.0)]
+    assert math.isnan(eps[2][3])
+
+
+@requires_ros2
+def test_an_old_four_column_episodes_file_is_not_appended_to(tmp_path):
+    import csv
+
+    from evh_bringup.benchmark import ColumnDriftError, _append_episodes
+
+    path = tmp_path / 'old.episodes.csv'
+    with open(path, 'w', newline='') as f:
+        csv.writer(f).writerow(['condition', 'scene', 'success', 'wall_s'])
+    with pytest.raises(ColumnDriftError):
+        _append_episodes(str(path), 'a', [(0, True, 9.5, 9.1)])
 
 
 # -------------------------------------------------------------------- resume

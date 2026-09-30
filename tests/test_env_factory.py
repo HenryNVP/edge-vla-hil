@@ -69,3 +69,34 @@ def test_a_rate_that_would_drop_part_of_a_substep_is_refused(hz):
 def test_the_default_plant_rate_is_exact():
     from evh_plant.env_factory import EnvSpec, check_timebase
     assert check_timebase(EnvSpec().action_hz, 0.002) == 2
+
+
+# ------------------------------------------------------------------ hold_action
+def test_hold_in_delta_mode_is_zeros():
+    import numpy as np
+
+    from evh_plant.env_factory import hold_action
+    obs = {'robot0_eef_pos': np.array([0.1, 0.2, 0.9]), 'robot0_eef_quat': np.array([1, 0, 0, 0.])}
+    assert not hold_action(obs, False, 7).any()
+
+
+def test_hold_in_absolute_mode_is_the_current_pose_in_the_controller_frame():
+    """Invariants 2 and 7: never the origin, and never the reported frame."""
+    import numpy as np
+
+    from evh_plant.env_factory import eef_to_control_quat, hold_action, quat_to_axisangle
+    q = np.array([1.0, 0.0, 0.0, 0.0])
+    obs = {'robot0_eef_pos': np.array([0.1, 0.2, 0.9]), 'robot0_eef_quat': q}
+    hold = hold_action(obs, True, 7)
+    assert np.allclose(hold[:3], [0.1, 0.2, 0.9])
+    assert np.allclose(hold[3:6], quat_to_axisangle(eef_to_control_quat(q)))
+    assert not np.allclose(hold[3:6], quat_to_axisangle(q))
+    assert hold[6] == 0.0
+
+
+def test_hold_in_absolute_mode_refuses_to_guess_a_missing_pose():
+    import numpy as np
+
+    from evh_plant.env_factory import hold_action
+    with pytest.raises(RuntimeError):
+        hold_action({'robot0_eef_pos': np.zeros(3)}, True, 7)

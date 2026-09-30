@@ -38,6 +38,7 @@ class FakeClock:
 def _stub_plant(**overrides):
     """A PlantNode-shaped stub carrying only what the method under test touches."""
     published: list[bool] = []
+    durations: list[float] = []
     resets: list[int] = []
     warns: list[str] = []
     clock = FakeClock()
@@ -47,12 +48,16 @@ def _stub_plant(**overrides):
         _accept_actions_after_ns=0,
         _obs={'robot0_eef_pos': np.zeros(3), 'robot0_eef_quat': np.array([0.0, 0.0, 0.0, 1.0])},
         absolute_actions=False,
+        action_hz=250.0,
         pub_success=types.SimpleNamespace(publish=lambda m: published.append(bool(m.data))),
+        pub_episode_s=types.SimpleNamespace(
+            publish=lambda m: (durations.append(float(m.data)), published.append('episode_s'))),
         pub_reset=types.SimpleNamespace(publish=lambda _m: resets.append(1)),
         get_clock=lambda: clock,
         get_logger=lambda: types.SimpleNamespace(warn=warns.append),
         clock=clock,
         published=published,
+        durations=durations,
         resets=resets,
         warns=warns,
     )
@@ -69,9 +74,10 @@ def _action_msg(position):
 class FakeEnv:
     """Minimal robosuite stand-in: records the actions it was stepped with."""
 
-    def __init__(self, success=False, done=False):
+    def __init__(self, success=False, done=False, timestep=0):
         self.success = success
         self.done = done
+        self.timestep = timestep      # robosuite's control-step counter
         self.stepped: list[np.ndarray] = []
         self.resets = 0
 
@@ -103,8 +109,25 @@ def test_episode_outcome_is_published_for_success_and_timeout(success, done, exp
 
     PlantNode._step_physics(stub)
 
-    assert stub.published == [expected], 'both outcomes must reach /eval/success'
+    assert stub.published == ['episode_s', expected], 'both outcomes must reach /eval/success'
     assert stub._env.resets == 1, 'a closed episode must reset the env'
+
+
+@requires_ros2
+def test_the_episode_duration_is_simulated_time_and_precedes_the_outcome():
+    """The deadline is enforced in simulated steps; the recorder's wall clock disagrees with it by
+    seconds. The plant is the only node that knows the true duration, and the recorder pairs it
+    with the outcome by order, so it must go out first."""
+    from evh_plant.plant_node import PlantNode
+
+    stub = _stub_plant(_env=FakeEnv(done=True, timestep=5000))
+    stub._current_action = lambda: np.zeros(7, np.float32)
+    stub._reset_episode = lambda: None
+
+    PlantNode._step_physics(stub)
+
+    assert stub.published == ['episode_s', False]
+    assert stub.durations == [pytest.approx(20.0)]      # 5000 steps at 250 Hz
 
 
 @requires_ros2
