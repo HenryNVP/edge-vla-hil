@@ -37,9 +37,12 @@ results/*.png
 .DS_Store
 .claude/
 
-experiments/pusht_sanity/results/
+experiments/pusht_sanity/
+experiments/chunk_timeline/
 *.mp4
 external/
 
 # rendered on demand by docs/diagrams/render.sh; the SVGs are the committed form
 docs/diagrams/
+reports/
+research_notes/
