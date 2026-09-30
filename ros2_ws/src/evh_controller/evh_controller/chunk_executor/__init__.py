@@ -8,6 +8,7 @@ without touching the ROS2 node.
     base.py       the ChunkExecutor contract: request/poll, epoch guard, delay measurement
     baselines.py  synchronous | naive_async | temporal_ensemble  (prior work, kept comparable)
     rtc.py        rtc | network_aware                            (RTC + the Wedge-B forecast)
+    adaptive.py   coverage_aware | rtc_noskip | switch_only      (overlap or wait; never skip)
     bid.py        bid                                            [stub: Step 4]
 
 To add a strategy: subclass ChunkExecutor, set a `name`, and add it to _REGISTRY below. The ROS
@@ -21,6 +22,11 @@ from __future__ import annotations
 
 import logging
 
+from evh_controller.chunk_executor.adaptive import (
+    CoverageAwareExecutor,
+    NoSkipRTCExecutor,
+    SwitchOnlyExecutor,
+)
 from evh_controller.chunk_executor.base import ChunkExecutor
 from evh_controller.chunk_executor.baselines import (
     NaiveAsyncExecutor,
@@ -38,6 +44,7 @@ _REGISTRY = {
     cls.name: cls for cls in (
         SynchronousExecutor, NaiveAsyncExecutor, TemporalEnsembleExecutor,
         BIDExecutor, RTCExecutor, NetworkAwareExecutor,
+        CoverageAwareExecutor, NoSkipRTCExecutor, SwitchOnlyExecutor,
     )
 }
 
@@ -77,9 +84,12 @@ def make_executor(strategy: str, worker: InferenceWorker, policy: ChunkPolicy) -
 __all__ = [
     'BIDExecutor',
     'ChunkExecutor',
+    'CoverageAwareExecutor',
     'NaiveAsyncExecutor',
     'NetworkAwareExecutor',
+    'NoSkipRTCExecutor',
     'RTCExecutor',
+    'SwitchOnlyExecutor',
     'SynchronousExecutor',
     'TemporalEnsembleExecutor',
     'guidance_warning',
