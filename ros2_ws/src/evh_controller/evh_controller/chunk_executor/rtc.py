@@ -46,15 +46,23 @@ class RTCExecutor(ChunkExecutor):
         W_i = 1                          if i < d
               c_i (e^{c_i} - 1)/(e - 1)  if d <= i < H - s
               0                          if i >= H - s
-    The guided sampling itself lives in policy.predict_inpaint (soft blending today; true guided
-    denoising is Step 4).
+    The guided sampling itself lives in policy.predict_inpaint. On the DP backend it is a
+    RePaint-style soft-mask blend applied inside every denoising step (dp_repo_policy.py) — NOT the
+    paper's pseudo-inverse (PiGDM) guidance, which is defined for flow-matching policies and has no
+    official diffusion/DDIM implementation. Report it as a diffusion adaptation of RTC.
     """
     name = 'rtc'
     needs_guided_resampling = True
 
     def __init__(self, worker, policy, exec_horizon_min: int = 1,
-                 delay_buffer: int = DELAY_BUFFER) -> None:
+                 delay_buffer: int = DELAY_BUFFER, replan_every: int = 1) -> None:
         self.s_min = exec_horizon_min
+        # minimum ticks between requests. 1 = replan as soon as the slot frees (the default, and
+        # what every recorded testbed cell ran). A large model plays s actions between requests
+        # instead (LeRobot's queue threshold, the paper's s >= d): replanning every tick there
+        # costs one guided inference per tick, and guiding 49 entries of a 50-action chunk at
+        # full weight locks each new plan onto the old one (LIBERO pilot 2026-09-30: 0/100)
+        self.replan_every = replan_every
         self.delay_buffer = delay_buffer
         # delay history is a property of the SYSTEM (network + GPU), not of an episode:
         # it survives reset() on purpose, so the forecast stays warm across episodes.
@@ -64,6 +72,7 @@ class RTCExecutor(ChunkExecutor):
     def _on_reset(self) -> None:
         self._chunk: np.ndarray | None = None
         self._i = 0
+        self._last_issue: int | None = None
 
     def forecast_delay(self) -> int:
         """RTC: conservative max over recent delays. Wedge B overrides this."""
@@ -104,7 +113,10 @@ class RTCExecutor(ChunkExecutor):
 
         # issue BEFORE emitting: self._i is the action about to execute at tick t, so the
         # overlap that will run during inference is exactly [self._i, self._i + d_hat)
-        if self._pending_t is None:
+        due = self._last_issue is None or t - self._last_issue >= self.replan_every
+        if self._pending_t is None and (due or self._chunk is None or
+                                        self._i >= len(self._chunk)):
+            self._last_issue = t
             if self._chunk is None:
                 self._issue(obs, t)                    # bootstrap: nothing to freeze
             else:

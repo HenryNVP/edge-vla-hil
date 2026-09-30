@@ -395,3 +395,15 @@ def test_temporal_ensemble_averages_absolute_rotations_as_rotations():
     blended = [a for a in actions if a is not None][-1]
     assert np.linalg.norm(blended[3:6]) > 3.0, 'rotations averaged element-wise'
     assert blended[0] == pytest.approx(0.4) and blended[6] == pytest.approx(1.0)
+
+
+def test_rtc_replan_every_spaces_requests_and_default_is_unchanged():
+    """replan_every=1 is the recorded behaviour (a request whenever the slot frees); a larger
+    value plays that many ticks between requests, unless the chunk runs out first."""
+    ex, worker, _ = _make('rtc', delay=1)
+    _run(ex, 12)
+    continuous = len(worker.requests)
+    ex2, worker2, _ = _make('rtc', delay=1, replan_every=4)
+    _run(ex2, 12)
+    assert continuous >= 10
+    assert [t for t, _, _ in worker2.requests] == [0, 4, 8]
