@@ -62,12 +62,14 @@ class CoverageAwareExecutor(ChunkExecutor):
     needs_guided_resampling = True
 
     def __init__(self, worker, policy, *, rule: str = 'rate', reindex: bool = True,
-                 s_wait: int | None = None, exec_horizon_min: int = 1, quantile: float = 0.9,
-                 margin: float = 0.05, delay_buffer: int = DELAY_BUFFER) -> None:
+                 guided: bool = True, s_wait: int | None = None, exec_horizon_min: int = 1,
+                 quantile: float = 0.9, margin: float = 0.05,
+                 delay_buffer: int = DELAY_BUFFER) -> None:
         if rule not in ('rate', 'half', 'aligned', 'waiting'):
             raise ValueError(f'unknown rule {rule!r}')
         self.rule = rule
         self.reindex = reindex
+        self.guided = guided
         self.s_wait = s_wait
         self.s_min = exec_horizon_min
         self.quantile = quantile
@@ -121,7 +123,8 @@ class CoverageAwareExecutor(ChunkExecutor):
             # request carries is still true when the chunk lands; switching into waiting in the
             # middle of a chunk therefore stops the robot here, not at the chunk's end
             self._chunk = None
-        if self.mode == ALIGNED and self._chunk is not None and self._i < len(self._chunk):
+        if (self.guided and self.mode == ALIGNED and self._chunk is not None
+                and self._i < len(self._chunk)):
             d_hat = max(self.forecast_delay(), 1)
             d_frz = min(d_hat, max(H - self.s_min, 0), len(self._chunk) - self._i)
             s = max(self.s_min, min(d_hat, H - d_frz))
@@ -190,4 +193,20 @@ class SwitchOnlyExecutor(CoverageAwareExecutor):
 
     def __init__(self, worker, policy, **kw) -> None:
         kw.setdefault('reindex', False)
+        super().__init__(worker, policy, **kw)
+
+
+class NoSkipAsyncExecutor(CoverageAwareExecutor):
+    """Baseline: the deployed default (LeRobot's async client, Armory's robot model).
+
+    Always overlapping, unguided, and joins each chunk at the actions actually played, pausing
+    when starved: it never skips, and it never waits on purpose. Prior art, so the comparison any
+    claim about skipping or switching has to beat.
+    """
+    name = 'noskip_async'
+    needs_guided_resampling = False
+
+    def __init__(self, worker, policy, **kw) -> None:
+        kw.setdefault('rule', 'aligned')
+        kw.setdefault('guided', False)
         super().__init__(worker, policy, **kw)

@@ -156,7 +156,8 @@ def test_switch_only_is_the_switch_with_rtc_joins():
     assert ex.reindex is False and ex.rule == 'rate'
 
 
-@pytest.mark.parametrize('name', ['coverage_aware', 'rtc_noskip', 'switch_only'])
+@pytest.mark.parametrize('name', ['coverage_aware', 'rtc_noskip', 'switch_only',
+                                  'noskip_async'])
 def test_registered_and_resettable(name):
     policy = IndexedPolicy()
     ex = make_executor(name, DelayWorker(policy, (3,)), policy)
@@ -164,3 +165,27 @@ def test_registered_and_resettable(name):
     ex.reset()
     assert ex._chunk is None and ex._played == 0
     assert _run(ex, 30)[-1] is not None
+
+
+class RecordingWorker(DelayWorker):
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.prefixes = []
+
+    def try_request(self, obs, t_issue, epoch, prefix=None, weights=None):
+        ok = super().try_request(obs, t_issue, epoch, prefix, weights)
+        if ok:
+            self.prefixes.append(prefix)
+        return ok
+
+
+def test_the_deployed_default_overlaps_unguided_and_never_skips():
+    from evh_controller.chunk_executor import NoSkipAsyncExecutor
+    policy = IndexedPolicy()
+    worker = RecordingWorker(policy, (6,))
+    ex = NoSkipAsyncExecutor(worker, policy)
+    played = [v for v in _run(ex, 80) if v is not None]
+    assert all(p is None for p in worker.prefixes), 'no guidance prefix is ever sent'
+    joins = [b % 100 for a, b in zip(played, played[1:]) if b // 100 != a // 100]
+    assert joins and all(j <= 6 for j in joins) and min(joins) < 6
+    assert set(ex.mode_log) == {ALIGNED}

@@ -9,6 +9,7 @@ without touching the ROS2 node.
     baselines.py  synchronous | naive_async | temporal_ensemble  (prior work, kept comparable)
     rtc.py        rtc | network_aware                            (RTC + the Wedge-B forecast)
     adaptive.py   coverage_aware | rtc_noskip | switch_only      (overlap or wait; never skip)
+                  noskip_async                                   (baseline: LeRobot-style queue)
     bid.py        bid                                            [stub: Step 4]
 
 To add a strategy: subclass ChunkExecutor, set a `name`, and add it to _REGISTRY below. The ROS
@@ -24,6 +25,7 @@ import logging
 
 from evh_controller.chunk_executor.adaptive import (
     CoverageAwareExecutor,
+    NoSkipAsyncExecutor,
     NoSkipRTCExecutor,
     SwitchOnlyExecutor,
 )
@@ -44,7 +46,7 @@ _REGISTRY = {
     cls.name: cls for cls in (
         SynchronousExecutor, NaiveAsyncExecutor, TemporalEnsembleExecutor,
         BIDExecutor, RTCExecutor, NetworkAwareExecutor,
-        CoverageAwareExecutor, NoSkipRTCExecutor, SwitchOnlyExecutor,
+        CoverageAwareExecutor, NoSkipRTCExecutor, SwitchOnlyExecutor, NoSkipAsyncExecutor,
     )
 }
 
@@ -87,6 +89,7 @@ __all__ = [
     'CoverageAwareExecutor',
     'NaiveAsyncExecutor',
     'NetworkAwareExecutor',
+    'NoSkipAsyncExecutor',
     'NoSkipRTCExecutor',
     'RTCExecutor',
     'SwitchOnlyExecutor',
