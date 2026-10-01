@@ -223,3 +223,5 @@ def test_make_strategy_passes_the_coverage_aware_knobs_and_leaves_others_alone()
     ex = make_strategy('coverage_aware', worker, policy, s_wait=3, s_min=5)
     assert ex.s_wait == 3 and ex.s_min == 5
     assert make_strategy('synchronous', worker, policy, s_wait=3).name == 'synchronous'
+    for name in ('noskip_async', 'rtc_noskip', 'switch_only'):
+        assert make_strategy(name, worker, policy, s_min=5).s_min == 5, name

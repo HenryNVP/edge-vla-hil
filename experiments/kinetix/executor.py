@@ -130,7 +130,7 @@ def run(config: RunConfig, env, rng, level, policy: _model.FlowPolicy, env_param
     def tick(carry, plan):
         rng, obs, state, old, old_valid, new, acc, t, finished, solved, end_tick, idle, last = carry
         k_src, k_idx = plan
-        use_old = (k_src == OLD) & old_valid[jnp.minimum(k_idx, H - 1)]
+        use_old = (k_src == OLD) & (k_idx < H) & old_valid[jnp.minimum(k_idx, H - 1)]
         use_new = k_src == NEW
         acting = use_old | use_new
         a_old = old[:, jnp.minimum(k_idx, H - 1)]

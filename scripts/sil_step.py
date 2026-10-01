@@ -181,9 +181,10 @@ def make_strategy(strategy: str, worker, policy, s_wait: int = 0, s_min: int = 0
     """make_executor, plus the coverage-aware family's knobs when given: the waiting-mode chunk
     length `s_wait`, and `s_min`, the fewest ticks between time-aligned requests (on a large model
     replanning every tick costs a guided inference per tick; LIBERO uses 10, like its RTC)."""
-    from evh_controller.chunk_executor import _REGISTRY, make_executor
+    from evh_controller.chunk_executor import _REGISTRY, CoverageAwareExecutor, make_executor
     cls = _REGISTRY.get(strategy)
-    if cls is not None and 's_wait' in cls.__init__.__code__.co_varnames and (s_wait or s_min):
+    # the whole family, subclasses included (they take the knobs through **kw)
+    if cls is not None and issubclass(cls, CoverageAwareExecutor) and (s_wait or s_min):
         kw = {}
         if s_wait:
             kw['s_wait'] = s_wait

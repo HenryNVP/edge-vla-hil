@@ -37,6 +37,8 @@ import model as _model  # noqa: E402
 import train_expert  # noqa: E402
 
 import executor  # noqa: E402
+import replay  # noqa: E402
+import schedule  # noqa: E402
 
 LEVEL_PATHS = eval_flow.main.__defaults__[1]
 
@@ -104,8 +106,10 @@ def make_ours(setup: Setup):
         params = setup.env_params
         if config.deadline > params.max_timesteps:
             params = params.replace(max_timesteps=config.deadline)
-        return executor.run(config, setup.env, rng, level,
-                            _policy(setup, config.model, rng, state_dict), params)
+        # strategies from chunk_executor run as their own replayed tick schedule (schedule.py)
+        loop = replay.run if config.method in schedule.REPLAY_METHODS else executor.run
+        return loop(config, setup.env, rng, level,
+                    _policy(setup, config.model, rng, state_dict), params)
     return _run
 
 
