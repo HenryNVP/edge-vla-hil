@@ -10,6 +10,8 @@ without touching the ROS2 node.
     rtc.py        rtc | network_aware                            (RTC + the Wedge-B forecast)
     adaptive.py   coverage_aware | rtc_noskip | switch_only      (overlap or wait; never skip)
                   noskip_async                                   (baseline: LeRobot-style queue)
+    anchored.py   AnchoredExecutor: pre-grasp actions follow a tracked object (paper 2, M1);
+                  needs an `anchor_fn`, so it is constructed directly, not via make_executor
     bid.py        bid                                            [stub: Step 4]
 
 To add a strategy: subclass ChunkExecutor, set a `name`, and add it to _REGISTRY below. The ROS
@@ -29,6 +31,7 @@ from evh_controller.chunk_executor.adaptive import (
     NoSkipRTCExecutor,
     SwitchOnlyExecutor,
 )
+from evh_controller.chunk_executor.anchored import AnchoredExecutor  # noqa: F401
 from evh_controller.chunk_executor.base import ChunkExecutor
 from evh_controller.chunk_executor.baselines import (
     NaiveAsyncExecutor,
