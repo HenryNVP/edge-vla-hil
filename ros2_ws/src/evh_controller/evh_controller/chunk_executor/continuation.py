@@ -32,6 +32,15 @@ the policy tolerates that is an empirical question (paper 2, M3).
 `roll_fn(obs, queued_actions) -> obs'`: queued_actions is the [n, A] array still to be played
 (n may be 0). None means plan from the observation as is, the no-roll ablation, which re-plays
 the delay motion.
+
+Rolling forward commits the robot to a predicted future, including predicted outcomes (a grasp
+that is assumed to succeed). When reality leaves the prediction, every queued action, and the
+chunk in flight, was planned for a state that will not happen. `diverged_fn(obs, recent) -> bool`
+is the task's check that this has happened. `recent` holds the last `recent_n` played actions,
+oldest first. When it fires, the executor drops the queue and the request in flight (epoch bump,
+as at an episode reset) and replans from the measurement. That costs one round trip, and buys
+back the reactivity that continuation gave away. The check runs at most once per `cooldown` ticks
+so a slow-to-clear condition cannot flush every tick.
 """
 from __future__ import annotations
 
@@ -50,11 +59,17 @@ class ContinuationExecutor(ChunkExecutor):
 
     def __init__(self, worker, policy, *, roll_fn: Callable[[dict, np.ndarray], dict] | None,
                  anchor_fn: Callable[[dict], np.ndarray | None] | None = None,
+                 diverged_fn: Callable[[dict, np.ndarray], bool] | None = None,
+                 recent_n: int = 20, cooldown: int = 10,
                  lead: int = 1, quantile: float = 0.9, delay_buffer: int = 50) -> None:
         if not getattr(policy, 'absolute_actions', False):
             raise ValueError('continuation appends absolute targets; this policy emits deltas')
         self.roll_fn = roll_fn
         self.anchor_fn = anchor_fn
+        self.diverged_fn = diverged_fn
+        self.recent_n = recent_n
+        self.cooldown = cooldown
+        self.flushes = 0                       # divergence flushes, cumulative across episodes
         self.lead = lead
         self.quantile = quantile
         self.delay_buffer = delay_buffer
@@ -70,6 +85,18 @@ class ContinuationExecutor(ChunkExecutor):
         self._queue: deque = deque()           # (action, anchor at its request or None)
         self._anchors: dict[int, np.ndarray | None] = {}
         self.shifts: list[float] = []
+        self._recent: deque = deque(maxlen=self.recent_n)
+        self._since_flush = self.cooldown
+
+    def _check_divergence(self, obs) -> None:
+        self._since_flush += 1
+        if (self.diverged_fn is None or self._since_flush < self.cooldown
+                or not self._recent):
+            return
+        if self.diverged_fn(obs, np.stack(self._recent)):
+            self.flushes += 1
+            self.reset()                       # queue and in-flight chunk planned for a lost future
+            self._since_flush = 0
 
     def _queued(self) -> np.ndarray:
         if not self._queue:
@@ -84,6 +111,7 @@ class ContinuationExecutor(ChunkExecutor):
                 self._anchors[t] = None if p is None else np.asarray(p, float).copy()
 
     def step(self, obs, t):
+        self._check_divergence(obs)
         arrival = self._poll(t)
         if arrival is not None:
             self._delays.append(max(0, t - arrival.t_issue))
@@ -97,6 +125,7 @@ class ContinuationExecutor(ChunkExecutor):
         if not self._queue:
             return None
         a, anchor = self._queue.popleft()
+        self._recent.append(a)
         if anchor is None or self.anchor_fn is None or a[6] >= GRIP_OPEN_BELOW:
             return a
         now = self.anchor_fn(obs)

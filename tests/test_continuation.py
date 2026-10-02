@@ -150,3 +150,33 @@ def test_refuses_delta_policies():
     p.absolute_actions = False
     with pytest.raises(ValueError, match='deltas'):
         ContinuationExecutor(Worker(p, 1), p, roll_fn=None)
+
+
+def test_divergence_flushes_the_queue_and_the_chunk_in_flight():
+    p = Policy()
+    state = {'fired_at': None, 'in_flight': None}
+
+    def diverged(obs, recent):
+        # fire once, at the first tick from t = 10 with a request in flight
+        if state['fired_at'] is None and obs['t'] >= 10 and ex._pending_t is not None:
+            state['fired_at'], state['in_flight'] = obs['t'], p.calls
+            return True
+        return False
+
+    ex = ContinuationExecutor(Worker(p, 3), p, roll_fn=None, diverged_fn=diverged, cooldown=1)
+    played = _played(ex, 60)
+    t0 = state['fired_at']
+    assert ex.flushes == 1 and t0 is not None
+    assert played[t0] is None                 # queue dropped at the flush tick
+    chunks_played = {x // 100 for x in played if x is not None}
+    assert state['in_flight'] not in chunks_played   # the chunk in flight was thrown away
+    after = [x for x in played[t0:] if x is not None]
+    assert after and after[0] % 100 == 0      # play resumes at a fresh chunk's entry 0
+
+
+def test_divergence_check_respects_the_cooldown():
+    p = Policy()
+    ex = ContinuationExecutor(Worker(p, 2), p, roll_fn=None,
+                              diverged_fn=lambda o, r: True, cooldown=10)
+    _played(ex, 100)
+    assert 5 <= ex.flushes <= 10              # at most one flush per cooldown window
