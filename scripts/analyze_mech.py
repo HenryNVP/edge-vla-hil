@@ -31,23 +31,24 @@ def load(paths) -> dict:
     for p in paths:
         with open(p) as fh:
             for r in csv.DictReader(fh):
-                key = (float(r['speed']), r['strategy'], int(r['delay']))
+                key = (r.get('tracker', 'privileged'), float(r['speed']), r['strategy'],
+                       int(r['delay']))
                 cells[key].append((int(r['ticks']), r['success'] == '1', int(r['requests'])))
     return cells
 
 
 def main() -> None:
     cells = load(sys.argv[1:])
-    speeds = sorted({k[0] for k in cells})
-    delays = sorted({k[2] for k in cells})
-    strategies = list(dict.fromkeys(k[1] for k in sorted(cells, key=lambda k: k[1])))
-    for v in speeds:
-        print(f'\ncube speed {v} m/s   (success/n, KM median ticks)')
+    groups = sorted({(k[0], k[1]) for k in cells})
+    delays = sorted({k[3] for k in cells})
+    strategies = sorted({k[2] for k in cells})
+    for tr, v in groups:
+        print(f'\ntracker {tr}, cube speed {v} m/s   (success/n, KM median ticks)')
         print(f'{"strategy":22s}' + ''.join(f'{"d=" + str(d):>16s}' for d in delays))
         for s in strategies:
             row = f'{s:22s}'
             for d in delays:
-                eps = cells.get((v, s, d))
+                eps = cells.get((tr, v, s, d))
                 if not eps:
                     row += f'{"":>16s}'
                     continue

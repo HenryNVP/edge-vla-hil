@@ -72,3 +72,54 @@ def test_policy_reads_the_appended_cube():
     s = np.concatenate([CUBE + [0, 0, CFG.hover_m], quat, OPEN, CUBE]).astype(np.float32)
     chunk = OraclePolicy(CFG).predict({'proprio': s[None]})
     assert chunk.shape == (15, 7) and np.isfinite(chunk).all()
+
+
+# ------------------------------------------------------------------ tracker model
+from oracle_lift import TrackerModel, TrackerSpec, cube_tracker, make_frames  # noqa: E402
+
+
+def _track(spec, n=400, seed=0):
+    tr = TrackerModel(spec)
+    tr.reset(seed)
+    return [tr.update(np.array([0.0, 0.001 * t, 0.8])) for t in range(n)]
+
+
+def test_default_tracker_is_privileged():
+    out = _track(TrackerSpec(), n=5)
+    assert np.allclose(out[3], [0.0, 0.003, 0.8])
+
+
+def test_latency_reports_an_old_position_and_none_at_first():
+    out = _track(TrackerSpec(latency=4), n=20)
+    assert all(o is None for o in out[:4])
+    assert np.allclose(out[10], [0.0, 0.006, 0.8])
+
+
+def test_dropout_fraction_and_bursts():
+    spec = TrackerSpec(dropout=0.3, burst=5)
+    tr = TrackerModel(spec)
+    tr.reset(0)
+    misses = [tr._measure(np.zeros(3)) is None for _ in range(20000)]
+    assert np.mean(misses) == pytest.approx(0.3, abs=0.03)
+    runs, n = [], 0
+    for m in misses:
+        if m:
+            n += 1
+        elif n:
+            runs.append(n)
+            n = 0
+    assert np.mean(runs) == pytest.approx(5, rel=0.15)
+
+
+def test_raw_tracker_holds_the_last_fix_through_a_dropout():
+    out = _track(TrackerSpec(dropout=0.5, burst=10), n=200)
+    assert all(o is not None for o in out[1:])
+
+
+def test_frames_carry_the_tracked_position_for_anchoring():
+    obs = {'robot0_eef_pos': np.zeros(3), 'robot0_eef_quat': np.array([0, 0, 0, 1.0]),
+           'robot0_gripper_qpos': np.array(OPEN), 'cube_pos': CUBE}
+    p = make_frames(TrackerModel(TrackerSpec(latency=2)))(obs)[2]
+    assert cube_tracker({'proprio': p[None]}) is None           # no fix yet
+    p = make_frames()(obs)[2]
+    assert np.allclose(cube_tracker({'proprio': p[None]}), CUBE)

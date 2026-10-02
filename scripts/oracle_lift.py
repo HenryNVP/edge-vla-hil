@@ -34,7 +34,7 @@ import sys
 import numpy as np
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-for _pkg in ('evh_controller', 'evh_plant'):
+for _pkg in ('evh_controller', 'evh_plant', 'evh_reactive'):
     _path = os.path.join(_REPO, 'ros2_ws', 'src', _pkg)
     if _path not in sys.path:
         sys.path.insert(0, _path)
@@ -209,13 +209,90 @@ class MovingCube:
         return out
 
 
+# ------------------------------------------------------------------ tracker model
+@dataclasses.dataclass(frozen=True)
+class TrackerSpec:
+    """How the robot's measurement of the cube degrades. All zero = the privileged tracker.
+
+    sigma_mm   isotropic Gaussian noise per measurement
+    latency    ticks between the scene and the measurement reaching the robot
+    dropout    long-run fraction of ticks with no measurement (occlusion, detector miss)
+    burst      mean length of a dropout, ticks (1 = independent misses)
+    filtered   pass measurements through the alpha-beta filter with delay compensation
+               (evh_reactive.object_filter); otherwise report the last measurement as is
+    """
+    sigma_mm: float = 0.0
+    latency: int = 0
+    dropout: float = 0.0
+    burst: int = 1
+    filtered: bool = False
+    alpha: float = 0.5
+    beta: float = 0.1
+
+    @property
+    def tag(self) -> str:
+        return (f's{self.sigma_mm:g}_l{self.latency}_p{self.dropout:g}_b{self.burst}'
+                f'{"_ab" if self.filtered else ""}')
+
+
+class TrackerModel:
+    """Turns the true cube position into what a tracker on the robot would report, one call per
+    env tick. Its own RNG, seeded per episode, so the noise does not perturb scene generation."""
+
+    def __init__(self, spec: TrackerSpec) -> None:
+        from evh_reactive.object_filter import AlphaBetaFilter
+        self.spec = spec
+        self.filter = AlphaBetaFilter(spec.alpha, spec.beta, latency=spec.latency)
+        self.reset(0)
+
+    def reset(self, seed: int) -> None:
+        self.rng = np.random.default_rng(10_000 + seed)
+        self._pipe: list = []          # measurements in flight (latency)
+        self._out = 0                  # ticks left in the current dropout
+        self._last = None
+        self.filter.reset()
+
+    def _measure(self, true_pos) -> np.ndarray | None:
+        sp = self.spec
+        if self._out > 0:
+            self._out -= 1
+            return None
+        if sp.dropout > 0:
+            start = sp.dropout / (sp.burst * (1.0 - sp.dropout) + sp.dropout)
+            if self.rng.random() < start:
+                self._out = max(sp.burst - 1, 0)
+                return None
+        return np.asarray(true_pos, float) + self.rng.normal(0.0, sp.sigma_mm * 1e-3, 3)
+
+    def update(self, true_pos) -> np.ndarray | None:
+        self._pipe.append(self._measure(true_pos))
+        z = self._pipe.pop(0) if len(self._pipe) > self.spec.latency else None
+        if self.spec.filtered:
+            return self.filter.update(z)
+        if z is not None:
+            self._last = z
+        return self._last
+
+
 # ------------------------------------------------------------------ harness glue
-def frames(obs: dict, needs_wrist: bool = False):
-    proprio = np.concatenate([np.asarray(obs['robot0_eef_pos'], np.float32),
-                              np.asarray(obs['robot0_eef_quat'], np.float32),
-                              np.asarray(obs['robot0_gripper_qpos'], np.float32),
-                              np.asarray(obs['cube_pos'], np.float32)])
-    return None, None, proprio
+def make_frames(tracker: TrackerModel | None = None):
+    """frame_fn for run_episode. proprio = [eef(3), quat(4), grip(2), cube(3), tracked(3), ok(1)]:
+    the planner reads the true cube (planning quality is not the variable); anchoring reads the
+    tracked one."""
+    def frames(obs: dict, needs_wrist: bool = False):
+        cube = np.asarray(obs['cube_pos'], np.float32)
+        est = cube if tracker is None else tracker.update(cube)
+        ok = est is not None
+        tracked = np.asarray(est if ok else cube, np.float32)
+        proprio = np.concatenate([np.asarray(obs['robot0_eef_pos'], np.float32),
+                                  np.asarray(obs['robot0_eef_quat'], np.float32),
+                                  np.asarray(obs['robot0_gripper_qpos'], np.float32),
+                                  cube, tracked, np.float32([ok])])
+        return None, None, proprio
+    return frames
+
+
+frames = make_frames()
 
 
 def stack(hist, needs_wrist: bool = False) -> dict:
@@ -280,14 +357,15 @@ def oracle_roll(obs: dict, queued: np.ndarray, cfg: OracleConfig = OracleConfig(
     return {**obs, 'proprio': s}
 
 
-def cube_tracker(obs: dict) -> np.ndarray:
-    """Privileged tracker: the cube position appended to proprio by `frames`. The upper bound
-    a real tracker (optical flow, template, pose estimator) is compared against."""
-    return np.asarray(obs['proprio'])[-1][9:12]
+def cube_tracker(obs: dict) -> np.ndarray | None:
+    """The robot's tracked cube position, appended to proprio by the frame function (the true
+    position with the default, privileged tracker). None while the tracker has no fix yet."""
+    s = np.asarray(obs['proprio'])[-1]
+    return s[12:15] if s[15] > 0.5 else None
 
 
-COLUMNS = ['strategy', 'delay', 'speed', 'world_speed', 'scene', 'success', 'ticks', 'idle_frac',
-           'requests', 'path_mm']
+COLUMNS = ['strategy', 'delay', 'speed', 'world_speed', 'tracker', 'scene', 'success', 'ticks',
+           'idle_frac', 'requests', 'path_mm']
 
 
 def main() -> None:
@@ -304,11 +382,20 @@ def main() -> None:
     ap.add_argument('--hz', type=float, default=20.0)
     ap.add_argument('--chunk', type=int, default=15)
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--tracker-sigma-mm', type=float, default=0.0)
+    ap.add_argument('--tracker-latency', type=int, default=0)
+    ap.add_argument('--tracker-dropout', type=float, default=0.0)
+    ap.add_argument('--tracker-burst', type=int, default=1)
+    ap.add_argument('--tracker-filter', action='store_true')
     ap.add_argument('--out', required=True)
     args = ap.parse_args()
 
     cfg = OracleConfig(chunk_size=args.chunk)
     policy = OraclePolicy(cfg)
+    spec = TrackerSpec(args.tracker_sigma_mm, args.tracker_latency, args.tracker_dropout,
+                       args.tracker_burst, args.tracker_filter)
+    tracker = TrackerModel(spec)
+    frame_fn = make_frames(tracker)
     deadline = int(args.deadline_s * args.hz)
     base = make_env(args.hz, deadline + 10)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
@@ -323,20 +410,22 @@ def main() -> None:
                     for k in range(args.episodes):
                         np.random.seed(args.seed + k)      # scene k is the same in every cell
                         obs = env.reset()
+                        tracker.reset(args.seed + k)
                         worker = StepWorker(policy, fixed_delay(d))
                         ex = make_executor_for(strat, worker, policy)
                         ep = run_episode(env, obs, policy, ex, worker, deadline_ticks=deadline,
                                          world_speed=args.world_speed, absolute=True,
-                                         frame_fn=frames, stack_fn=stack,
+                                         frame_fn=frame_fn, stack_fn=stack,
                                          hold_fn=lambda o: hold_action(o, True, 7))
                         ok += ep.success
                         w.writerow({'strategy': strat, 'delay': d, 'speed': speed,
-                                    'world_speed': args.world_speed, 'scene': k,
+                                    'world_speed': args.world_speed, 'tracker': spec.tag,
+                                    'scene': k,
                                     'success': int(ep.success), 'ticks': ep.ticks,
                                     'idle_frac': round(ep.idle / max(ep.ticks, 1), 4),
                                     'requests': ep.requests, 'path_mm': round(ep.path_m * 1e3, 1)})
                     fh.flush()
-                    print(f'speed={speed} d={d} {strat}: {ok}/{args.episodes}', flush=True)
+                    print(f'{spec.tag} speed={speed} d={d} {strat}: {ok}/{args.episodes}', flush=True)
 
 
 if __name__ == '__main__':
