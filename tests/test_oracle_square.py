@@ -91,3 +91,15 @@ def test_divergence_fires_on_a_missed_grasp_only():
     on = np.concatenate([[0.23, 0.05, 0.9], DOWN, [0.0, 0.0], sq.PEG[:2].tolist() + [0.83],
                          nut_quat(0), [0.23, 0.1, 0.83], [1.0]])
     assert not sq.square_diverged({'proprio': on[None].astype(np.float32)}, recent)
+
+
+def test_a_gripper_closed_on_nothing_reopens_instead_of_closing_again():
+    nut = np.array([-0.1, 0.15, 0.83])
+    q = nut_quat(0.0)
+    at_handle = sq.handle_pos(nut, q)
+    turn = sq.grasp_turn(DOWN, q)
+    eq = sq.ol_quat_mul(sq.axisangle_z(turn), DOWN)       # EE turned across the handle
+    assert sq.start_phase(at_handle, eq, [0.04, -0.04], nut, q, CFG) == sq.CLOSE
+    assert sq.start_phase(at_handle, eq, [0.0005, -0.0005], nut, q, CFG) == sq.APPROACH
+    c = sq.plan_chunk(at_handle, eq, [0.0005, -0.0005], nut, q, CFG)
+    assert c[0, 6] == -1.0                                 # opens first

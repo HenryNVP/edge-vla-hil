@@ -67,6 +67,9 @@ class SquareConfig:
     align_tol: float = 0.003       # nut centre over the peg, to start lowering
     yaw_tol: float = 0.03
     z_tol: float = 0.006
+    empty_width: float = 0.012     # finger opening below which the gripper closed on nothing
+    seat_rule: str = 'nearest'     # 'nearest' quarter turn, or 'reach' (tested: worse, see seat_choice)
+    reach_max: float = 0.78        # EE distance from the base beyond which 'reach' turns once more
 
 
 # ------------------------------------------------------------------ geometry
@@ -114,21 +117,30 @@ def seat_turn(nut_yaw: float) -> float:
     return wrap(-nut_yaw, np.pi / 2)
 
 
-def seat_choice(nut_yaw: float, rel_xy) -> tuple[float, np.ndarray]:
-    """(nut yaw change, EE xy target) for seating. Of the four equivalent quarter turns, take
-    the one whose EE target is nearest the robot: the nearest-angle choice can point the handle
-    away and ask for a reach at the edge of the Panda's workspace (~0.84 m from the base), where
-    the OSC settles centimetres short and the nut jams on the peg. `rel_xy` = nut centre minus
-    EE, now."""
+def seat_choice(nut_yaw: float, rel_xy, rule: str = 'reach',
+                reach_max: float = 0.78) -> tuple[float, np.ndarray]:
+    """(nut yaw change, EE xy target) for seating; `rel_xy` = nut centre minus EE, now.
+
+    'nearest' takes the smallest quarter turn. That can point the handle away from the robot
+    and ask for a reach at the edge of the Panda's workspace (~0.84 m from the base), where the
+    OSC settles centimetres short and the nut jams. 'reach' keeps the smallest turn unless its EE
+    target is beyond `reach_max`, and then takes the smallest turn that is within reach. Large
+    turns (up to 180 degrees) were tried and are worse: they drive the wrist toward its joint
+    limit while carrying the nut."""
     base = seat_turn(nut_yaw)
-    best = None
+    options = []
     for k in (-2, -1, 0, 1):
         dyaw = base + k * np.pi / 2
         target = PEG[:2] - (rz(dyaw) @ np.array([rel_xy[0], rel_xy[1], 0.0]))[:2]
-        key = (float(np.linalg.norm(target - ROBOT_BASE_XY)), abs(dyaw))
-        if best is None or key < best[0]:
-            best = (key, dyaw, target)
-    return best[1], best[2]
+        options.append((abs(dyaw), float(np.linalg.norm(target - ROBOT_BASE_XY)), dyaw, target))
+    options.sort(key=lambda o: o[0])
+    if rule == 'nearest':
+        return options[0][2], options[0][3]
+    for o in options:
+        if o[1] <= reach_max:
+            return o[2], o[3]
+    best = min(options, key=lambda o: o[1])
+    return best[2], best[3]
 
 
 def is_held(eef, grip, nut_pos, nut_quat) -> bool:
@@ -161,6 +173,8 @@ def start_phase(eef, eq, grip, nut, nq, cfg: SquareConfig) -> str:
         if not clear:
             return LIFT            # misaligned below the peg top: rise before realigning
         return TRANSPORT           # realign at the current height (lift first if near the table)
+    if float(np.sum(np.abs(np.asarray(grip)))) < cfg.empty_width:
+        return APPROACH            # closed on nothing: reopen and rise before trying again
     h = handle_pos(nut, nq)
     xy = float(np.linalg.norm(eef[:2] - h[:2]))
     dz = float(eef[2] - (h[2] + cfg.grasp_dz))
@@ -198,6 +212,8 @@ def plan_chunk(eef, eq, grip, nut, nq, cfg: SquareConfig = SquareConfig()) -> np
     out = np.zeros((cfg.chunk_size, 7), dtype=np.float32)
     for k in range(cfg.chunk_size):
         if phase == APPROACH:
+            # (start_phase sends a gripper that closed on nothing here: the open command below
+            # releases it, and the rise to hover gives the fingers time to open)
             hover = h + [0.0, 0.0, cfg.hover_m]
             target = hover if p[2] >= hover[2] - cfg.z_tol else np.array([p[0], p[1], hover[2]])
             p = ol._move(p, target, cfg.step_m)
@@ -221,7 +237,8 @@ def plan_chunk(eef, eq, grip, nut, nq, cfg: SquareConfig = SquareConfig()) -> np
             z_t = max(p[2], clear_eef_z(rel0, cfg)) if p[2] < cfg.carry_z else cfg.carry_z
             if seat is None:
                 rel = rz(turn) @ rel0                    # nut offset now
-                dyaw, target = seat_choice(nut_yaw0 + turn, rel[:2])
+                dyaw, target = seat_choice(nut_yaw0 + turn, rel[:2], cfg.seat_rule,
+                                           cfg.reach_max)
                 seat = (turn + dyaw, target)
             p = ol._move(p, np.array([seat[1][0], seat[1][1], z_t]), cfg.step_m)
             turn = _turn(turn, seat[0], cfg.rot_step)
@@ -388,9 +405,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--strategies', default='synchronous,noskip_async,aligned_skip')
     ap.add_argument('--deadline-s', type=float, default=40.0)
+    ap.add_argument('--seat-rule', default='nearest', choices=['reach', 'nearest'])
+    ap.add_argument('--conveyor-range', type=float, default=0.06,
+                    help='half range of the nut conveyor, m (keeps the nut in the task workspace)')
     ol.add_common_args(ap)
     args = ap.parse_args()
-    cfg = SquareConfig(chunk_size=args.chunk)
+    cfg = SquareConfig(chunk_size=args.chunk, seat_rule=args.seat_rule)
     tracker = ol.tracker_from(args)
     deadline = int(args.deadline_s * args.hz)
     base = make_env(args.hz, deadline + 10)
@@ -401,7 +421,8 @@ def main() -> None:
 
     ol.run_sweep(args, policy=SquarePolicy(cfg), tracker=tracker, deadline=deadline,
                  make_world=lambda v: ol.MovingCube(base, v, args.hz, joint='SquareNut_joint0',
-                                                    pos_key='SquareNut_pos', held_fn=held),
+                                                    pos_key='SquareNut_pos', held_fn=held,
+                                                    half_range=args.conveyor_range),
                  frame_fn=make_frames(tracker),
                  executor_kw={'roll_fn': square_roll, 'anchor_fn': nut_tracker,
                               'diverged_fn': square_diverged, 'gate_fn': square_gate})
