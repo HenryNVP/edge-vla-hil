@@ -420,7 +420,8 @@ COLUMNS = ['strategy', 'delay', 'speed', 'world_speed', 'tracker', 'scene', 'suc
 
 
 def add_common_args(ap: argparse.ArgumentParser) -> None:
-    ap.add_argument('--delays', default='1,5,10,15,20,30')
+    ap.add_argument('--delays', default='1,5,10,15,20,30',
+                    help='ticks, or trace:<session>:<scale> (replayed WiFi, as in sil_step)')
     ap.add_argument('--speeds', default='0', help='object speeds, m/s')
     ap.add_argument('--world-speed', type=float, default=1.0)
     ap.add_argument('--episodes', type=int, default=20)
@@ -446,7 +447,7 @@ def run_sweep(args, *, policy, make_world, frame_fn, tracker: TrackerModel, dead
     """Delay x object speed x strategy, scene k identical in every cell. `make_world(speed)`
     returns the (wrapped) env; `executor_kw` passes the task's roll/anchor/diverged functions."""
     from evh_plant.env_factory import hold_action
-    from sil_step import StepWorker, fixed_delay, run_episode
+    from sil_step import StepWorker, TraceDelay, make_delay, run_episode
     executor_kw = executor_kw or {}
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, 'w', newline='') as fh:
@@ -454,14 +455,17 @@ def run_sweep(args, *, policy, make_world, frame_fn, tracker: TrackerModel, dead
         w.writeheader()
         for speed in [float(x) for x in args.speeds.split(',')]:
             env = make_world(speed)
-            for d in [int(x) for x in args.delays.split(',')]:
+            for d in args.delays.split(','):          # ticks, or trace:<session>:<scale>
+                delay = make_delay(d)
                 for strat in args.strategies.split(','):
                     ok = 0
                     for k in range(args.episodes):
                         np.random.seed(args.seed + k)      # scene k is the same in every cell
                         obs = env.reset()
                         tracker.reset(args.seed + k)
-                        worker = StepWorker(policy, fixed_delay(d))
+                        if isinstance(delay, TraceDelay):
+                            delay.for_episode(args.seed + k)   # same channel for every strategy
+                        worker = StepWorker(policy, delay)
                         ex = make_executor_for(strat, worker, policy, **executor_kw)
                         ep = run_episode(env, obs, policy, ex, worker, deadline_ticks=deadline,
                                          world_speed=args.world_speed, absolute=True,

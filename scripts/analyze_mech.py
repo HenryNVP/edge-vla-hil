@@ -32,7 +32,7 @@ def load(paths) -> dict:
         with open(p) as fh:
             for r in csv.DictReader(fh):
                 key = (r.get('tracker', 'privileged'), float(r['speed']), r['strategy'],
-                       int(r['delay']))
+                       r['delay'])
                 cells[key].append((int(r['ticks']), r['success'] == '1', int(r['requests'])))
     return cells
 
@@ -40,7 +40,8 @@ def load(paths) -> dict:
 def main() -> None:
     cells = load(sys.argv[1:])
     groups = sorted({(k[0], k[1]) for k in cells})
-    delays = sorted({k[3] for k in cells})
+    delays = sorted({k[3] for k in cells},
+                    key=lambda d: (0, int(d), '') if d.isdigit() else (1, 0, d))
     strategies = sorted({k[2] for k in cells})
     for tr, v in groups:
         print(f'\ntracker {tr}, cube speed {v} m/s   (success/n, KM median ticks)')
