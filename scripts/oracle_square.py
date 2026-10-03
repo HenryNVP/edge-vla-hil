@@ -41,6 +41,7 @@ PEG_TOP = 0.95                               # peg1 is a 0.2 m post centred at 0
 NUT_HALF_H = 0.01
 HANDLE_LOCAL = np.array([0.054, 0.0, 0.0])   # handle site in the nut frame
 TABLE_Z = 0.82
+ROBOT_BASE_XY = np.array([-0.56, 0.0])       # Panda base on the robosuite table
 APPROACH, DESCEND, CLOSE, LIFT, TRANSPORT, LOWER, RELEASE, RETREAT = (
     'approach', 'descend', 'close', 'lift', 'transport', 'lower', 'release', 'retreat')
 CLOSED_PHASES = (CLOSE, LIFT, TRANSPORT, LOWER)
@@ -111,6 +112,23 @@ def grasp_turn(eef_quat, nut_quat) -> float:
 def seat_turn(nut_yaw: float) -> float:
     """Nut yaw change to the peg's orientation (square: modulo 90 degrees)."""
     return wrap(-nut_yaw, np.pi / 2)
+
+
+def seat_choice(nut_yaw: float, rel_xy) -> tuple[float, np.ndarray]:
+    """(nut yaw change, EE xy target) for seating. Of the four equivalent quarter turns, take
+    the one whose EE target is nearest the robot: the nearest-angle choice can point the handle
+    away and ask for a reach at the edge of the Panda's workspace (~0.84 m from the base), where
+    the OSC settles centimetres short and the nut jams on the peg. `rel_xy` = nut centre minus
+    EE, now."""
+    base = seat_turn(nut_yaw)
+    best = None
+    for k in (-2, -1, 0, 1):
+        dyaw = base + k * np.pi / 2
+        target = PEG[:2] - (rz(dyaw) @ np.array([rel_xy[0], rel_xy[1], 0.0]))[:2]
+        key = (float(np.linalg.norm(target - ROBOT_BASE_XY)), abs(dyaw))
+        if best is None or key < best[0]:
+            best = (key, dyaw, target)
+    return best[1], best[2]
 
 
 def is_held(eef, grip, nut_pos, nut_quat) -> bool:
@@ -202,10 +220,9 @@ def plan_chunk(eef, eq, grip, nut, nq, cfg: SquareConfig = SquareConfig()) -> np
         elif phase == TRANSPORT:
             z_t = max(p[2], clear_eef_z(rel0, cfg)) if p[2] < cfg.carry_z else cfg.carry_z
             if seat is None:
-                dyaw = seat_turn(nut_yaw0 + turn)
                 rel = rz(turn) @ rel0                    # nut offset now
-                rel_final = rz(dyaw) @ rel               # ... after the seating turn
-                seat = (turn + dyaw, PEG[:2] - rel_final[:2])
+                dyaw, target = seat_choice(nut_yaw0 + turn, rel[:2])
+                seat = (turn + dyaw, target)
             p = ol._move(p, np.array([seat[1][0], seat[1][1], z_t]), cfg.step_m)
             turn = _turn(turn, seat[0], cfg.rot_step)
             if (np.linalg.norm(p[:2] - seat[1]) <= cfg.align_tol
@@ -335,6 +352,18 @@ def square_roll(obs: dict, queued: np.ndarray, cfg: SquareConfig = SquareConfig(
     return {**obs, 'proprio': s}
 
 
+def square_gate(obs: dict, action: np.ndarray, cfg: SquareConfig = SquareConfig()) -> bool:
+    """Close only when the measured EE is at the handle of the TRACKED nut, turned across it."""
+    eef, eq, grip, nut, nq = unpack(np.asarray(obs['proprio'])[-1])
+    tracked = nut_tracker(obs)
+    if tracked is None:
+        return True
+    h = handle_pos(tracked, nq)
+    return (float(np.linalg.norm(eef[:2] - h[:2])) <= cfg.grasp_xy_tol
+            and abs(float(eef[2] - h[2] - cfg.grasp_dz)) <= cfg.z_tol
+            and abs(grasp_turn(eq, nq)) <= 2 * cfg.yaw_tol)
+
+
 def square_diverged(obs: dict, recent: np.ndarray, cfg: SquareConfig = SquareConfig()) -> bool:
     eef, eq, grip, nut, nq = unpack(np.asarray(obs['proprio'])[-1])
     if on_peg(nut):
@@ -375,7 +404,7 @@ def main() -> None:
                                                     pos_key='SquareNut_pos', held_fn=held),
                  frame_fn=make_frames(tracker),
                  executor_kw={'roll_fn': square_roll, 'anchor_fn': nut_tracker,
-                              'diverged_fn': square_diverged})
+                              'diverged_fn': square_diverged, 'gate_fn': square_gate})
 
 
 if __name__ == '__main__':

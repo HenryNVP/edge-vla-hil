@@ -25,7 +25,11 @@ work past H/2, where VLASH and the RTC family are not evaluated.
 
 What rolling forward cannot fix is the WORLD: the observation's scene is still d + queue ticks
 old. In a moving world combine it with object anchoring (`anchor_fn`, same semantics as
-anchored.py). The robot's own state is exact for absolute actions in a static world. With a
+anchored.py). The two corrections must agree with each other. The roll sees the queued actions
+WITH their anchoring shift applied, so the rolled robot state sits in the same object frame as
+the observation it is sent with. Rolling raw targets puts the arm where the object USED to be
+relative to it. On Square with a moving nut that offset (d ticks of nut travel) exceeded the
+descent tolerance, and every appended chunk re-approached instead of grasping. The robot's own state is exact for absolute actions in a static world. With a
 learned policy and stale images the rolled-forward proprio contradicts the images, and whether
 the policy tolerates that is an empirical question (paper 2, M3).
 
@@ -41,6 +45,10 @@ oldest first. When it fires, the executor drops the queue and the request in fli
 as at an episode reset) and replans from the measurement. That costs one round trip, and buys
 back the reactivity that continuation gave away. The check runs at most once per `cooldown` ticks
 so a slow-to-clear condition cannot flush every tick.
+
+`gate_fn(obs, action) -> bool` holds an open-to-close gripper transition until the arm is
+really at the grasp pose. It has the same semantics as anchored.py, which explains why a stale
+chunk needs it.
 """
 from __future__ import annotations
 
@@ -49,6 +57,7 @@ from typing import Callable
 
 import numpy as np
 
+from evh_controller.chunk_executor.anchored import anchor_shift
 from evh_controller.chunk_executor.base import ChunkExecutor
 
 GRIP_OPEN_BELOW = 0.0
@@ -61,6 +70,8 @@ class ContinuationExecutor(ChunkExecutor):
                  anchor_fn: Callable[[dict], np.ndarray | None] | None = None,
                  diverged_fn: Callable[[dict, np.ndarray], bool] | None = None,
                  recent_n: int = 20, cooldown: int = 10,
+                 gate_fn: Callable[[dict, np.ndarray], bool] | None = None,
+                 gate_timeout: int = 60,
                  lead: int = 1, quantile: float = 0.9, delay_buffer: int = 50) -> None:
         if not getattr(policy, 'absolute_actions', False):
             raise ValueError('continuation appends absolute targets; this policy emits deltas')
@@ -70,6 +81,9 @@ class ContinuationExecutor(ChunkExecutor):
         self.recent_n = recent_n
         self.cooldown = cooldown
         self.flushes = 0                       # divergence flushes, cumulative across episodes
+        self.gate_fn = gate_fn
+        self.gate_timeout = gate_timeout
+        self.gate_holds = 0
         self.lead = lead
         self.quantile = quantile
         self.delay_buffer = delay_buffer
@@ -87,6 +101,9 @@ class ContinuationExecutor(ChunkExecutor):
         self.shifts: list[float] = []
         self._recent: deque = deque(maxlen=self.recent_n)
         self._since_flush = self.cooldown
+        self._last_grip = -1.0
+        self._gated = 0
+        self._close: tuple[int, np.ndarray] | None = None
 
     def _check_divergence(self, obs) -> None:
         self._since_flush += 1
@@ -98,13 +115,16 @@ class ContinuationExecutor(ChunkExecutor):
             self.reset()                       # queue and in-flight chunk planned for a lost future
             self._since_flush = 0
 
-    def _queued(self) -> np.ndarray:
+    def _queued(self, obs=None) -> np.ndarray:
+        """The actions still to be played, as they WILL be played: anchoring shift applied."""
         if not self._queue:
             return np.zeros((0, int(self.policy.action_dim)), dtype=np.float32)
-        return np.stack([a for a, _ in self._queue])
+        if obs is None or self.anchor_fn is None:
+            return np.stack([a for a, _ in self._queue])
+        return np.stack([self._shifted(obs, a, anchor, record=False) for a, anchor in self._queue])
 
     def _request(self, obs, t) -> None:
-        planned_from = obs if self.roll_fn is None else self.roll_fn(obs, self._queued())
+        planned_from = obs if self.roll_fn is None else self.roll_fn(obs, self._queued(obs))
         if self._issue(planned_from, t):
             if self.anchor_fn is not None:
                 p = self.anchor_fn(obs)
@@ -115,7 +135,8 @@ class ContinuationExecutor(ChunkExecutor):
         arrival = self._poll(t)
         if arrival is not None:
             self._delays.append(max(0, t - arrival.t_issue))
-            anchor = self._anchors.pop(arrival.t_issue, None)
+            p = self._anchors.pop(arrival.t_issue, None)
+            anchor = None if p is None else (arrival.t_issue, p)
             for a in np.asarray(arrival.chunk):
                 self._queue.append((np.asarray(a, dtype=np.float32), anchor))
 
@@ -124,15 +145,32 @@ class ContinuationExecutor(ChunkExecutor):
 
         if not self._queue:
             return None
-        a, anchor = self._queue.popleft()
+        entry = self._queue.popleft()
+        a, anchor = entry
+        closing = a[6] >= GRIP_OPEN_BELOW and self._last_grip < GRIP_OPEN_BELOW
+        if closing and self.gate_fn is not None and self._gated < self.gate_timeout:
+            pre = self._shifted(obs, a, anchor, as_open=True)
+            if not self.gate_fn(obs, pre):
+                self._queue.appendleft(entry)      # not played yet
+                self._gated += 1
+                self.gate_holds += 1
+                pre = pre.copy()
+                pre[6] = self._last_grip
+                return pre
+        if closing:
+            now = None if self.anchor_fn is None else self.anchor_fn(obs)
+            self._close = None if now is None else (t, np.asarray(now, float).copy())
+        elif a[6] < GRIP_OPEN_BELOW:
+            self._close = None
+        self._gated = 0
+        self._last_grip = float(a[6])
         self._recent.append(a)
-        if anchor is None or self.anchor_fn is None or a[6] >= GRIP_OPEN_BELOW:
+        return self._shifted(obs, a, anchor)
+
+    def _shifted(self, obs, a, anchor, as_open: bool = False, record: bool = True):
+        if self.anchor_fn is None:
             return a
-        now = self.anchor_fn(obs)
-        if now is None:
-            return a
-        shift = np.asarray(now, float) - anchor
-        self.shifts.append(float(np.linalg.norm(shift)))
-        out = a.copy()
-        out[:3] += shift.astype(np.float32)
+        out = anchor_shift(a, anchor, self.anchor_fn(obs), self._close, as_open)
+        if record and out is not a:
+            self.shifts.append(float(np.linalg.norm(out[:3] - a[:3])))
         return out

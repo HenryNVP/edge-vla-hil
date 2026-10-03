@@ -180,3 +180,18 @@ def test_divergence_check_respects_the_cooldown():
                               diverged_fn=lambda o, r: True, cooldown=10)
     _played(ex, 100)
     assert 5 <= ex.flushes <= 10              # at most one flush per cooldown window
+
+
+def test_roll_sees_queued_actions_with_their_anchoring_shift():
+    p = Policy()
+    seen = []
+
+    def roll(obs, queued):
+        seen.append(None if len(queued) == 0 else float(queued[-1][1]))
+        return obs
+
+    ex = ContinuationExecutor(Worker(p, 3), p, roll_fn=roll, anchor_fn=lambda o: o['obj'])
+    for t in range(30):
+        ex.step({'t': t, 'obj': np.array([0.0, 0.01 * t, 0.0])}, t)
+    # queued open actions are reported shifted by the object's motion since their request
+    assert any(v is not None and v > 0.0 for v in seen)

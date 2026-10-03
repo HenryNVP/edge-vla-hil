@@ -316,14 +316,16 @@ def make_env(control_hz: float, horizon: int):
 
 
 def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None,
-                      diverged_fn=None):
+                      diverged_fn=None, gate_fn=None):
     """The repo's executors, plus the testbed's:
 
         aligned_skip           time-aligned, unguided, tick-based join (paper 1's skipping
                                baseline: RTC's join without its guidance)
-        anchored[_wait]        M1, object anchoring on the no-skip queue (or on waiting)
+        anchored[_wait][_gate] M1, object anchoring on the no-skip queue (or on waiting);
+                               _gate holds the gripper close until the arm is at the object
         continuation[...]      M3, plan from the queue's end and append; suffixes, combinable:
-                               _noroll (ablation), _anchored (+ M1), _check (+ divergence flush)
+                               _noroll (ablation), _anchored (+ M1), _check (+ divergence flush),
+                               _gate (+ close gating)
 
     roll/anchor/diverged default to the Lift testbed's; another task passes its own."""
     from evh_controller.chunk_executor import (AnchoredExecutor, CoverageAwareExecutor,
@@ -331,18 +333,21 @@ def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None
     roll_fn = roll_fn or oracle_roll
     anchor_fn = anchor_fn or cube_tracker
     diverged_fn = diverged_fn or lift_diverged
+    gate_fn = gate_fn or lift_gate
+    parts = set(name.split('_')[1:])
     if name == 'aligned_skip':
         return CoverageAwareExecutor(worker, policy, rule='aligned', guided=False, reindex=False)
     if name.startswith('continuation'):
         from evh_controller.chunk_executor.continuation import ContinuationExecutor
-        parts = set(name.split('_')[1:])
         return ContinuationExecutor(
             worker, policy, roll_fn=None if 'noroll' in parts else roll_fn,
             anchor_fn=anchor_fn if 'anchored' in parts else None,
-            diverged_fn=diverged_fn if 'check' in parts else None)
-    if name in ('anchored', 'anchored_wait'):
-        rule = 'waiting' if name == 'anchored_wait' else 'aligned'
-        return AnchoredExecutor(worker, policy, anchor_fn=anchor_fn, rule=rule)
+            diverged_fn=diverged_fn if 'check' in parts else None,
+            gate_fn=gate_fn if 'gate' in parts else None)
+    if name.startswith('anchored'):
+        rule = 'waiting' if 'wait' in parts else 'aligned'
+        return AnchoredExecutor(worker, policy, anchor_fn=anchor_fn, rule=rule,
+                                gate_fn=gate_fn if 'gate' in parts else None)
     return make_executor(name, worker, policy)
 
 
@@ -355,6 +360,17 @@ def grasp_failed(recent: np.ndarray, held: bool, close_ticks: int, margin: int =
             break
         n += 1
     return n >= close_ticks + margin and not held
+
+
+def lift_gate(obs: dict, action: np.ndarray, cfg: OracleConfig = OracleConfig()) -> bool:
+    """Close only when the measured EE is at the TRACKED cube (the robot-side check that the
+    chunk's grasp timing is still right)."""
+    s = np.asarray(obs['proprio'])[-1]
+    cube = cube_tracker(obs)
+    if cube is None:
+        return True
+    return (float(np.linalg.norm(s[0:2] - cube[:2])) <= 2 * cfg.xy_tol
+            and abs(float(s[2] - cube[2] - cfg.grasp_dz)) <= 2 * cfg.z_tol)
 
 
 def lift_diverged(obs: dict, recent: np.ndarray, cfg: OracleConfig = OracleConfig()) -> bool:

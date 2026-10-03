@@ -69,11 +69,61 @@ def test_open_gripper_actions_follow_the_object_since_their_request():
         assert out[t][1] == pytest.approx(ys[t])
 
 
-def test_closed_gripper_actions_are_not_shifted():
-    p = Policy(grip=1.0)
-    ex = _make(p, d=1)
-    out = [ex.step(_obj(0.01 * t), t) for t in range(4)]
-    assert all(a is None or a[1] == 0.0 for a in out)
+class GraspPolicy(Policy):
+    """Two open entries, then closed: an approach that ends in a grasp."""
+
+    def chunk(self):
+        c = super().chunk()
+        c[:, 6] = -1.0
+        c[2:, 6] = 1.0
+        return c
+
+
+# The grasp tests use anchored WAITING, which plays each chunk from entry 0 to its end; with the
+# no-skip queue at d = 1 an obs-independent chunk would be re-joined at entry 1 every tick.
+def _wait(policy, d=1, **kw):
+    return AnchoredExecutor(Worker(policy, d), policy, anchor_fn=lambda o: o.get('obj'),
+                            rule='waiting', **kw)
+
+
+def test_closed_actions_keep_the_shift_frozen_at_the_close():
+    p = GraspPolicy()
+    ex = _wait(p)
+    ys = [0.01 * t for t in range(6)]                  # object keeps moving 1 cm per tick
+    out = [ex.step(_obj(y), t) for t, y in enumerate(ys)]
+    # chunk requested at t=0 (y=0), played from t=1: open at t=1,2, close from t=3 (y=0.03)
+    assert out[1][1] == pytest.approx(0.01) and out[2][1] == pytest.approx(0.02)
+    assert out[3][1] == pytest.approx(0.03)
+    assert out[4][1] == pytest.approx(0.03) and out[5][1] == pytest.approx(0.03)   # frozen
+
+
+def test_a_chunk_planned_after_the_close_is_not_shifted():
+    from evh_controller.chunk_executor.anchored import anchor_shift
+    a = np.array([0, 0, 0, 0, 0, 0, 1.0], np.float32)  # a closed action
+    close = (5, np.array([0.0, 0.03, 0.0]))
+    assert anchor_shift(a, (7, np.zeros(3)), np.array([0, 0.1, 0]), close) is a
+    shifted = anchor_shift(a, (2, np.zeros(3)), np.array([0, 0.1, 0]), close)
+    assert shifted[1] == pytest.approx(0.03)
+
+
+def test_gate_holds_the_close_and_pauses_the_chunk():
+    p = GraspPolicy()
+    ok = {'v': False}
+    ex = _wait(p, gate_fn=lambda o, a: ok['v'])
+    out = [ex.step(_obj(0.0), t) for t in range(8)]
+    grips = [None if a is None else a[6] for a in out]
+    assert -1.0 in grips and 1.0 not in grips          # never closes while the gate is shut
+    assert ex.gate_holds > 0
+    ok['v'] = True
+    later = [ex.step(_obj(0.0), t) for t in range(8, 12)]
+    assert later[0][6] == 1.0                          # closes as soon as the gate opens
+
+
+def test_gate_gives_way_after_the_timeout():
+    p = GraspPolicy()
+    ex = _wait(p, gate_fn=lambda o, a: False, gate_timeout=5)
+    grips = [a[6] for a in (ex.step(_obj(0.0), t) for t in range(20)) if a is not None]
+    assert 1.0 in grips
 
 
 def test_no_tracker_fix_means_no_shift():
