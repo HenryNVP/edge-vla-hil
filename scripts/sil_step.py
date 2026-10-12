@@ -182,6 +182,10 @@ def make_strategy(strategy: str, worker, policy, s_wait: int = 0, s_min: int = 0
     length `s_wait`, and `s_min`, the fewest ticks between time-aligned requests (on a large model
     replanning every tick costs a guided inference per tick; LIBERO uses 10, like its RTC)."""
     from evh_controller.chunk_executor import _REGISTRY, CoverageAwareExecutor, make_executor
+    if strategy == 'continuation_inpaint':
+        # the queue as a hard inpainting prefix, no state model: oracle_lift's `_inpaint` arm
+        from evh_controller.chunk_executor.continuation import ContinuationExecutor
+        return ContinuationExecutor(worker, policy, roll_fn=None, inpaint=True)
     cls = _REGISTRY.get(strategy)
     # the whole family, subclasses included (they take the knobs through **kw)
     if cls is not None and issubclass(cls, CoverageAwareExecutor) and (s_wait or s_min):

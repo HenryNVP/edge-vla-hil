@@ -225,3 +225,10 @@ def test_make_strategy_passes_the_coverage_aware_knobs_and_leaves_others_alone()
     assert make_strategy('synchronous', worker, policy, s_wait=3).name == 'synchronous'
     for name in ('noskip_async', 'rtc_noskip', 'switch_only'):
         assert make_strategy(name, worker, policy, s_min=5).s_min == 5, name
+
+
+def test_make_strategy_builds_the_inpainting_continuation():
+    from sil_step import make_strategy
+    policy = FakePolicy()
+    ex = make_strategy('continuation_inpaint', StepWorker(policy, fixed_delay(2)), policy)
+    assert ex.name == 'continuation' and ex.inpaint and ex.roll_fn is None
