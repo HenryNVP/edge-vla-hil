@@ -26,11 +26,20 @@ def _queue(n, grip=-1.0):
     return q
 
 
-def test_roll_writes_the_last_targets_newest_last():
-    rolled = dp_mech.proprio_roll(_obs(), _queue(5))['proprio']
+def test_roll_with_no_lag_writes_the_last_targets_newest_last():
+    rolled = dp_mech.proprio_roll(_obs(), _queue(5), lag=1.0)['proprio']
     assert np.allclose(rolled[:, 0], [0.04, 0.05])
     assert np.allclose(np.abs(rolled[-1, 3:7] @ DOWN), 1.0, atol=1e-5)   # same orientation
     assert np.allclose(rolled[-1, 7:9], [0.04, -0.04])
+
+
+def test_roll_lags_behind_the_targets_and_keeps_the_measured_quat_sign():
+    obs = _obs()
+    obs['proprio'][:, 3:7] = -DOWN                         # robosuite reported the other sign
+    q = _queue(1)
+    rolled = dp_mech.proprio_roll(obs, q, lag=0.3)['proprio']
+    assert np.isclose(rolled[-1, 0], 0.3 * 0.01)
+    assert rolled[-1, 3:7] @ -DOWN > 0.999
 
 
 def test_roll_closes_the_fingers_only_when_the_plan_does():
@@ -43,7 +52,7 @@ def test_roll_closes_the_fingers_only_when_the_plan_does():
 def test_short_queue_rolls_only_the_newest_frame_and_empty_is_a_no_op():
     obs = _obs()
     rolled = dp_mech.proprio_roll(obs, _queue(1))['proprio']
-    assert np.allclose(rolled[0], obs['proprio'][0]) and rolled[1, 0] == np.float32(0.01)
+    assert np.allclose(rolled[0], obs['proprio'][0]) and np.isclose(rolled[1, 0], 0.003)
     assert dp_mech.proprio_roll(obs, _queue(0)) is obs
 
 

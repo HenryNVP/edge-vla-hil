@@ -13,9 +13,13 @@ Two ways to continue a DP plan from the end of the queue, since images cannot be
     continuation_inpaint[_anchored]  current observation as is, the queued actions as a hard
                                      RTC-style inpainting prefix (capped by the horizon, 15)
 
-The proprio roll is deliberately crude: EE pose <- the last queued targets (orientation through
-the controller-frame offset, invariant 7), fingers <- open, or closed at `closed_qpos` once the
-plan closes them. The DP gets no object state, so nothing else is rolled. Anchoring and the
+The proprio roll is deliberately cheap: a first-order model of the OSC's lag. Each queued target
+moves the predicted EE pose `lag` (0.3) of the way toward it, position linearly and orientation by
+normalised lerp (targets through the controller-frame offset, invariant 7). Setting the pose to the
+last TARGET instead was wrong by up to 10 cm on Square, because DP's absolute targets lead the arm
+when it moves fast, and it did worse than no roll (continuation 1/20 at d = 1). The quaternion is
+kept on the measured sign: q and -q are the same rotation, but the policy sees the raw numbers.
+Fingers <- open, or closed at `closed_qpos` once the plan closes them. The DP gets no object state, so nothing else is rolled. Anchoring and the
 tracker read the true object position from the simulator through the tracker model; it rides in
 the obs dict under 'object' and never reaches the policy.
 """
@@ -66,20 +70,35 @@ def object_tracker(obs: dict):
     return o[7:10] if o[10] > 0.5 else None
 
 
-def proprio_roll(obs: dict, queued: np.ndarray, closed_qpos: float = 0.02) -> dict:
-    """Replace the proprio history by the plan's last targets (pose and fingers)."""
+def proprio_roll(obs: dict, queued: np.ndarray, closed_qpos: float = 0.02,
+                 lag: float = 0.3) -> dict:
+    """Predict the proprio history at the end of the queue: the arm follows each queued target
+    with first-order lag `lag` per tick (1.0 = it reaches every target at once)."""
     from oracle_square import axisangle_to_quat, ctrl_to_eef_quat
     if len(queued) == 0:
         return obs
     s = np.asarray(obs['proprio'], np.float32).copy()
-    width_now = float(s[-1][7] - s[-1][8])
-    for row, a in zip(range(len(s) - 1, -1, -1), queued[::-1]):
-        s[row, 0:3] = a[:3]
-        s[row, 3:7] = ctrl_to_eef_quat(axisangle_to_quat(a[3:6]))
-        if a[6] < 0:
+    now = s[-1]
+    width_now = float(now[7] - now[8])
+    p, q = now[0:3].astype(float), now[3:7].astype(float)
+    states = []
+    for a in queued:
+        p = p + lag * (a[:3] - p)
+        qt = ctrl_to_eef_quat(axisangle_to_quat(a[3:6]))
+        if qt @ q < 0:
+            qt = -qt
+        q = q + lag * (qt - q)
+        q = q / np.linalg.norm(q)
+        states.append((p, q, a[6]))
+    for row, (p, q, g) in zip(range(len(s) - 1, -1, -1), states[::-1]):
+        s[row, 0:3] = p
+        s[row, 3:7] = q
+        if g < 0:
             s[row, 7:9] = [OPEN_QPOS, -OPEN_QPOS]
         elif width_now > 2 * OPEN_QPOS - 0.01:            # open now, the plan closes them
             s[row, 7:9] = [closed_qpos, -closed_qpos]
+        else:
+            s[row, 7:9] = now[7:9]
     return {**obs, 'proprio': s}
 
 
@@ -91,6 +110,8 @@ def main() -> None:
     ap.add_argument('--deadline-s', type=float, default=20.0)
     ap.add_argument('--denoise-steps', type=int, default=4, help='paper-1 cells used 4')
     ap.add_argument('--weights', default='', help='default: the task checkpoint')
+    ap.add_argument('--roll-lag', type=float, default=0.3,
+                    help='first-order lag of the proprio roll per tick (1 = jump to targets)')
     ol.add_common_args(ap)
     args = ap.parse_args()
     if args.hz != 20.0:
@@ -124,7 +145,8 @@ def main() -> None:
                                                     pos_key=pos_key, held_fn=held,
                                                     half_range=half_range),
                  frame_fn=make_frames(tracker, pos_key, quat_key), stack_fn=stack,
-                 executor_kw={'roll_fn': functools.partial(proprio_roll, closed_qpos=closed),
+                 executor_kw={'roll_fn': functools.partial(proprio_roll, closed_qpos=closed,
+                                                       lag=args.roll_lag),
                               'anchor_fn': object_tracker})
 
 

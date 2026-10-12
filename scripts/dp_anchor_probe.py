@@ -77,14 +77,18 @@ def main() -> None:
             state = env.sim.get_state()
             xy0 = np.array(obs[pos_key][:2], float)
             seed = 20_000 + scene
+            # both history frames show the same scene, in the baseline and the moved probe alike,
+            # so the policy never sees the object jump inside its own history
+            cur = frames(observe(env))
+            hist = deque([cur] * policy.n_obs_steps, maxlen=policy.n_obs_steps)
             base = predict(policy, hist, seed)
             for axis in (0, 1):
                 for sign in (-1.0, 1.0):
                     d = np.zeros(2)
                     d[axis] = sign * args.delta_m
                     set_object(env, joint, xy0 + d)
-                    h2 = deque(hist, maxlen=policy.n_obs_steps)
-                    h2[-1] = frames(observe(env))         # newest frame shows the moved object
+                    h2 = deque([frames(observe(env))] * policy.n_obs_steps,
+                               maxlen=policy.n_obs_steps)
                     moved = predict(policy, h2, seed)
                     env.sim.set_state(state)
                     env.sim.forward()
@@ -92,8 +96,12 @@ def main() -> None:
                     if not open_.any():
                         continue
                     shift = (moved[open_, axis] - base[open_, axis]).mean()
+                    last = np.flatnonzero(open_)[-1]
+                    end = moved[last, axis] - base[last, axis]
+                    eef = float(np.linalg.norm(obs['robot0_eef_pos'][:2] - xy0))
                     rows.append({'scene': scene, 'warm': warm, 'axis': 'xy'[axis],
                                  'delta': d[axis], 'slope': shift / d[axis],
+                                 'slope_end': end / d[axis], 'eef_obj_xy_m': round(eef, 3),
                                  'open_entries': int(open_.sum())})
     with open(args.out, 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))
@@ -101,10 +109,15 @@ def main() -> None:
         w.writerows(rows)
     for warm in sorted({r['warm'] for r in rows}):
         for ax in 'xy':
-            s = [r['slope'] for r in rows if r['warm'] == warm and r['axis'] == ax]
-            if s:
-                print(f'warm={warm:3d} axis={ax}: slope median {np.median(s):.2f} '
-                      f'IQR [{np.percentile(s, 25):.2f}, {np.percentile(s, 75):.2f}] n={len(s)}')
+            sel = [r for r in rows if r['warm'] == warm and r['axis'] == ax]
+            if sel:
+                s = [r['slope'] for r in sel]
+                e = [r['slope_end'] for r in sel]
+                dist = np.median([r['eef_obj_xy_m'] for r in sel])
+                print(f'warm={warm:3d} axis={ax}: slope mean-entry {np.median(s):.2f} '
+                      f'[{np.percentile(s, 25):.2f}, {np.percentile(s, 75):.2f}]  last-entry '
+                      f'{np.median(e):.2f} [{np.percentile(e, 25):.2f}, {np.percentile(e, 75):.2f}]'
+                      f'  eef-object {dist * 100:.1f} cm  n={len(sel)}')
 
 
 if __name__ == '__main__':
