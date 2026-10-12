@@ -140,6 +140,7 @@ class TraceDelay:
     def __init__(self, times_s, rtt_ms, *, scale: float = 1.0, inference_ms: float = 80.0,
                  seed: int = 0) -> None:
         self.times = np.asarray(times_s, dtype=float)
+        self.inference_ms = inference_ms
         rtt = np.asarray(rtt_ms, dtype=float)
         self.rtt_ms = inference_ms + scale * np.maximum(rtt - inference_ms, 0.0)
         self.seed = seed
@@ -150,10 +151,14 @@ class TraceDelay:
         self.offset_s = float(np.random.default_rng((self.seed, k)).uniform(0.0, max(span, 0.0)))
         return self
 
-    def __call__(self, t_issue: int = 0) -> int:
+    needs_tick = True                          # StepWorker passes the request's tick
+
+    def rtt_ms_at(self, t_issue: int = 0) -> float:
         at = self.offset_s + t_issue / CONTROL_HZ
-        i = min(int(np.searchsorted(self.times, at)), len(self.times) - 1)
-        return max(1, int(np.ceil(self.rtt_ms[i] / (1e3 / CONTROL_HZ))))
+        return float(self.rtt_ms[min(int(np.searchsorted(self.times, at)), len(self.times) - 1)])
+
+    def __call__(self, t_issue: int = 0) -> int:
+        return max(1, int(np.ceil(self.rtt_ms_at(t_issue) / (1e3 / CONTROL_HZ))))
 
 
 WIFI_DIR = os.path.join(_REPO, 'outputs', 'wifi')
@@ -224,7 +229,7 @@ class StepWorker:
         else:
             chunk = self.policy.predict(obs)
         self.requests += 1
-        delay = self.delay(t_issue) if isinstance(self.delay, TraceDelay) else self.delay()
+        delay = self.delay(t_issue) if getattr(self.delay, 'needs_tick', False) else self.delay()
         self._pending = [delay, Arrival(np.asarray(chunk), t_issue, epoch,
                                         time.perf_counter() - t0)]
         return True
@@ -277,10 +282,21 @@ class Episode:
         return self.ticks / CONTROL_HZ
 
 
-def run_episode(env, obs, policy, executor, worker, *, deadline_ticks: int,
-                world_speed: float = 1.0, absolute: bool = True,
-                is_success=None, frame_fn=frames, stack_fn=stack, hold_fn=None) -> Episode:
-    """One episode from an already-reset env whose first observation is `obs`.
+def run_episode(env, obs, policy, executor, worker, **kw) -> Episode:
+    """One episode from an already-reset env whose first observation is `obs` (see `episode`)."""
+    gen = episode(env, obs, policy, executor, worker, **kw)
+    while True:
+        try:
+            next(gen)
+        except StopIteration as stop:
+            return stop.value
+
+
+def episode(env, obs, policy, executor, worker, *, deadline_ticks: int,
+            world_speed: float = 1.0, absolute: bool = True,
+            is_success=None, frame_fn=frames, stack_fn=stack, hold_fn=None):
+    """One episode as a generator: yields once per control tick, returns the Episode. Driving
+    several of these in lockstep is how sil_fleet.py shares one server between robots.
 
     `frame_fn`/`stack_fn` turn env observations into the policy's input, and `hold_fn(obs)` is
     the command for an idle tick before any action (default: the plant's `hold_action`), so an
@@ -311,7 +327,8 @@ def run_episode(env, obs, policy, executor, worker, *, deadline_ticks: int,
             idle += 1
             acc += world_speed
             if acc < 1.0 - 1e-9:
-                continue                   # frozen world: the tick passes, nothing moves
+                yield                      # frozen world: the tick passes, nothing moves
+                continue
             acc -= 1.0
             # absolute: the arm keeps its last target; delta, or before any action: the hold
             command = last_action if (absolute and last_action is not None) else hold_fn(obs)
@@ -326,6 +343,7 @@ def run_episode(env, obs, policy, executor, worker, *, deadline_ticks: int,
         if is_success(env):
             return Episode(True, t + 1, env_steps, idle, path, worker.requests - requests0,
                            time.perf_counter() - t0)
+        yield
     return Episode(False, deadline_ticks, env_steps, idle, path, worker.requests - requests0,
                    time.perf_counter() - t0)
 
