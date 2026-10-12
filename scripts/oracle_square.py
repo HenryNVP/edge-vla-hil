@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import functools
 
 import numpy as np
 
@@ -369,15 +370,20 @@ def square_roll(obs: dict, queued: np.ndarray, cfg: SquareConfig = SquareConfig(
     return {**obs, 'proprio': s}
 
 
-def square_gate(obs: dict, action: np.ndarray, cfg: SquareConfig = SquareConfig()) -> bool:
-    """Close only when the measured EE is at the handle of the TRACKED nut, turned across it."""
+def square_gate(obs: dict, action: np.ndarray, cfg: SquareConfig = SquareConfig(),
+                slack: float = 0.0) -> bool:
+    """Close only when the measured EE is at the handle of the TRACKED nut, turned across it.
+    `slack` (m) widens the position tolerances for a noisy tracker: with 10 mm of noise a fixed
+    8 mm check almost never passes and every close waits out the gate's timeout (0/20 against
+    7/20 ungated). The sweep sets it to k * sigma, so a tracker too noisy to verify the grasp
+    degrades the gate toward no gate instead of below it."""
     eef, eq, grip, nut, nq = unpack(np.asarray(obs['proprio'])[-1])
     tracked = nut_tracker(obs)
     if tracked is None:
         return True
     h = handle_pos(tracked, nq)
-    return (float(np.linalg.norm(eef[:2] - h[:2])) <= cfg.grasp_xy_tol
-            and abs(float(eef[2] - h[2] - cfg.grasp_dz)) <= cfg.z_tol
+    return (float(np.linalg.norm(eef[:2] - h[:2])) <= cfg.grasp_xy_tol + slack
+            and abs(float(eef[2] - h[2] - cfg.grasp_dz)) <= cfg.z_tol + slack
             and abs(grasp_turn(eq, nq)) <= 2 * cfg.yaw_tol)
 
 
@@ -406,6 +412,8 @@ def main() -> None:
     ap.add_argument('--strategies', default='synchronous,noskip_async,aligned_skip')
     ap.add_argument('--deadline-s', type=float, default=40.0)
     ap.add_argument('--seat-rule', default='nearest', choices=['reach', 'nearest'])
+    ap.add_argument('--gate-k', type=float, default=2.0,
+                    help='gate position slack in tracker sigmas (0 = fixed tolerance)')
     ap.add_argument('--conveyor-range', type=float, default=0.06,
                     help='half range of the nut conveyor, m (keeps the nut in the task workspace)')
     ol.add_common_args(ap)
@@ -425,7 +433,9 @@ def main() -> None:
                                                     half_range=args.conveyor_range),
                  frame_fn=make_frames(tracker),
                  executor_kw={'roll_fn': square_roll, 'anchor_fn': nut_tracker,
-                              'diverged_fn': square_diverged, 'gate_fn': square_gate})
+                              'diverged_fn': square_diverged,
+                              'gate_fn': functools.partial(
+                                  square_gate, slack=args.gate_k * tracker.spec.sigma_mm * 1e-3)})
 
 
 if __name__ == '__main__':

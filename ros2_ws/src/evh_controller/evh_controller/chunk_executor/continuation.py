@@ -46,6 +46,14 @@ as at an episode reset) and replans from the measurement. That costs one round t
 back the reactivity that continuation gave away. The check runs at most once per `cooldown` ticks
 so a slow-to-clear condition cannot flush every tick.
 
+`inpaint=True` is the way to continue without a state model. The request carries the current
+observation unchanged and the queued actions as a hard inpainting prefix (the policy's
+`predict_inpaint`, RTC's guided sampling), and on arrival the first len(prefix) entries are
+dropped: what remains is the policy's own continuation of the queued plan, conditioned on a
+consistent observation. It needs no roll and no rolled proprio that contradicts the images, but
+it is capped by the horizon. A queue of n >= H entries leaves nothing to append, so past d = H
+it degrades toward waiting.
+
 `gate_fn(obs, action) -> bool` holds an open-to-close gripper transition until the arm is
 really at the grasp pose. It has the same semantics as anchored.py, which explains why a stale
 chunk needs it.
@@ -72,10 +80,14 @@ class ContinuationExecutor(ChunkExecutor):
                  recent_n: int = 20, cooldown: int = 10,
                  gate_fn: Callable[[dict, np.ndarray], bool] | None = None,
                  gate_timeout: int = 60,
-                 lead: int = 1, quantile: float = 0.9, delay_buffer: int = 50) -> None:
+                 lead: int = 1, quantile: float = 0.9, delay_buffer: int = 50,
+                 inpaint: bool = False) -> None:
         if not getattr(policy, 'absolute_actions', False):
             raise ValueError('continuation appends absolute targets; this policy emits deltas')
+        if inpaint and roll_fn is not None:
+            raise ValueError('inpainting continuation plans from the observation as is; no roll')
         self.roll_fn = roll_fn
+        self.inpaint = inpaint
         self.anchor_fn = anchor_fn
         self.diverged_fn = diverged_fn
         self.recent_n = recent_n
@@ -98,6 +110,7 @@ class ContinuationExecutor(ChunkExecutor):
     def _on_reset(self) -> None:
         self._queue: deque = deque()           # (action, anchor at its request or None)
         self._anchors: dict[int, np.ndarray | None] = {}
+        self._prefix_n: dict[int, int] = {}    # request tick -> entries given as prefix
         self.shifts: list[float] = []
         self._recent: deque = deque(maxlen=self.recent_n)
         self._since_flush = self.cooldown
@@ -124,8 +137,16 @@ class ContinuationExecutor(ChunkExecutor):
         return np.stack([self._shifted(obs, a, anchor, record=False) for a, anchor in self._queue])
 
     def _request(self, obs, t) -> None:
-        planned_from = obs if self.roll_fn is None else self.roll_fn(obs, self._queued(obs))
-        if self._issue(planned_from, t):
+        if self.inpaint:
+            q = self._queued(obs)
+            ok = (self._issue(obs, t, prefix=q, weights=np.ones(len(q))) if len(q)
+                  else self._issue(obs, t))
+            if ok:
+                self._prefix_n[t] = len(q)
+        else:
+            planned_from = obs if self.roll_fn is None else self.roll_fn(obs, self._queued(obs))
+            ok = self._issue(planned_from, t)
+        if ok:
             if self.anchor_fn is not None:
                 p = self.anchor_fn(obs)
                 self._anchors[t] = None if p is None else np.asarray(p, float).copy()
@@ -137,7 +158,8 @@ class ContinuationExecutor(ChunkExecutor):
             self._delays.append(max(0, t - arrival.t_issue))
             p = self._anchors.pop(arrival.t_issue, None)
             anchor = None if p is None else (arrival.t_issue, p)
-            for a in np.asarray(arrival.chunk):
+            skip = self._prefix_n.pop(arrival.t_issue, 0)
+            for a in np.asarray(arrival.chunk)[skip:]:
                 self._queue.append((np.asarray(a, dtype=np.float32), anchor))
 
         if self._pending_t is None and len(self._queue) <= self.forecast_delay() + self.lead:

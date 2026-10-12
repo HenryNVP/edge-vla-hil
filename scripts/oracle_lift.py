@@ -324,7 +324,8 @@ def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None
         anchored[_wait][_gate] M1, object anchoring on the no-skip queue (or on waiting);
                                _gate holds the gripper close until the arm is at the object
         continuation[...]      M3, plan from the queue's end and append; suffixes, combinable:
-                               _noroll (ablation), _anchored (+ M1), _check (+ divergence flush),
+                               _noroll (ablation), _inpaint (no roll: the queue as an inpainting
+                               prefix), _anchored (+ M1), _check (+ divergence flush),
                                _gate (+ close gating)
 
     roll/anchor/diverged default to the Lift testbed's; another task passes its own."""
@@ -340,7 +341,8 @@ def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None
     if name.startswith('continuation'):
         from evh_controller.chunk_executor.continuation import ContinuationExecutor
         return ContinuationExecutor(
-            worker, policy, roll_fn=None if 'noroll' in parts else roll_fn,
+            worker, policy, roll_fn=None if parts & {'noroll', 'inpaint'} else roll_fn,
+            inpaint='inpaint' in parts,
             anchor_fn=anchor_fn if 'anchored' in parts else None,
             diverged_fn=diverged_fn if 'check' in parts else None,
             gate_fn=gate_fn if 'gate' in parts else None)
@@ -443,9 +445,10 @@ def tracker_from(args) -> TrackerModel:
 
 
 def run_sweep(args, *, policy, make_world, frame_fn, tracker: TrackerModel, deadline: int,
-              executor_kw: dict | None = None) -> None:
+              executor_kw: dict | None = None, stack_fn=None) -> None:
     """Delay x object speed x strategy, scene k identical in every cell. `make_world(speed)`
-    returns the (wrapped) env; `executor_kw` passes the task's roll/anchor/diverged functions."""
+    returns the (wrapped) env; `executor_kw` passes the task's roll/anchor/diverged functions;
+    `stack_fn` turns the frame history into the policy's obs (default: proprio only)."""
     from evh_plant.env_factory import hold_action
     from sil_step import StepWorker, TraceDelay, make_delay, run_episode
     executor_kw = executor_kw or {}
@@ -470,7 +473,7 @@ def run_sweep(args, *, policy, make_world, frame_fn, tracker: TrackerModel, dead
                         ep = run_episode(env, obs, policy, ex, worker, deadline_ticks=deadline,
                                          world_speed=args.world_speed, absolute=True,
                                          is_success=lambda e: bool(e._check_success()),
-                                         frame_fn=frame_fn, stack_fn=stack,
+                                         frame_fn=frame_fn, stack_fn=stack_fn or stack,
                                          hold_fn=lambda o: hold_action(o, True, 7))
                         ok += ep.success
                         w.writerow({'strategy': strat, 'delay': d, 'speed': speed,

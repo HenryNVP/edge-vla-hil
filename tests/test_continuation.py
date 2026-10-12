@@ -195,3 +195,26 @@ def test_roll_sees_queued_actions_with_their_anchoring_shift():
         ex.step({'t': t, 'obj': np.array([0.0, 0.01 * t, 0.0])}, t)
     # queued open actions are reported shifted by the object's motion since their request
     assert any(v is not None and v > 0.0 for v in seen)
+
+
+def test_inpaint_sends_the_queue_as_prefix_and_appends_only_the_tail():
+    p = Policy()
+    prefixes = []
+
+    class InpaintWorker(Worker):
+        def try_request(self, obs, t_issue, epoch, prefix=None, weights=None):
+            ok = super().try_request(obs, t_issue, epoch, prefix, weights)
+            if ok:
+                prefixes.append(None if prefix is None else (len(prefix), float(weights.min())))
+            return ok
+
+    ex = ContinuationExecutor(InpaintWorker(p, 3), p, roll_fn=None, inpaint=True)
+    seq = [x for x in _played(ex, 60) if x is not None]
+    assert prefixes[0] is None                         # empty queue: a plain request
+    n = [k for k, _ in prefixes[1:]]
+    assert all(0 < k < H for k in n) and all(w == 1.0 for _, w in prefixes[1:])
+    # chunk c + 1 is entered at entry n_c (its first n_c entries re-planned the prefix)
+    starts = [x % 100 for i, x in enumerate(seq) if i and x // 100 != seq[i - 1] // 100]
+    assert starts == n[:len(starts)]
+    with pytest.raises(ValueError):
+        ContinuationExecutor(Worker(p, 3), p, roll_fn=lambda o, q: o, inpaint=True)

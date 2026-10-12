@@ -103,3 +103,14 @@ def test_a_gripper_closed_on_nothing_reopens_instead_of_closing_again():
     assert sq.start_phase(at_handle, eq, [0.0005, -0.0005], nut, q, CFG) == sq.APPROACH
     c = sq.plan_chunk(at_handle, eq, [0.0005, -0.0005], nut, q, CFG)
     assert c[0, 6] == -1.0                                 # opens first
+
+
+def test_gate_slack_admits_a_close_a_fixed_tolerance_refuses():
+    nut = np.array([-0.1, 0.15, 0.83])
+    q = nut_quat(0.0)
+    eq = sq.ol_quat_mul(sq.axisangle_z(sq.grasp_turn(DOWN, q)), DOWN)
+    eef = sq.handle_pos(nut, q) + [0.015, 0.0, CFG.grasp_dz]       # 15 mm off in x
+    s = np.concatenate([eef, eq, [0.04, -0.04], nut, q, nut, [1.0]]).astype(np.float32)
+    obs = {'proprio': s[None]}
+    assert not sq.square_gate(obs, None, CFG)
+    assert sq.square_gate(obs, None, CFG, slack=0.02)
