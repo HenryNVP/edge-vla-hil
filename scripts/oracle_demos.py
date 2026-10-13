@@ -99,7 +99,7 @@ def write(args) -> None:
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     from robomimic_to_lerobot import ACTION_MODE_FILE, STATE_KEYS, build_features, state_names
-    files = sorted(glob.glob(os.path.join(args.npz_dir, 'ep_*.npz')),
+    files = sorted((f for d in args.npz_dir.split(',') for f in glob.glob(os.path.join(d, 'ep_*.npz'))),
                    key=lambda f: int(Path(f).stem.split('_')[1]))
     if args.max_episodes:
         files = files[:args.max_episodes]
@@ -150,7 +150,7 @@ def main() -> None:
     c.add_argument('--max-s', type=float, default=40.0)
     c.add_argument('--conveyor-range', type=float, default=0.06)
     w = sub.add_parser('write')
-    w.add_argument('--npz-dir', required=True)
+    w.add_argument('--npz-dir', required=True, help='one or more, comma-separated')
     w.add_argument('--out', required=True)
     w.add_argument('--max-episodes', type=int, default=0)
     args = ap.parse_args()
