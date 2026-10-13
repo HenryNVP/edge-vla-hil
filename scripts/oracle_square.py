@@ -417,6 +417,7 @@ def main() -> None:
     ap.add_argument('--conveyor-range', type=float, default=0.06,
                     help='half range of the nut conveyor, m (keeps the nut in the task workspace)')
     ap.add_argument('--refiner', default='', help="refiner weights (refiner.py) for 'refined'")
+    ap.add_argument('--refiner-lead', type=int, default=0, help='predicted entry whose position is played')
     ol.add_common_args(ap)
     args = ap.parse_args()
     cfg = SquareConfig(chunk_size=args.chunk, seat_rule=args.seat_rule)
@@ -426,7 +427,8 @@ def main() -> None:
     refine_fn = None
     if args.refiner:
         import refiner
-        refine_fn = refiner.make_refine_fn(refiner.Refiner(args.refiner), nut_tracker)
+        refine_fn = refiner.make_refine_fn(refiner.Refiner(args.refiner), nut_tracker,
+                                            args.refiner_lead)
 
     def held(o):
         return is_held(o['robot0_eef_pos'], o['robot0_gripper_qpos'], o['SquareNut_pos'],

@@ -22,6 +22,8 @@ Three stages:
              execution actually reaches, misses and recoveries included.
     train    pairs (t - k, i, t) from the recorded episodes -> MLP (torch), saved as plain numpy
              weights so the robot side needs no torch.
+             With --refiner and --strategies refined, a DAgger round: the states the refiner
+             itself reaches, labelled by the planner as before.
     (eval)   oracle_square.py / dp_mech.py --refiner <weights.npz> --strategies refined
 
 Importable without torch or robosuite: `features`, `Refiner`, `make_refine_fn`.
@@ -80,24 +82,27 @@ class Refiner:
         return np.concatenate([pos, h[K * 3:]])          # positions (m), gripper logits
 
 
-def refine(model, proprio9, remaining, o_req, o_now, age) -> np.ndarray:
+def refine(model, proprio9, remaining, o_req, o_now, age, lead: int = 0) -> np.ndarray:
+    """The action: position of predicted entry `lead` (a fresh plan's entry 0 is one step from
+    the EE, and the OSC closes ~30% of the error per tick, so commanding it every tick crawls;
+    a stale chunk's targets lead the arm by a few steps), gripper of entry 0."""
     out = model(features(proprio9, remaining, o_req, o_now, age))
     a = np.array(remaining[0], dtype=np.float32, copy=True)
-    a[:3] = np.asarray(proprio9[:3], np.float32) + out[:3]
+    a[:3] = np.asarray(proprio9[:3], np.float32) + out[lead * 3:lead * 3 + 3]
     a[6] = 1.0 if out[K * 3] > 0 else -1.0
     return a
 
 
-def make_refine_fn(model, anchor_fn):
+def make_refine_fn(model, anchor_fn, lead: int = 0):
     """The executor's refine_fn(obs, remaining, chunk_anchor, t). No tracker fix, or a chunk
     without an anchor: the object is taken as not having moved."""
     def refine_fn(obs, remaining, chunk_anchor, t):
         p9 = np.asarray(obs['proprio'])[-1][:9]
         now = anchor_fn(obs)
         if chunk_anchor is None or now is None:
-            return refine(model, p9, remaining, np.zeros(3), np.zeros(3), 0)
+            return refine(model, p9, remaining, np.zeros(3), np.zeros(3), 0, lead)
         t_req, o_req = chunk_anchor
-        return refine(model, p9, remaining, o_req, now, min(t - t_req, MAX_AGE))
+        return refine(model, p9, remaining, o_req, now, min(t - t_req, MAX_AGE), lead)
     return refine_fn
 
 
@@ -137,6 +142,9 @@ def collect(args) -> None:
     deadline = int(args.deadline_s * args.hz)
     base = sq.make_env(args.hz, deadline + 10)
     episodes: list = []
+    refine_fn = None
+    if args.refiner:                       # DAgger: states the refiner itself reaches
+        refine_fn = make_refine_fn(Refiner(args.refiner), sq.nut_tracker, args.refiner_lead)
 
     def held(o):
         return sq.is_held(o['robot0_eef_pos'], o['robot0_gripper_qpos'], o['SquareNut_pos'],
@@ -149,7 +157,8 @@ def collect(args) -> None:
                      held_fn=held, half_range=args.conveyor_range), episodes),
                  frame_fn=sq.make_frames(tracker),
                  executor_kw={'roll_fn': sq.square_roll, 'anchor_fn': sq.nut_tracker,
-                              'diverged_fn': sq.square_diverged, 'gate_fn': sq.square_gate})
+                              'diverged_fn': sq.square_diverged, 'gate_fn': sq.square_gate,
+                              'refine_fn': refine_fn})
     lens = np.array([len(e) for e in episodes])
     np.savez_compressed(npz, states=np.concatenate(episodes), lens=lens)
     print(f'{len(episodes)} episodes, {lens.sum()} states -> {npz}')
@@ -245,6 +254,8 @@ def main() -> None:
     c.add_argument('--strategies', default='anchored,anchored_gate')
     c.add_argument('--deadline-s', type=float, default=40.0)
     c.add_argument('--conveyor-range', type=float, default=0.06)
+    c.add_argument('--refiner', default='', help="weights for 'refined' (a DAgger round)")
+    c.add_argument('--refiner-lead', type=int, default=1)
     t = sub.add_parser('train')
     t.add_argument('--data', required=True, help='directory of collect npz files')
     t.add_argument('--out', required=True)

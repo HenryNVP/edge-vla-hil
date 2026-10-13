@@ -132,6 +132,7 @@ def main() -> None:
     ap.add_argument('--roll-lag', type=float, default=0.3,
                     help='first-order lag of the proprio roll per tick (1 = jump to targets)')
     ap.add_argument('--refiner', default='', help="refiner weights (refiner.py) for 'refined'")
+    ap.add_argument('--refiner-lead', type=int, default=0, help='predicted entry whose position is played')
     ol.add_common_args(ap)
     args = ap.parse_args()
     if args.hz != 20.0:
@@ -159,7 +160,8 @@ def main() -> None:
     refine_fn = None
     if args.refiner:
         import refiner
-        refine_fn = refiner.make_refine_fn(refiner.Refiner(args.refiner), object_tracker)
+        refine_fn = refiner.make_refine_fn(refiner.Refiner(args.refiner), object_tracker,
+                                            args.refiner_lead)
 
     if args.task == 'square':
         import oracle_square as sq
