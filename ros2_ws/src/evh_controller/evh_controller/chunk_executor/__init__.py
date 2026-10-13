@@ -9,6 +9,7 @@ without touching the ROS2 node.
     baselines.py  synchronous | naive_async | temporal_ensemble  (prior work, kept comparable)
     rtc.py        rtc | network_aware                            (RTC + the Wedge-B forecast)
     adaptive.py   coverage_aware | rtc_noskip | switch_only      (overlap or wait; never skip)
+                  rtc_skip                                       (ablation: rtc_noskip, skipping)
                   noskip_async                                   (baseline: LeRobot-style queue)
     anchored.py   AnchoredExecutor: pre-grasp actions follow a tracked object (paper 2, M1);
                   needs an `anchor_fn`, so it is constructed directly, not via make_executor
@@ -29,6 +30,7 @@ from evh_controller.chunk_executor.adaptive import (
     CoverageAwareExecutor,
     NoSkipAsyncExecutor,
     NoSkipRTCExecutor,
+    RTCSkipExecutor,
     SwitchOnlyExecutor,
 )
 from evh_controller.chunk_executor.anchored import AnchoredExecutor  # noqa: F401
@@ -49,7 +51,8 @@ _REGISTRY = {
     cls.name: cls for cls in (
         SynchronousExecutor, NaiveAsyncExecutor, TemporalEnsembleExecutor,
         BIDExecutor, RTCExecutor, NetworkAwareExecutor,
-        CoverageAwareExecutor, NoSkipRTCExecutor, SwitchOnlyExecutor, NoSkipAsyncExecutor,
+        CoverageAwareExecutor, NoSkipRTCExecutor, RTCSkipExecutor, SwitchOnlyExecutor,
+        NoSkipAsyncExecutor,
     )
 }
 
@@ -95,6 +98,7 @@ __all__ = [
     'NoSkipAsyncExecutor',
     'NoSkipRTCExecutor',
     'RTCExecutor',
+    'RTCSkipExecutor',
     'SwitchOnlyExecutor',
     'SynchronousExecutor',
     'TemporalEnsembleExecutor',

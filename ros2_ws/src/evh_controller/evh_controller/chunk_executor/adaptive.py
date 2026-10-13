@@ -187,6 +187,17 @@ class NoSkipRTCExecutor(CoverageAwareExecutor):
         super().__init__(worker, policy, **kw)
 
 
+class RTCSkipExecutor(CoverageAwareExecutor):
+    """Ablation: rtc_noskip with RTC's tick-based join. Same forecast, guidance and request
+    schedule, so rtc_skip vs rtc_noskip isolates the join (`rtc` also differs in all three)."""
+    name = 'rtc_skip'
+
+    def __init__(self, worker, policy, **kw) -> None:
+        kw.setdefault('rule', 'aligned')
+        kw.setdefault('reindex', False)
+        super().__init__(worker, policy, **kw)
+
+
 class SwitchOnlyExecutor(CoverageAwareExecutor):
     """Ablation: the rate-based switch, with RTC's tick-based join (skips when starved)."""
     name = 'switch_only'

@@ -10,6 +10,7 @@ import pytest
 from evh_controller.chunk_executor import (
     CoverageAwareExecutor,
     NoSkipRTCExecutor,
+    RTCSkipExecutor,
     SwitchOnlyExecutor,
     make_executor,
 )
@@ -118,7 +119,7 @@ def test_starved_time_aligned_joins_where_the_actions_left_off():
     Starvation-aware alignment joins at the count of actions actually played; RTC's join skips
     to entry d, dropping the entries meant for the starved ticks."""
     noskip, _ = _make(NoSkipRTCExecutor, delays=(6,))
-    skip, _ = _make(CoverageAwareExecutor, delays=(6,), rule='aligned', reindex=False)
+    skip, _ = _make(RTCSkipExecutor, delays=(6,))
     joins = {}
     for label, ex in (('noskip', noskip), ('skip', skip)):
         played = [v for v in _run(ex, 80) if v is not None]
@@ -151,12 +152,20 @@ def test_the_half_rule_ablation_switches_on_the_forecast():
     assert set(ex.mode_log) == {ALIGNED}
 
 
+def test_rtc_skip_differs_from_rtc_noskip_only_in_the_join():
+    skip, _ = _make(RTCSkipExecutor, delays=(2,))
+    noskip, _ = _make(NoSkipRTCExecutor, delays=(2,))
+    assert skip.reindex is False and noskip.reindex is True
+    for attr in ('rule', 'guided', 'quantile', 'delay_buffer', 's_min', 'margin'):
+        assert getattr(skip, attr) == getattr(noskip, attr), attr
+
+
 def test_switch_only_is_the_switch_with_rtc_joins():
     ex, _ = _make(SwitchOnlyExecutor, delays=(2,))
     assert ex.reindex is False and ex.rule == 'rate'
 
 
-@pytest.mark.parametrize('name', ['coverage_aware', 'rtc_noskip', 'switch_only',
+@pytest.mark.parametrize('name', ['coverage_aware', 'rtc_noskip', 'rtc_skip', 'switch_only',
                                   'noskip_async'])
 def test_registered_and_resettable(name):
     policy = IndexedPolicy()
