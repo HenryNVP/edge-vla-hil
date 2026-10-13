@@ -35,3 +35,14 @@ def test_ts_output_is_weighted_mean_of_consequents(tmp_path):
     assert np.isclose(g.logit(f), w @ q / w.sum())
     assert q.min() <= g.logit(f * 50) <= q.max()
     assert g(f) == (g.logit(f) > 0.5)
+
+
+def test_raw_state_layout():
+    o = {'robot0_eef_pos': [1, 2, 3], 'robot0_eef_quat': [0, 0, 0, 1],
+         'robot0_gripper_qpos': [0.04, -0.04], 'SquareNut_pos': [4, 5, 6],
+         'SquareNut_quat': [0, 0, 1, 0]}
+    p = {**o, 'robot0_eef_pos': [0, 0, 0]}
+    r = fg.raw_state(o, p, np.arange(7))
+    assert r.shape == (16 + 16 + 7,)
+    assert np.allclose(r[0:3], [1, 2, 3]) and np.allclose(r[16:19], 0)
+    assert np.allclose(r[9:12], [4, 5, 6]) and np.allclose(r[32:], np.arange(7))
