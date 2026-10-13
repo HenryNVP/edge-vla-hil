@@ -109,7 +109,8 @@ def main() -> None:
                                             'continuation_inpaint')
     ap.add_argument('--deadline-s', type=float, default=20.0)
     ap.add_argument('--denoise-steps', type=int, default=4, help='paper-1 cells used 4')
-    ap.add_argument('--weights', default='', help='default: the task checkpoint')
+    ap.add_argument('--backend', default='dp', help='dp | act | any make_policy backend')
+    ap.add_argument('--weights', default='', help='default: the task\'s DP checkpoint')
     ap.add_argument('--roll-lag', type=float, default=0.3,
                     help='first-order lag of the proprio roll per tick (1 = jump to targets)')
     ol.add_common_args(ap)
@@ -121,10 +122,15 @@ def main() -> None:
     from evh_controller.policy import make_policy
     from evh_plant.env_factory import EnvSpec, build_env
     run_manifest.record(args.out, {'kind': 'dp_mech', 'config': vars(args)})
+    # (the name stays dp_mech: DP was first; --backend act runs the same sweep on ACT)
 
     env_name, ckpt, pos_key, quat_key, joint, half_range, closed = TASKS[args.task]
-    policy = make_policy('dp', args.weights or os.path.join(_REPO, 'checkpoints', ckpt),
+    if args.backend != 'dp' and not args.weights:
+        sys.exit(f'--backend {args.backend} needs --weights')
+    policy = make_policy(args.backend, args.weights or os.path.join(_REPO, 'checkpoints', ckpt),
                          denoise_steps=args.denoise_steps)
+    if not policy.absolute_actions:
+        sys.exit('the mechanism executors shift absolute targets; this checkpoint emits deltas')
     tracker = ol.tracker_from(args)
     deadline = int(args.deadline_s * args.hz)
     base = build_env(EnvSpec(env_name=env_name, action_hz=args.hz,
