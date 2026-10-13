@@ -70,6 +70,22 @@ def object_tracker(obs: dict):
     return o[7:10] if o[10] > 0.5 else None
 
 
+def oracle_layout(obs: dict, task: str) -> dict:
+    """The oracle testbeds' proprio layout, rebuilt from the policy's proprio and 'object', so
+    their gates run unchanged. Square: [proprio(9), nut(3), nut quat(4), tracked(3), ok(1)] is
+    exactly proprio + object; Lift has no object quaternion."""
+    o = obs['object']
+    tail = o if task == 'square' else np.concatenate([o[0:3], o[7:11]])
+    return {'proprio': np.concatenate([np.asarray(obs['proprio'])[-1], tail])[None]}
+
+
+def task_gate(obs: dict, action, task: str, slack: float = 0.0) -> bool:
+    if task == 'square':
+        import oracle_square as sq
+        return sq.square_gate(oracle_layout(obs, task), action, slack=slack)
+    return ol.lift_gate(oracle_layout(obs, task), action)
+
+
 def proprio_roll(obs: dict, queued: np.ndarray, closed_qpos: float = 0.02,
                  lag: float = 0.3) -> dict:
     """Predict the proprio history at the end of the queue: the arm follows each queued target
@@ -111,6 +127,8 @@ def main() -> None:
     ap.add_argument('--denoise-steps', type=int, default=4, help='paper-1 cells used 4')
     ap.add_argument('--backend', default='dp', help='dp | act | any make_policy backend')
     ap.add_argument('--weights', default='', help='default: the task\'s DP checkpoint')
+    ap.add_argument('--gate-k', type=float, default=2.0,
+                    help='close gate position slack in tracker sigmas (Square)')
     ap.add_argument('--roll-lag', type=float, default=0.3,
                     help='first-order lag of the proprio roll per tick (1 = jump to targets)')
     ol.add_common_args(ap)
@@ -153,7 +171,10 @@ def main() -> None:
                  frame_fn=make_frames(tracker, pos_key, quat_key), stack_fn=stack,
                  executor_kw={'roll_fn': functools.partial(proprio_roll, closed_qpos=closed,
                                                        lag=args.roll_lag),
-                              'anchor_fn': object_tracker})
+                              'anchor_fn': object_tracker,
+                              'gate_fn': functools.partial(
+                                  task_gate, task=args.task,
+                                  slack=args.gate_k * tracker.spec.sigma_mm * 1e-3)})
 
 
 if __name__ == '__main__':

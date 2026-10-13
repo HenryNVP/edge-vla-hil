@@ -61,3 +61,17 @@ def test_object_tracker_reads_the_extra_not_the_proprio():
     assert dp_mech.object_tracker(obs) is None
     obs['object'][7:11] = [0.1, 0.2, 0.8, 1.0]
     assert np.allclose(dp_mech.object_tracker(obs), [0.1, 0.2, 0.8])
+
+
+def test_oracle_layout_feeds_the_square_gate_unchanged():
+    import oracle_square as sq
+    nut = np.array([-0.1, 0.15, 0.83])
+    q = np.array([0.0, 0.0, 0.0, 1.0])
+    eq = sq.ol_quat_mul(sq.axisangle_z(sq.grasp_turn(DOWN, q)), DOWN)
+    eef = sq.handle_pos(nut, q) + [0.0, 0.0, sq.SquareConfig().grasp_dz]
+    obs = {'proprio': np.concatenate([eef, eq, [0.04, -0.04]])[None].astype(np.float32),
+           'object': np.concatenate([nut, q, nut, [1.0]]).astype(np.float32)}
+    assert dp_mech.oracle_layout(obs, 'square')['proprio'].shape == (1, 20)
+    assert dp_mech.task_gate(obs, None, 'square')
+    obs['object'][7] += 0.03                                   # tracked nut 3 cm away
+    assert not dp_mech.task_gate(obs, None, 'square')
