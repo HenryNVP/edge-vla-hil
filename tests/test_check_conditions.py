@@ -55,6 +55,15 @@ def test_a_round_trip_off_the_injected_latency_fails(tmp_path):
     assert main([p]) == 1
 
 
+def test_a_fleet_log_numbers_scenes_per_robot(tmp_path):
+    rows = [dict(condition='a', robot=i, scene=k, success=1, wall_s=9.0) for i in range(2) for k in range(3)]
+    p = _write(tmp_path / 'x.episodes.csv', ['condition', 'robot', 'scene', 'success', 'wall_s'], rows)
+    assert main([p]) == 0
+    rows.append(dict(condition='a', robot=1, scene=2, success=1, wall_s=9.0))
+    p = _write(tmp_path / 'y.episodes.csv', ['condition', 'robot', 'scene', 'success', 'wall_s'], rows)
+    assert main([p]) == 1
+
+
 def test_a_condition_with_missing_episodes_fails(tmp_path):
     rows = [dict(condition='a', scene=k, success=1, wall_s=9.0) for k in range(30)]
     rows += [dict(condition='b', scene=k, success=1, wall_s=9.0) for k in range(20)]

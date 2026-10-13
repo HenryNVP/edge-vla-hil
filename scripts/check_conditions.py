@@ -124,7 +124,10 @@ def check_episodes(path: str, rows: list[dict], rep: Report, expect: int | None)
     rep.add(FAIL if short else PASS, path, f'every condition has {want} episodes',
             f'{len(short)} short, e.g. {next(iter(short.items()))}' if short
             else f'{len(counts)} conditions')
-    dup = [c for c, s in by.items() if len(s) != len(set(s)) or sorted(s) != list(range(len(s)))]
+    per = defaultdict(list)                    # a fleet log numbers scenes per robot
+    for r in rows:
+        per[(r['condition'], r.get('robot', ''))].append(int(r['scene']))
+    dup = [c for (c, _), s in per.items() if len(s) != len(set(s)) or sorted(s) != list(range(len(s)))]
     rep.add(FAIL if dup else PASS, path, 'scenes 0..n-1, each once',
             f'{dup[:2]}' if dup else '')
     if 'sim_s' not in rows[0]:
