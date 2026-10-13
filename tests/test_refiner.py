@@ -84,3 +84,23 @@ def test_logging_refine_fn_records_features_and_oracle_layout(tmp_path):
     assert z['X'].shape == (2, rf.N_FEATURES) and z['S'].shape == (2, 16)
     assert np.allclose(z['X'][0][rf.H * 4:rf.H * 4 + 3], [0, 0.05, 0])     # tracked - anchor
     assert np.allclose(z['S'][0][9:16], obj[:7])
+
+
+def test_chunk_labeler_records_fresh_chunks_per_episode(tmp_path):
+    class Pol:
+        def predict(self, obs):
+            return np.full((20, 7), obs['proprio'][-1][0], np.float32)
+
+    def stack(hist, needs_wrist=True):
+        return {'proprio': np.asarray(hist)[:, :9], 'object': np.arange(11, dtype=np.float32)}
+
+    lab = rf.ChunkLabeler(Pol(), stack, str(tmp_path / 'c.npz'))
+    for ep, n in enumerate((3, 2)):
+        hist = []
+        for t in range(n):
+            hist.append(np.full(9, 10 * ep + t, np.float32))
+            lab(hist)
+    lab.save()
+    z = np.load(tmp_path / 'c.npz')
+    assert list(z['lens']) == [3, 2] and z['chunks'].shape == (5, rf.H, 7)
+    assert z['chunks'][3, 0, 0] == 10 and np.allclose(z['states'][0, 9:], np.arange(7))

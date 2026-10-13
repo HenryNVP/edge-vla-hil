@@ -133,6 +133,8 @@ def main() -> None:
                     help='first-order lag of the proprio roll per tick (1 = jump to targets)')
     ap.add_argument('--refiner', default='', help="refiner weights (refiner.py) for 'refined'")
     ap.add_argument('--refiner-log', default='', help="record the refiner's inputs (npz) for training")
+    ap.add_argument('--label-log', default='',
+                    help="label every tick with the policy's fresh chunk (npz), refiner training")
     ap.add_argument('--refiner-lead', type=int, default=0, help='predicted entry whose position is played')
     ol.add_common_args(ap)
     args = ap.parse_args()
@@ -175,11 +177,15 @@ def main() -> None:
     else:
         held = None                     # MovingCube's default: the Lift cube in the hand
 
+    stack_fn = stack
+    if args.label_log:
+        import refiner
+        stack_fn = refiner.ChunkLabeler(policy, stack, args.label_log)
     ol.run_sweep(args, policy=policy, tracker=tracker, deadline=deadline,
                  make_world=lambda v: ol.MovingCube(base, v, args.hz, joint=joint,
                                                     pos_key=pos_key, held_fn=held,
                                                     half_range=half_range),
-                 frame_fn=make_frames(tracker, pos_key, quat_key), stack_fn=stack,
+                 frame_fn=make_frames(tracker, pos_key, quat_key), stack_fn=stack_fn,
                  executor_kw={'roll_fn': functools.partial(proprio_roll, closed_qpos=closed,
                                                        lag=args.roll_lag),
                               'anchor_fn': object_tracker,
@@ -189,6 +195,8 @@ def main() -> None:
                               'refine_fn': refine_fn})
     if args.refiner_log:
         refine_fn.save()
+    if args.label_log:
+        stack_fn.save()
 
 
 if __name__ == '__main__':

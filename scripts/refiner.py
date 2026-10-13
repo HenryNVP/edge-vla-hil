@@ -132,6 +132,36 @@ def logging_refine_fn(refine_fn, path: str, every: int = 50):
     return fn
 
 
+class ChunkLabeler:
+    """Wraps the harness's stack_fn (called once per tick) to label every tick with the cloud
+    policy's own FRESH chunk: policy.predict(obs_t), plus the oracle layout. Pairs are then
+    (stale = chunk at t - k, fresh = chunk at t): the refiner learns to predict what the cloud
+    would say now, in the cloud's own style (its lead, its close timing), with no privileged
+    planner. A new `hist` deque marks a new episode (held, so its id cannot be reused)."""
+
+    def __init__(self, policy, stack_fn, path: str, every: int = 5) -> None:
+        self.policy, self.stack_fn, self.path, self.every = policy, stack_fn, path, every
+        self._hist, self.C, self.S, self.lens = None, [], [], []
+
+    def __call__(self, hist, needs_wrist: bool = True):
+        obs = self.stack_fn(hist, needs_wrist)
+        if hist is not self._hist:
+            self._hist = hist
+            self.lens.append(0)
+            if len(self.lens) % self.every == 1 and len(self.lens) > 1:
+                self.save()
+        p9 = np.asarray(obs['proprio'])[-1][:9]
+        self.C.append(np.asarray(self.policy.predict(obs), np.float32)[:H])
+        self.S.append(np.concatenate([p9, np.asarray(obs['object'])[0:7]]).astype(np.float32))
+        self.lens[-1] += 1
+        return obs
+
+    def save(self) -> None:
+        if self.C:
+            np.savez_compressed(self.path, chunks=np.stack(self.C), states=np.stack(self.S),
+                                lens=np.array(self.lens))
+
+
 # ------------------------------------------------------------------ collect
 class Recorder:
     """Wraps the world; records the oracle layout [eef, quat, fingers, nut, nut quat] per tick."""
@@ -191,7 +221,10 @@ def collect(args) -> None:
 
 
 # ------------------------------------------------------------------ train
-def make_pairs(states: np.ndarray, lens: np.ndarray, per_tick: int, seed: int = 0):
+def make_pairs(states: np.ndarray, lens: np.ndarray, per_tick: int, seed: int = 0,
+               chunks: np.ndarray | None = None):
+    """(stale, fresh) pairs per episode; the plan at each tick is the planner's, or `chunks`
+    (the cloud policy's own, ChunkLabeler)."""
     import oracle_square as sq
     cfg = sq.SquareConfig(chunk_size=H)
     rng = np.random.default_rng(seed)
@@ -199,8 +232,9 @@ def make_pairs(states: np.ndarray, lens: np.ndarray, per_tick: int, seed: int = 
     start = 0
     for n in lens:
         ep = states[start:start + n]
+        plans = (chunks[start:start + n] if chunks is not None
+                 else [sq.plan_chunk(*sq.unpack(s), cfg) for s in ep])
         start += n
-        plans = [sq.plan_chunk(*sq.unpack(s), cfg) for s in ep]
         for t in range(1, n):
             for _ in range(per_tick):
                 k = int(rng.integers(1, min(MAX_AGE, t) + 1))
@@ -223,7 +257,8 @@ def train(args) -> None:
             Y = np.repeat(np.stack([targets(s[:9], sq.plan_chunk(*sq.unpack(s), cfg))
                                     for s in z['S']]), args.log_weight, axis=0)
         else:
-            X, Y = make_pairs(z['states'], z['lens'], args.per_tick, seed=j)
+            X, Y = make_pairs(z['states'], z['lens'], args.per_tick, seed=j,
+                              chunks=z['chunks'] if 'chunks' in z else None)
         Xs.append(X)
         Ys.append(Y)
         print(f'{f}: {len(X)} pairs', flush=True)
