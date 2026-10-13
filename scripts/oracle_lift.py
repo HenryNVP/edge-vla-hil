@@ -316,7 +316,7 @@ def make_env(control_hz: float, horizon: int):
 
 
 def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None,
-                      diverged_fn=None, gate_fn=None):
+                      diverged_fn=None, gate_fn=None, refine_fn=None):
     """The repo's executors, plus the testbed's:
 
         aligned_skip           time-aligned, unguided, tick-based join (paper 1's skipping
@@ -327,6 +327,9 @@ def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None
                                _noroll (ablation), _inpaint (no roll: the queue as an inpainting
                                prefix), _anchored (+ M1), _check (+ divergence flush),
                                _gate (+ close gating)
+        refined                Phase D, the no-skip queue with every action from a learned
+                               local refiner (`refine_fn`, refiner.make_refine_fn) in place of
+                               anchoring and the gate
 
     roll/anchor/diverged default to the Lift testbed's; another task passes its own."""
     from evh_controller.chunk_executor import (AnchoredExecutor, CoverageAwareExecutor,
@@ -346,6 +349,11 @@ def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None
             anchor_fn=anchor_fn if 'anchored' in parts else None,
             diverged_fn=diverged_fn if 'check' in parts else None,
             gate_fn=gate_fn if 'gate' in parts else None)
+    if name == 'refined':
+        from evh_controller.chunk_executor.refined import RefinedExecutor
+        if refine_fn is None:
+            raise ValueError("'refined' needs a refine_fn (--refiner weights)")
+        return RefinedExecutor(worker, policy, anchor_fn=anchor_fn, refine_fn=refine_fn)
     if name.startswith('anchored'):
         rule = 'waiting' if 'wait' in parts else 'aligned'
         return AnchoredExecutor(worker, policy, anchor_fn=anchor_fn, rule=rule,

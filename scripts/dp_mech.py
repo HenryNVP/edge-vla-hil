@@ -131,6 +131,7 @@ def main() -> None:
                     help='close gate position slack in tracker sigmas (Square)')
     ap.add_argument('--roll-lag', type=float, default=0.3,
                     help='first-order lag of the proprio roll per tick (1 = jump to targets)')
+    ap.add_argument('--refiner', default='', help="refiner weights (refiner.py) for 'refined'")
     ol.add_common_args(ap)
     args = ap.parse_args()
     if args.hz != 20.0:
@@ -155,6 +156,11 @@ def main() -> None:
                              max_episode_s=args.deadline_s + 1.0, seed=args.seed,
                              absolute_actions=True)).env
 
+    refine_fn = None
+    if args.refiner:
+        import refiner
+        refine_fn = refiner.make_refine_fn(refiner.Refiner(args.refiner), object_tracker)
+
     if args.task == 'square':
         import oracle_square as sq
 
@@ -174,7 +180,8 @@ def main() -> None:
                               'anchor_fn': object_tracker,
                               'gate_fn': functools.partial(
                                   task_gate, task=args.task,
-                                  slack=args.gate_k * tracker.spec.sigma_mm * 1e-3)})
+                                  slack=args.gate_k * tracker.spec.sigma_mm * 1e-3),
+                              'refine_fn': refine_fn})
 
 
 if __name__ == '__main__':

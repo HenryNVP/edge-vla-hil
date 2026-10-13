@@ -416,12 +416,17 @@ def main() -> None:
                     help='gate position slack in tracker sigmas (0 = fixed tolerance)')
     ap.add_argument('--conveyor-range', type=float, default=0.06,
                     help='half range of the nut conveyor, m (keeps the nut in the task workspace)')
+    ap.add_argument('--refiner', default='', help="refiner weights (refiner.py) for 'refined'")
     ol.add_common_args(ap)
     args = ap.parse_args()
     cfg = SquareConfig(chunk_size=args.chunk, seat_rule=args.seat_rule)
     tracker = ol.tracker_from(args)
     deadline = int(args.deadline_s * args.hz)
     base = make_env(args.hz, deadline + 10)
+    refine_fn = None
+    if args.refiner:
+        import refiner
+        refine_fn = refiner.make_refine_fn(refiner.Refiner(args.refiner), nut_tracker)
 
     def held(o):
         return is_held(o['robot0_eef_pos'], o['robot0_gripper_qpos'], o['SquareNut_pos'],
@@ -435,7 +440,8 @@ def main() -> None:
                  executor_kw={'roll_fn': square_roll, 'anchor_fn': nut_tracker,
                               'diverged_fn': square_diverged,
                               'gate_fn': functools.partial(
-                                  square_gate, slack=args.gate_k * tracker.spec.sigma_mm * 1e-3)})
+                                  square_gate, slack=args.gate_k * tracker.spec.sigma_mm * 1e-3),
+                              'refine_fn': refine_fn})
 
 
 if __name__ == '__main__':
