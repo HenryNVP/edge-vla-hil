@@ -106,6 +106,32 @@ def make_refine_fn(model, anchor_fn, lead: int = 0):
     return refine_fn
 
 
+def logging_refine_fn(refine_fn, path: str, every: int = 50):
+    """Wraps a refine_fn to record its inputs on the robot: features and the oracle layout
+    [proprio(9), object(3), object quat(4)] from obs['object'], written to `path` every `every`
+    calls. The planner labels them in `train`, so the refiner can learn on chunks from the real
+    cloud policy (ACT), not only the planner's."""
+    X, S = [], []
+
+    def save():
+        np.savez(path, X=np.stack(X), S=np.stack(S))
+
+    def fn(obs, remaining, chunk_anchor, t):
+        p9 = np.asarray(obs['proprio'])[-1][:9]
+        o = np.asarray(obs['object'])
+        if chunk_anchor is None:
+            X.append(features(p9, remaining, np.zeros(3), np.zeros(3), 0))
+        else:
+            X.append(features(p9, remaining, chunk_anchor[1], o[7:10],
+                              min(t - chunk_anchor[0], MAX_AGE)))
+        S.append(np.concatenate([p9, o[0:7]]).astype(np.float32))
+        if len(X) % every == 0:
+            save()
+        return refine_fn(obs, remaining, chunk_anchor, t)
+    fn.save = save
+    return fn
+
+
 # ------------------------------------------------------------------ collect
 class Recorder:
     """Wraps the world; records the oracle layout [eef, quat, fingers, nut, nut quat] per tick."""
@@ -186,11 +212,18 @@ def make_pairs(states: np.ndarray, lens: np.ndarray, per_tick: int, seed: int = 
 
 def train(args) -> None:
     import torch
+    import oracle_square as sq
+    cfg = sq.SquareConfig(chunk_size=H)
     files = sorted(glob.glob(os.path.join(args.data, '*.npz')))
     Xs, Ys = [], []
     for j, f in enumerate(files):
         z = np.load(f)
-        X, Y = make_pairs(z['states'], z['lens'], args.per_tick, seed=j)
+        if 'X' in z:                       # logged on the robot (logging_refine_fn)
+            X = np.repeat(z['X'], args.log_weight, axis=0)
+            Y = np.repeat(np.stack([targets(s[:9], sq.plan_chunk(*sq.unpack(s), cfg))
+                                    for s in z['S']]), args.log_weight, axis=0)
+        else:
+            X, Y = make_pairs(z['states'], z['lens'], args.per_tick, seed=j)
         Xs.append(X)
         Ys.append(Y)
         print(f'{f}: {len(X)} pairs', flush=True)
@@ -260,6 +293,7 @@ def main() -> None:
     t.add_argument('--data', required=True, help='directory of collect npz files')
     t.add_argument('--out', required=True)
     t.add_argument('--per-tick', type=int, default=4)
+    t.add_argument('--log-weight', type=int, default=4, help='repeats of each logged pair')
     t.add_argument('--width', type=int, default=256)
     t.add_argument('--depth', type=int, default=3)
     t.add_argument('--epochs', type=int, default=30)

@@ -68,3 +68,19 @@ def test_refine_fn_without_anchor_sees_no_motion(tmp_path):
     fn(obs, _chunk(4), (2, np.array([0.0, 0.25, 0.8])), 7)
     assert np.allclose(seen[-1][rf.H * 4:rf.H * 4 + 3], [0, 0.05, 0])
     assert np.isclose(seen[-1][-1], 5 / 30)
+
+
+def test_logging_refine_fn_records_features_and_oracle_layout(tmp_path):
+    inner = lambda obs, remaining, anchor, t: np.asarray(remaining[0])     # noqa: E731
+    path = str(tmp_path / 'log.npz')
+    fn = rf.logging_refine_fn(inner, path, every=2)
+    p9 = np.arange(9, dtype=np.float32)
+    obj = np.concatenate([[0.1, 0.2, 0.8], [0, 0, 0, 1], [0.1, 0.25, 0.8], [1]]).astype(np.float32)
+    obs = {'proprio': p9[None], 'object': obj}
+    a = fn(obs, _chunk(4), (3, np.array([0.1, 0.2, 0.8])), 5)
+    assert np.allclose(a, _chunk(4)[0])
+    fn(obs, _chunk(4), None, 6)
+    z = np.load(path)
+    assert z['X'].shape == (2, rf.N_FEATURES) and z['S'].shape == (2, 16)
+    assert np.allclose(z['X'][0][rf.H * 4:rf.H * 4 + 3], [0, 0.05, 0])     # tracked - anchor
+    assert np.allclose(z['S'][0][9:16], obj[:7])
