@@ -135,6 +135,8 @@ def main() -> None:
     ap.add_argument('--refiner-log', default='', help="record the refiner's inputs (npz) for training")
     ap.add_argument('--probe-log', default='',
                     help='Square: counterfactual close probes (npz) for fuzzy_gate.py')
+    ap.add_argument('--fail-log', default='',
+                    help='Square: per-episode failure class and milestones (csv, square_failures.py)')
     ap.add_argument('--fuzzy-gate', default='', help='fuzzy gate weights: replace the hard gate')
     ap.add_argument('--label-log', default='',
                     help="label every tick with the policy's fresh chunk (npz), refiner training")
@@ -185,11 +187,17 @@ def main() -> None:
     if args.fuzzy_gate:
         import fuzzy_gate
         gate_fn = fuzzy_gate.make_gate_fn(fuzzy_gate.FuzzyGate(args.fuzzy_gate), object_tracker)
-    probers = []
+    probers, traced, tracers = [], [], []
 
     def make_world(v):
         world = ol.MovingCube(base, v, args.hz, joint=joint, pos_key=pos_key, held_fn=held,
                               half_range=half_range)
+        if args.fail_log:
+            import square_failures
+            if tracers:
+                tracers[-1].finish()               # the previous speed's last episode
+            world = square_failures.Tracer(world, traced, pos_key, quat_key)
+            tracers.append(world)
         if args.probe_log:
             import fuzzy_gate
             probers.append(fuzzy_gate.Prober(world, args.probe_log.replace('.npz', f'_{v}.npz')))
@@ -213,6 +221,10 @@ def main() -> None:
         stack_fn.save()
     for p in probers:
         p.save()
+    if args.fail_log:
+        import square_failures
+        tracers[-1].finish()
+        square_failures.write(args.fail_log, args.out, traced)
 
 
 if __name__ == '__main__':
