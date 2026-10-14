@@ -26,7 +26,8 @@ arm lags its target, and more so behind a moving target, so a stale chunk closes
 optional `gate_fn(obs, action) -> bool` is the local fix: an open-to-close transition is
 held until the gate passes. Meanwhile the chunk does not advance and the arm keeps servoing to
 the anchored pre-grasp target. After `gate_timeout` ticks the gate gives way, so a wrong gate
-cannot deadlock the episode.
+cannot deadlock the episode. The optional `lift_fn(obs, ticks_since_close) -> bool` does the
+same for the lift that follows (lift_gate.py).
 
 `AnchoredExecutor` is the coverage-aware family with this one change, so it inherits the
 never-skip join: `rule='aligned'` is the anchored no-skip queue, `rule='waiting'` is anchored
@@ -41,6 +42,7 @@ from typing import Callable
 import numpy as np
 
 from evh_controller.chunk_executor.adaptive import CoverageAwareExecutor
+from evh_controller.chunk_executor.lift_gate import LiftHold
 
 GRIP_OPEN_BELOW = 0.0        # robosuite gripper command: -1 open, +1 closed
 
@@ -52,9 +54,11 @@ class AnchoredExecutor(CoverageAwareExecutor):
 
     def __init__(self, worker, policy, *, anchor_fn: Callable[[dict], np.ndarray | None],
                  gate_fn: Callable[[dict, np.ndarray], bool] | None = None,
-                 gate_timeout: int = 60, **kw) -> None:
+                 gate_timeout: int = 60,
+                 lift_fn: Callable[[dict, int], bool] | None = None, **kw) -> None:
         if not getattr(policy, 'absolute_actions', False):
             raise ValueError('object anchoring shifts absolute targets; this policy emits deltas')
+        self.lift = None if lift_fn is None else LiftHold(lift_fn)
         kw.setdefault('rule', 'aligned')
         kw.setdefault('guided', False)
         self.anchor_fn = anchor_fn
@@ -73,6 +77,8 @@ class AnchoredExecutor(CoverageAwareExecutor):
         self._last_grip = -1.0
         self._gated = 0
         self.gate_holds = 0                                 # ticks a close was held, for analysis
+        if self.lift is not None:
+            self.lift.reset()
 
     def _issue(self, obs, t, prefix=None, weights=None) -> bool:
         ok = super()._issue(obs, t, prefix, weights)
@@ -114,7 +120,20 @@ class AnchoredExecutor(CoverageAwareExecutor):
             self._close = None
         self._gated = 0
         self._last_grip = float(a[6])
-        return self._anchor(obs, a, t)
+        out = self._anchor(obs, a, t)
+        if self.lift is not None:
+            if closing:
+                self.lift.on_close(out)
+            elif a[6] < GRIP_OPEN_BELOW:
+                self.lift.on_open()
+            else:
+                hold = self.lift.check(obs, out)
+                if hold is not None:            # un-play this entry, keep the close pose
+                    self._i -= 1
+                    self._played -= 1
+                    self._n_from_chunk -= 1
+                    return hold
+        return out
 
     def _anchor(self, obs, a, t, as_open: bool = False):
         out = anchor_shift(a, self._chunk_anchor, self.anchor_fn(obs), self._close, as_open)

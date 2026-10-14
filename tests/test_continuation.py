@@ -218,3 +218,23 @@ def test_inpaint_sends_the_queue_as_prefix_and_appends_only_the_tail():
     assert starts == n[:len(starts)]
     with pytest.raises(ValueError):
         ContinuationExecutor(Worker(p, 3), p, roll_fn=lambda o, q: o, inpaint=True)
+
+
+class LiftPolicy(Policy):
+    def chunk(self, obs):
+        c = super().chunk(obs)
+        c[:, 0] = 0.0
+        c[2:, 6] = 1.0
+        c[3:, 2] = 0.01 * np.arange(1, H - 2)
+        return c
+
+
+def test_lift_gate_requeues_the_lift_entry():
+    p = LiftPolicy()
+    ok = {'v': False}
+    ex = ContinuationExecutor(Worker(p, 1), p, roll_fn=None, lift_fn=lambda o, n: ok['v'])
+    out = [ex.step({'t': t}, t) for t in range(8)]
+    closed = [a for a in out if a is not None and a[6] == 1.0]
+    assert closed and all(a[2] == 0.0 for a in closed) and ex.lift.holds > 0
+    ok['v'] = True
+    assert ex.step({'t': 8}, 8)[2] == pytest.approx(0.01)

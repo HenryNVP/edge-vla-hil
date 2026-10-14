@@ -75,3 +75,11 @@ def test_oracle_layout_feeds_the_square_gate_unchanged():
     assert dp_mech.task_gate(obs, None, 'square')
     obs['object'][7] += 0.03                                   # tracked nut 3 cm away
     assert not dp_mech.task_gate(obs, None, 'square')
+
+
+def test_square_lift_waits_for_the_fingers_to_settle():
+    lift = dp_mech.SquareLift(settle_m=0.0005, min_ticks=3)
+    widths = [0.03, 0.022, 0.0205, 0.0204, 0.0204]
+    got = [lift(_obs(w / 2), k + 1) for k, w in enumerate(widths)]
+    assert got == [False, False, False, True, True]
+    assert dp_mech.SquareLift()(_obs(0.002), 1)          # shut on nothing: no point holding

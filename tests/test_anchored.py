@@ -149,3 +149,28 @@ def test_refuses_delta_policies():
     p.absolute_actions = False
     with pytest.raises(ValueError, match='deltas'):
         _make(p, d=1)
+
+
+class LiftPolicy(Policy):
+    """Two open entries, a close at z = 0, then a lift 1 cm per entry."""
+
+    def chunk(self):
+        c = super().chunk()
+        c[:, 0] = 0.0
+        c[:, 6] = -1.0
+        c[2:, 6] = 1.0
+        c[3:, 2] = 0.01 * np.arange(1, H - 2)
+        return c
+
+
+def test_lift_gate_holds_the_close_pose_and_pauses_the_chunk():
+    p = LiftPolicy()
+    ok = {'v': False}
+    ex = _wait(p, lift_fn=lambda o, n: ok['v'])
+    out = [ex.step(_obj(0.0), t) for t in range(8)]
+    closed = [a for a in out if a is not None and a[6] == 1.0]
+    assert closed and all(a[2] == 0.0 for a in closed)  # closed, but never rises
+    assert ex.lift.holds > 0
+    ok['v'] = True
+    later = [ex.step(_obj(0.0), t) for t in range(8, 10)]
+    assert later[0][2] == pytest.approx(0.01)            # the chunk resumes at its first lift entry

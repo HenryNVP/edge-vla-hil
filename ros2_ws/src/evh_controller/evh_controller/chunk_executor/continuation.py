@@ -56,7 +56,7 @@ it degrades toward waiting.
 
 `gate_fn(obs, action) -> bool` holds an open-to-close gripper transition until the arm is
 really at the grasp pose. It has the same semantics as anchored.py, which explains why a stale
-chunk needs it.
+chunk needs it. `lift_fn(obs, ticks_since_close) -> bool` holds the lift after it (lift_gate.py).
 """
 from __future__ import annotations
 
@@ -67,6 +67,7 @@ import numpy as np
 
 from evh_controller.chunk_executor.anchored import anchor_shift
 from evh_controller.chunk_executor.base import ChunkExecutor
+from evh_controller.chunk_executor.lift_gate import LiftHold
 
 GRIP_OPEN_BELOW = 0.0
 
@@ -81,7 +82,8 @@ class ContinuationExecutor(ChunkExecutor):
                  gate_fn: Callable[[dict, np.ndarray], bool] | None = None,
                  gate_timeout: int = 60,
                  lead: int = 1, quantile: float = 0.9, delay_buffer: int = 50,
-                 inpaint: bool = False) -> None:
+                 inpaint: bool = False,
+                 lift_fn: Callable[[dict, int], bool] | None = None) -> None:
         if not getattr(policy, 'absolute_actions', False):
             raise ValueError('continuation appends absolute targets; this policy emits deltas')
         if inpaint and roll_fn is not None:
@@ -96,6 +98,7 @@ class ContinuationExecutor(ChunkExecutor):
         self.gate_fn = gate_fn
         self.gate_timeout = gate_timeout
         self.gate_holds = 0
+        self.lift = None if lift_fn is None else LiftHold(lift_fn)
         self.lead = lead
         self.quantile = quantile
         self.delay_buffer = delay_buffer
@@ -117,6 +120,8 @@ class ContinuationExecutor(ChunkExecutor):
         self._last_grip = -1.0
         self._gated = 0
         self._close: tuple[int, np.ndarray] | None = None
+        if self.lift is not None:
+            self.lift.reset()
 
     def _check_divergence(self, obs) -> None:
         self._since_flush += 1
@@ -184,10 +189,21 @@ class ContinuationExecutor(ChunkExecutor):
             self._close = None if now is None else (t, np.asarray(now, float).copy())
         elif a[6] < GRIP_OPEN_BELOW:
             self._close = None
+        out = self._shifted(obs, a, anchor)
+        if self.lift is not None:
+            if closing:
+                self.lift.on_close(out)
+            elif a[6] < GRIP_OPEN_BELOW:
+                self.lift.on_open()
+            else:
+                hold = self.lift.check(obs, out)
+                if hold is not None:
+                    self._queue.appendleft(entry)  # not played yet
+                    return hold
         self._gated = 0
         self._last_grip = float(a[6])
         self._recent.append(a)
-        return self._shifted(obs, a, anchor)
+        return out
 
     def _shifted(self, obs, a, anchor, as_open: bool = False, record: bool = True):
         if self.anchor_fn is None:

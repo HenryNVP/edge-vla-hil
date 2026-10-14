@@ -316,17 +316,18 @@ def make_env(control_hz: float, horizon: int):
 
 
 def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None,
-                      diverged_fn=None, gate_fn=None, refine_fn=None):
+                      diverged_fn=None, gate_fn=None, refine_fn=None, lift_fn=None):
     """The repo's executors, plus the testbed's:
 
         aligned_skip           time-aligned, unguided, tick-based join (paper 1's skipping
                                baseline: RTC's join without its guidance)
-        anchored[_wait][_gate] M1, object anchoring on the no-skip queue (or on waiting);
-                               _gate holds the gripper close until the arm is at the object
+        anchored[_wait][_gate][_lift]  M1, object anchoring on the no-skip queue (or on
+                               waiting); _gate holds the gripper close until the arm is at the
+                               object, _lift holds the lift until the grasp has formed
         continuation[...]      M3, plan from the queue's end and append; suffixes, combinable:
                                _noroll (ablation), _inpaint (no roll: the queue as an inpainting
                                prefix), _anchored (+ M1), _check (+ divergence flush),
-                               _gate (+ close gating)
+                               _gate (+ close gating), _lift (+ lift gating, `lift_fn`)
         refined                Phase D, the no-skip queue with every action from a learned
                                local refiner (`refine_fn`, refiner.make_refine_fn) in place of
                                anchoring and the gate
@@ -348,7 +349,8 @@ def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None
             inpaint='inpaint' in parts,
             anchor_fn=anchor_fn if 'anchored' in parts else None,
             diverged_fn=diverged_fn if 'check' in parts else None,
-            gate_fn=gate_fn if 'gate' in parts else None)
+            gate_fn=gate_fn if 'gate' in parts else None,
+            lift_fn=_need_lift(lift_fn, parts))
     if name == 'refined':
         from evh_controller.chunk_executor.refined import RefinedExecutor
         if refine_fn is None:
@@ -357,8 +359,17 @@ def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None
     if name.startswith('anchored'):
         rule = 'waiting' if 'wait' in parts else 'aligned'
         return AnchoredExecutor(worker, policy, anchor_fn=anchor_fn, rule=rule,
-                                gate_fn=gate_fn if 'gate' in parts else None)
+                                gate_fn=gate_fn if 'gate' in parts else None,
+                                lift_fn=_need_lift(lift_fn, parts))
     return make_executor(name, worker, policy)
+
+
+def _need_lift(lift_fn, parts):
+    if 'lift' not in parts:
+        return None
+    if lift_fn is None:
+        raise ValueError("'_lift' needs the task's lift_fn")
+    return lift_fn
 
 
 def grasp_failed(recent: np.ndarray, held: bool, close_ticks: int, margin: int = 4) -> bool:
@@ -462,7 +473,7 @@ def run_sweep(args, *, policy, make_world, frame_fn, tracker: TrackerModel, dead
     executor_kw = executor_kw or {}
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, 'w', newline='') as fh:
-        w = csv.DictWriter(fh, fieldnames=COLUMNS + ['flushes'])
+        w = csv.DictWriter(fh, fieldnames=COLUMNS + ['flushes', 'lift_holds'])
         w.writeheader()
         for speed in [float(x) for x in args.speeds.split(',')]:
             env = make_world(speed)
@@ -491,7 +502,9 @@ def run_sweep(args, *, policy, make_world, frame_fn, tracker: TrackerModel, dead
                                     'idle_frac': round(ep.idle / max(ep.ticks, 1), 4),
                                     'requests': ep.requests,
                                     'path_mm': round(ep.path_m * 1e3, 1),
-                                    'flushes': getattr(ex, 'flushes', 0)})
+                                    'flushes': getattr(ex, 'flushes', 0),
+                                    'lift_holds': ex.lift.holds if getattr(ex, 'lift', None)
+                                    else 0})
                     fh.flush()
                     print(f'{tracker.spec.tag} speed={speed} d={d} {strat}: {ok}/{args.episodes}',
                           flush=True)

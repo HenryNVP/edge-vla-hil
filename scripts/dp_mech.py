@@ -86,6 +86,27 @@ def task_gate(obs: dict, action, task: str, slack: float = 0.0) -> bool:
     return ol.lift_gate(oracle_layout(obs, task), action)
 
 
+class SquareLift:
+    """Lift once the fingers have stopped closing: finger width changed by under `settle_m` since
+    the previous tick, at least `min_ticks` after the close. Fingers shut on nothing (width under
+    the oracle's empty_width) pass at once: holding cannot rescue an empty grasp. Keeps its own
+    previous width, since ACT sees one observation step."""
+
+    def __init__(self, settle_m: float = 0.0005, min_ticks: int = 3) -> None:
+        self.settle_m, self.min_ticks = settle_m, min_ticks
+        self._prev = None
+
+    def __call__(self, obs: dict, since_close: int) -> bool:
+        import oracle_square as sq
+        row = np.asarray(obs['proprio'])[-1]
+        w = float(row[7] - row[8])
+        prev, self._prev = (None if since_close <= 1 else self._prev), w
+        if w < sq.SquareConfig().empty_width:
+            return True
+        return (since_close >= self.min_ticks and prev is not None
+                and abs(w - prev) < self.settle_m)
+
+
 def proprio_roll(obs: dict, queued: np.ndarray, closed_qpos: float = 0.02,
                  lag: float = 0.3) -> dict:
     """Predict the proprio history at the end of the queue: the arm follows each queued target
@@ -214,7 +235,8 @@ def main() -> None:
                  executor_kw={'roll_fn': functools.partial(proprio_roll, closed_qpos=closed,
                                                        lag=args.roll_lag),
                               'anchor_fn': object_tracker,
-                              'gate_fn': gate_fn, 'refine_fn': refine_fn})
+                              'gate_fn': gate_fn, 'refine_fn': refine_fn,
+                              'lift_fn': SquareLift() if args.task == 'square' else None})
     if args.refiner_log:
         refine_fn.save()
     if args.label_log:
