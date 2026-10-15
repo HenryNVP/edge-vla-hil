@@ -315,6 +315,9 @@ def make_env(control_hz: float, horizon: int):
     return env
 
 
+CLOUD_LOCAL_REPLAN = 4         # entries of each local plan played (dp_mech --replan sets it)
+
+
 def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None,
                       diverged_fn=None, gate_fn=None, refine_fn=None, lift_fn=None):
     """The repo's executors, plus the testbed's:
@@ -328,6 +331,8 @@ def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None
                                _noroll (ablation), _inpaint (no roll: the queue as an inpainting
                                prefix), _anchored (+ M1), _check (+ divergence flush),
                                _gate (+ close gating), _lift (+ lift gating, `lift_fn`)
+        cloud_local            query planner: the remote model returns a memory, the robot plans
+                               from it every `CLOUD_LOCAL_REPLAN` ticks (two_stream.py)
         refined                Phase D, the no-skip queue with every action from a learned
                                local refiner (`refine_fn`, refiner.make_refine_fn) in place of
                                anchoring and the gate
@@ -351,6 +356,10 @@ def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None
             diverged_fn=diverged_fn if 'check' in parts else None,
             gate_fn=gate_fn if 'gate' in parts else None,
             lift_fn=_need_lift(lift_fn, parts))
+    if name == 'cloud_local':
+        from evh_controller.chunk_executor.cloud_local import CloudLocalExecutor
+        return CloudLocalExecutor(worker, policy, replan=CLOUD_LOCAL_REPLAN,
+                                  max_age=getattr(policy, 'max_age', None))
     if name == 'refined':
         from evh_controller.chunk_executor.refined import RefinedExecutor
         if refine_fn is None:

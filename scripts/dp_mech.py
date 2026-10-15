@@ -161,6 +161,8 @@ def main() -> None:
     ap.add_argument('--fuzzy-gate', default='', help='fuzzy gate weights: replace the hard gate')
     ap.add_argument('--label-log', default='',
                     help="label every tick with the policy's fresh chunk (npz), refiner training")
+    ap.add_argument('--replan', type=int, default=4,
+                    help="cloud_local: entries of each local plan played before replanning")
     ap.add_argument('--refiner-lead', type=int, default=0, help='predicted entry whose position is played')
     ol.add_common_args(ap)
     args = ap.parse_args()
@@ -176,8 +178,14 @@ def main() -> None:
     env_name, ckpt, pos_key, quat_key, joint, half_range, closed = TASKS[args.task]
     if args.backend != 'dp' and not args.weights:
         sys.exit(f'--backend {args.backend} needs --weights')
-    policy = make_policy(args.backend, args.weights or os.path.join(_REPO, 'checkpoints', ckpt),
-                         denoise_steps=args.denoise_steps)
+    if args.backend == 'two_stream':
+        import two_stream
+        policy = two_stream.TwoStreamPolicy(args.weights)
+        ol.CLOUD_LOCAL_REPLAN = args.replan
+    else:
+        policy = make_policy(args.backend,
+                             args.weights or os.path.join(_REPO, 'checkpoints', ckpt),
+                             denoise_steps=args.denoise_steps)
     if not policy.absolute_actions:
         sys.exit('the mechanism executors shift absolute targets; this checkpoint emits deltas')
     tracker = ol.tracker_from(args)
