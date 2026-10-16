@@ -111,9 +111,10 @@ def collect(args) -> dict:
     return {**{k: np.array(v) for k, v in out.items()}, 'grid': grid, 'task': args.task}
 
 
-def probe(env, policy, o, grid, seed: int, task=TASKS['square']) -> np.ndarray:
-    """Response (mm) of the chunk's grasp target to each nut offset; every mjData array is
-    restored after each (fuzzy_gate's bitwise restore), so the warm-up carries on unchanged."""
+def probe(env, policy, o, grid, seed: int, task=TASKS['square'], measure=target) -> np.ndarray:
+    """Response (mm) of measure(chunk), by default the grasp target, to each nut offset; every
+    mjData array is restored after each (fuzzy_gate's bitwise restore), so the warm-up carries
+    on unchanged."""
     d = env.sim.data
     saved = _data_arrays(d)
     xy0 = np.array(o[task['pos']][:2], float)
@@ -126,12 +127,21 @@ def probe(env, policy, o, grid, seed: int, task=TASKS['square']) -> np.ndarray:
             cur = getattr(d, k)
             if cur.shape == v.shape:        # contact-sized (efc_*) arrays are rebuilt each step
                 cur[...] = v
-        return target(c)
+        return measure(c)
 
     base = chunk_at(0.0, 0.0)
     resp = np.array([[(chunk_at(dx, dy) - base) * 1e3 for dy in grid] for dx in grid])
     observe(env)
     return resp
+
+
+def inside_demo_range(d: dict, r: float) -> np.ndarray:
+    """(points, interior, interior) mask: is the moved object inside the demos' xy range?"""
+    task = TASKS[str(d.get('task', 'square'))]
+    g = d['grid'][1:-1]
+    pos = d['nut_xy'][d['radius'] == r][:, None, None, :] + np.stack(
+        np.meshgrid(g, g, indexing='ij'), -1)[None]
+    return np.all((pos >= task['lo']) & (pos <= task['hi']), axis=-1)
 
 
 def report(d: dict) -> None:
@@ -145,12 +155,7 @@ def report(d: dict) -> None:
               f'[[{Jm[0, 0]:.2f} {Jm[0, 1]:.2f}] [{Jm[1, 0]:.2f} {Jm[1, 1]:.2f}]]  '
               f'(rows: response x, y; cols: d/dx, d/dy; identity = follows)  '
               f'gains: max {np.median(sv[:, 0]):.2f}, min {np.median(sv[:, 1]):.2f}')
-        # split the interior grid points by whether the moved object is inside the demos' range
-        task = TASKS[str(d.get('task', 'square'))]
-        g = grid_mm[1:-1] / 1e3
-        pos = d['nut_xy'][d['radius'] == r][:, None, None, :] + np.stack(
-            np.meshgrid(g, g, indexing='ij'), -1)[None]
-        inside = np.all((pos >= task['lo']) & (pos <= task['hi']), axis=-1)
+        inside = inside_demo_range(d, r)
         for name, m in (('inside', inside), ('outside', ~inside)):
             if m.any():
                 Js = J[m]
