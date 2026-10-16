@@ -25,6 +25,8 @@ Run 1 options (step 0's local stream overfit: a scratch TinyCNN on 320 demos):
                         halves write tokens in one feature space (a fresh token can stand in for a
                         stale one, the later changed-patch idea)
     freeze=True         the ImageNet backbone is frozen (run under no_grad)
+    top=True            a third view, the close top camera (top_camera.py), on both halves: the
+                        flat-token baseline for the BEV planner, which sees the same three views
     final_norm=True     a closing LayerNorm on each pre-norm stack. Without it the step-0 models ran
                         2x worse open loop in eval than with dropout on (the head reads an
                         unnormalised residual stream; outputs/qp1/dropgap.py)
@@ -54,7 +56,8 @@ def _images(x: torch.Tensor) -> torch.Tensor:
 
 class CloudEncoder(nn.Module):
     def __init__(self, d: int, state_dim: int, layers: int = 2, heads: int = 8,
-                 freeze: bool = False, final_norm: bool = False, dropout: float = 0.1) -> None:
+                 freeze: bool = False, final_norm: bool = False, dropout: float = 0.1,
+                 views: int = 2) -> None:
         super().__init__()
         self.freeze = freeze
         from torchvision.ops.misc import FrozenBatchNorm2d
@@ -65,7 +68,7 @@ class CloudEncoder(nn.Module):
             self.backbone.requires_grad_(False)
         self.proj = nn.Conv2d(256, d, 1)
         self.state = nn.Linear(state_dim, d)
-        self.pos = nn.Parameter(torch.randn(1, 2 * 36 + 1, d) * 0.02)
+        self.pos = nn.Parameter(torch.randn(1, views * 36 + 1, d) * 0.02)
         self.enc = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d, heads, 4 * d, dropout, batch_first=True, norm_first=True),
             layers, norm=nn.LayerNorm(d) if final_norm else None)
@@ -79,8 +82,9 @@ class CloudEncoder(nn.Module):
         f = self.proj(f)                                     # [B, D, 6, 6] at 84 px
         return f.flatten(2).transpose(1, 2)
 
-    def forward(self, agent, wrist, state) -> torch.Tensor:
-        x = torch.cat([self.tokens(agent), self.tokens(wrist), self.state(state)[:, None]], 1)
+    def forward(self, agent, wrist, state, top=None) -> torch.Tensor:
+        imgs = [agent, wrist] + ([top] if top is not None else [])
+        x = torch.cat([self.tokens(i) for i in imgs] + [self.state(state)[:, None]], 1)
         return self.enc(x + self.pos[:, :x.shape[1]])
 
 
@@ -118,16 +122,17 @@ class TwoStream(nn.Module):
     def __init__(self, mode: str = 'two', d: int = 256, state_dim: int = 9, action_dim: int = 10,
                  chunk: int = 16, max_age: int = 48, heads: int = 8, local_enc: str = 'tiny',
                  freeze: bool = False, local_drop: float = 0.0, final_norm: bool = False,
-                 dropout: float = 0.1) -> None:
+                 dropout: float = 0.1, top: bool = False) -> None:
         super().__init__()
         if mode not in MODES:
             raise ValueError(f'mode {mode!r} not in {MODES}')
         if local_enc == 'shared' and mode != 'two':
             raise ValueError("local_enc='shared' needs mode 'two'")
         self.mode, self.chunk, self.max_age = mode, chunk, max_age
-        self.local_enc, self.local_drop = local_enc, local_drop
+        self.local_enc, self.local_drop, self.top = local_enc, local_drop, top
+        views = 3 if top else 2
         self.cloud = None if mode == 'local' else CloudEncoder(
-            d, state_dim, freeze=freeze, final_norm=final_norm, dropout=dropout)
+            d, state_dim, freeze=freeze, final_norm=final_norm, dropout=dropout, views=views)
         self.null = nn.Parameter(torch.zeros(1, 1, d))
         if local_drop > 0:
             self.dropped = nn.Parameter(torch.zeros(1, 1, d))
@@ -135,7 +140,7 @@ class TwoStream(nn.Module):
         self.local_cnn = (local_cls(d) if mode in ('two', 'local') and local_cls else None)
         self.state = nn.Linear(state_dim, d)
         self.age = nn.Embedding(max_age + 1, d)
-        self.local_pos = nn.Parameter(torch.randn(1, 2 + 2 * 36, d) * 0.02)
+        self.local_pos = nn.Parameter(torch.randn(1, 2 + views * 36, d) * 0.02)
         def dec():
             return nn.TransformerDecoder(
                 nn.TransformerDecoderLayer(d, heads, 4 * d, dropout, batch_first=True,
@@ -146,20 +151,22 @@ class TwoStream(nn.Module):
         self.head_dec = dec()
         self.out = nn.Linear(d, action_dim)
 
-    def memory(self, agent0, wrist0, state0) -> torch.Tensor:
-        """The cloud half: [B, 73, D] (or the null token when there is no cloud)."""
+    def memory(self, agent0, wrist0, state0, top0=None) -> torch.Tensor:
+        """The cloud half: [B, 73, D] (109 with the top view), or the null token when there is
+        no cloud."""
         if self.cloud is None:
             return self.null.expand(agent0.shape[0], -1, -1)
-        return self.cloud(agent0, wrist0, state0)
+        return self.cloud(agent0, wrist0, state0, top0)
 
-    def plan(self, mem, agent, wrist, state, age) -> torch.Tensor:
+    def plan(self, mem, agent, wrist, state, age, top=None) -> torch.Tensor:
         """The local half: [B, H, action_dim] in normalized action units."""
         b = state.shape[0]
         a = self.age(age.clamp(0, self.max_age))[:, None]          # [B, 1, D]
         x = [self.state(state)[:, None], a]
         enc = self.cloud.tokens if self.local_enc == 'shared' else self.local_cnn
         if enc is not None and self.mode in ('two', 'local'):
-            img = torch.cat([enc(agent), enc(wrist)], 1)
+            img = torch.cat([enc(i) for i in [agent, wrist] + ([top] if top is not None else [])],
+                            1)
             if self.training and self.local_drop > 0:
                 drop = torch.rand(b, 1, 1, device=img.device) < self.local_drop
                 img = torch.where(drop, self.dropped.expand_as(img), img)
@@ -171,8 +178,10 @@ class TwoStream(nn.Module):
         q = self.head_dec(self.queries.expand(b, -1, -1), torch.cat([x, m], 1))
         return self.out(q)
 
-    def forward(self, agent0, wrist0, state0, agent, wrist, state, age) -> torch.Tensor:
+    def forward(self, agent0, wrist0, state0, agent, wrist, state, age, top0=None,
+                top=None) -> torch.Tensor:
         if self.mode == 'fresh':
-            agent0, wrist0, state0 = agent, wrist, state
+            agent0, wrist0, state0, top0 = agent, wrist, state, top
             age = torch.zeros_like(age)
-        return self.plan(self.memory(agent0, wrist0, state0), agent, wrist, state, age)
+        return self.plan(self.memory(agent0, wrist0, state0, top0), agent, wrist, state, age,
+                         top)

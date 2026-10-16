@@ -31,7 +31,8 @@ def load_npz(dirs: str) -> list[dict]:
     for d in dirs.split(','):
         for f in sorted(glob.glob(os.path.join(d, '*.npz'))):
             z = np.load(f)
-            eps.append({k: z[k] for k in ('agentview', 'wrist', 'state', 'action')})
+            eps.append({k: z[k] for k in ('agentview', 'wrist', 'state', 'action', 'top')
+                        if k in z.files})
     return eps
 
 
@@ -95,6 +96,8 @@ def train(args) -> None:
     torch.manual_seed(args.seed)
     cfg = {'local_enc': args.local_enc, 'freeze': args.freeze, 'local_drop': args.local_drop,
            'final_norm': args.final_norm, 'dropout': args.dropout}
+    if args.top:
+        cfg['top'] = True
     model = TwoStream(args.mode, max_age=args.max_age, **cfg).to(dev)
     print(f'config {cfg}, shift {args.shift}', flush=True)
     print(f'{sum(p.numel() for p in model.parameters()) / 1e6:.2f} M parameters', flush=True)
@@ -114,7 +117,7 @@ def train(args) -> None:
 
         def grab(key, idx):
             x = torch.from_numpy(np.stack([eps[i][key][j] for i, j in zip(e, idx)])).to(dev)
-            if args.shift and key in ('agentview', 'wrist'):
+            if args.shift and key in ('agentview', 'wrist', 'top'):
                 x = random_shift(x, args.shift)
             return x
         state0 = (grab('state', t0) - sm) / ss
@@ -122,8 +125,9 @@ def train(args) -> None:
         target = (torch.from_numpy(np.stack(acts)).to(dev) - am) / as_
         mask = torch.from_numpy(np.stack(masks)).to(dev)
         age = torch.from_numpy(t - t0).long().to(dev)
+        tops = (grab('top', t0), grab('top', t)) if args.top else (None, None)
         pred = model(grab('agentview', t0), grab('wrist', t0), state0,
-                     grab('agentview', t), grab('wrist', t), state, age)
+                     grab('agentview', t), grab('wrist', t), state, age, *tops)
         loss = (F.l1_loss(pred, target, reduction='none') * ~mask[..., None]).mean()
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -169,6 +173,7 @@ class TwoStreamPolicy:
         self.dev = device if torch.cuda.is_available() else 'cpu'
         self.mode, self.max_age = ck['mode'], ck['max_age']
         self.model = load_model(ck)
+        self.needs_top = bool(ck.get('cfg', {}).get('top', False))
         self.model.to(self.dev).eval()
         self.st = {k: torch.tensor(v, device=self.dev) for k, v in ck['stats'].items()}
 
@@ -176,14 +181,14 @@ class TwoStreamPolicy:
         import torch
         g = lambda k: torch.from_numpy(np.ascontiguousarray(np.asarray(obs[k])[-1:])).to(self.dev)
         state = (g('proprio').float() - self.st['state_mean']) / self.st['state_std']
-        return g('agentview'), g('wrist'), state
+        return g('agentview'), g('wrist'), state, (g('top') if self.needs_top else None)
 
     def predict(self, obs) -> np.ndarray:
         import torch
         with torch.no_grad():
             if self.mode == 'fresh':
                 return np.zeros((1, 1), np.float32)      # fresh mode plans from the frame at t
-            return self.model.memory(*self._obs(obs))[0].cpu().numpy()
+            return self.model.memory(*self._obs(obs))[0].cpu().numpy()   # (agent, wrist, state, top)
 
     def predict_inpaint(self, obs, prefix, weights):
         return self.predict(obs)
@@ -192,13 +197,13 @@ class TwoStreamPolicy:
         import torch
         from evh_controller.rotation import abs10_to_abs7
         with torch.no_grad():
-            agent, wrist, state = self._obs(obs)
+            agent, wrist, state, top = self._obs(obs)
             a = torch.tensor([int(age)], device=self.dev)
             if self.mode == 'fresh':
-                out = self.model(agent, wrist, state, agent, wrist, state, a)
+                out = self.model(agent, wrist, state, agent, wrist, state, a, top, top)
             else:
                 mem = torch.from_numpy(np.asarray(memory, np.float32))[None].to(self.dev)
-                out = self.model.plan(mem, agent, wrist, state, a)
+                out = self.model.plan(mem, agent, wrist, state, a, top)
             out = out[0] * self.st['action_std'] + self.st['action_mean']
         return abs10_to_abs7(out.cpu().numpy())
 
@@ -231,6 +236,7 @@ def main() -> None:
     t.add_argument('--local-drop', type=float, default=0.0)
     t.add_argument('--final-norm', action='store_true', help='LayerNorm closing each stack')
     t.add_argument('--dropout', type=float, default=0.1)
+    t.add_argument('--top', action='store_true', help='add the top view (needs --top demos)')
     t.add_argument('--shift', type=int, default=0, help='random-shift augmentation pad (px)')
     args = ap.parse_args()
     if args.cmd == 'train':
