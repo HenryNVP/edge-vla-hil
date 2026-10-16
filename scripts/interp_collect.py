@@ -73,7 +73,18 @@ def main() -> None:
     p.add_argument('--first-scene', type=int, default=0, help='resume: skip scenes below this')
     p.add_argument('--deadline-s', type=float, default=20.0)
     p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--shift', default='0,0',
+                   help='dx,dy (m): move the nut at reset, before the first frame (OOD test)')
     args = p.parse_args()
+    shift = np.array([float(v) for v in args.shift.split(',')])
+
+    def place(env, obs):
+        """The scene's nut moved by `shift`; the policy's first frame already shows it there."""
+        if not shift.any():
+            return obs
+        from dp_anchor_probe import observe, set_object
+        set_object(env, 'SquareNut_joint0', np.asarray(obs['SquareNut_pos'][:2]) + shift)
+        return observe(env)
 
     from evh_controller.policy import make_policy
     from evh_plant.env_factory import EnvSpec, build_env
@@ -83,7 +94,8 @@ def main() -> None:
     built = build_env(EnvSpec(env_name='NutAssemblySquare', action_hz=sil_step.CONTROL_HZ,
                               max_episode_s=args.deadline_s + 1.0, seed=args.seed,
                               absolute_actions=policy.absolute_actions))
-    env, obs = built.env, built.obs
+    env = built.env
+    obs = place(env, built.obs)
     worker = sil_step.StepWorker(policy, sil_step.fixed_delay(1))
     executor = sil_step.make_strategy('synchronous', worker, policy)
     wins = 0
@@ -110,11 +122,11 @@ def main() -> None:
                                            nut0[2], sq.PEG)
             np.savez_compressed(os.path.join(args.out_dir, f'ep{scene:04d}.npz'),
                                 feats=np.array(feats), commands=cmds, success=ep.success,
-                                cls=cls['cls'], ticks=ep.ticks, **cols)
+                                cls=cls['cls'], ticks=ep.ticks, shift=shift, **cols)
             wins += ep.success
             print(f'scene {scene}: {cls["cls"]} ticks={ep.ticks} '
                   f'({wins}/{scene - args.first_scene + 1})', flush=True)
-        obs = env.reset()
+        obs = place(env, env.reset())
     env.close()
 
 
