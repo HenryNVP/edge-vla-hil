@@ -46,42 +46,55 @@ def jacobians(resp: np.ndarray, step: float) -> np.ndarray:
     return np.stack([jx, jy], axis=-1)
 
 
-def collect(args) -> dict:
-    from evh_controller.policy import make_policy
+def operating_points(env, obs, policy, radii, scene: int):
+    """Roll one scene out synchronously with seeded noise and yield (obs, radius, tick) each
+    time the eef first comes within a radius of the handle (xy) with the gripper still open.
+    The caller may probe the sim at a yield but must leave it as it found it."""
+    hist = deque([sil_step.frames(obs)] * policy.n_obs_steps, maxlen=policy.n_obs_steps)
+    radii = sorted(radii, reverse=True)
+    chunk, i, ri = None, 0, 0
+    for t in range(400):
+        gap = np.linalg.norm(handle_pos(obs['SquareNut_pos'], obs['SquareNut_quat'])[:2]
+                             - obs['robot0_eef_pos'][:2])
+        while ri < len(radii) and gap < radii[ri]:
+            if chunk is not None and chunk[min(i, len(chunk) - 1), 6] > 0:
+                return                               # already closing: nothing left to probe
+            yield obs, radii[ri], t
+            ri += 1
+        if ri == len(radii):
+            return
+        if chunk is None or i >= len(chunk):
+            chunk, i = predict(policy, hist, 10_000 + scene * 100 + t), 0
+        obs, *_ = env.step(chunk[i])
+        i += 1
+        hist.append(sil_step.frames(obs))
+
+
+def make_env():
     from evh_plant.env_factory import EnvSpec, build_env
-    policy = make_policy('dp', args.weights, denoise_steps=args.denoise_steps)
     built = build_env(EnvSpec(env_name='NutAssemblySquare', action_hz=sil_step.CONTROL_HZ,
                               max_episode_s=21.0, seed=0, absolute_actions=True))
-    env, obs = built.env, built.obs
+    return built.env, built.obs
+
+
+def collect(args) -> dict:
+    from evh_controller.policy import make_policy
+    policy = make_policy('dp', args.weights, denoise_steps=args.denoise_steps)
+    env, obs = make_env()
     grid = np.linspace(-args.extent, args.extent, args.grid)
-    radii = sorted((float(r) for r in args.radii.split(',')), reverse=True)
+    radii = [float(r) for r in args.radii.split(',')]
     out = {k: [] for k in ('resp', 'scene', 'radius', 'nut_xy', 'eef_xy', 'tick')}
     for scene in range(args.scenes):
-        hist = deque([sil_step.frames(obs)] * policy.n_obs_steps, maxlen=policy.n_obs_steps)
-        chunk, i, ri = None, 0, 0
-        for t in range(400):
-            o = obs
-            gap = np.linalg.norm(handle_pos(o['SquareNut_pos'], o['SquareNut_quat'])[:2]
-                                 - o['robot0_eef_pos'][:2])
-            while ri < len(radii) and gap < radii[ri]:
-                if chunk is not None and chunk[min(i, len(chunk) - 1), 6] > 0:
-                    ri = len(radii)                  # already closing: nothing left to probe
-                    break
-                out['resp'].append(probe(env, policy, o, grid, seed=1000 + scene))
-                out['scene'].append(scene)
-                out['radius'].append(radii[ri])
-                out['nut_xy'].append(np.asarray(o['SquareNut_pos'][:2]))
-                out['eef_xy'].append(np.asarray(o['robot0_eef_pos'][:2]))
-                out['tick'].append(t)
-                ri += 1
-            if ri == len(radii):
-                break
-            if chunk is None or i >= len(chunk):
-                chunk, i = predict(policy, hist, 10_000 + scene * 100 + t), 0
-            obs, *_ = env.step(chunk[i])
-            i += 1
-            hist.append(sil_step.frames(obs))
-        print(f'scene {scene}: probed radii {radii[:ri]}', flush=True)
+        probed = []
+        for o, r, t in operating_points(env, obs, policy, radii, scene):
+            out['resp'].append(probe(env, policy, o, grid, seed=1000 + scene))
+            out['scene'].append(scene)
+            out['radius'].append(r)
+            out['nut_xy'].append(np.asarray(o['SquareNut_pos'][:2]))
+            out['eef_xy'].append(np.asarray(o['robot0_eef_pos'][:2]))
+            out['tick'].append(t)
+            probed.append(r)
+        print(f'scene {scene}: probed radii {probed}', flush=True)
         obs = env.reset()
     env.close()
     return {**{k: np.array(v) for k, v in out.items()}, 'grid': grid}
