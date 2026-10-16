@@ -45,24 +45,47 @@ TASKS = {   # env, checkpoint, object keys, conveyor half range, closed finger q
 OPEN_QPOS = 0.04
 
 
-def make_frames(tracker, pos_key: str, quat_key: str):
-    """(agentview, wrist, proprio, extra); extra = [object(3), quat(4), tracked(3), ok(1)]."""
+def make_frames(tracker, pos_key: str, quat_key: str, top: bool = False):
+    """(agentview, wrist, proprio, extra[, top]); extra = [object(3), quat(4), tracked(3), ok(1)];
+    top = the close top camera's upright image (top_camera.py), for policies with needs_top."""
     from sil_step import frames as image_frames
 
     def frames(obs: dict, needs_wrist: bool = True):
         agent, wrist, proprio = image_frames(obs, needs_wrist)
+        if top:
+            topimg = np.flipud(np.asarray(obs['birdview_image'])).astype(np.uint8)
         obj = np.asarray(obs[pos_key], np.float32)
         est = obj if tracker is None else tracker.update(obj)
         ok = est is not None
         extra = np.concatenate([obj, np.asarray(obs[quat_key], np.float32),
                                 np.asarray(est if ok else obj, np.float32), [float(ok)]])
+        if top:
+            return agent, wrist, proprio, extra.astype(np.float32), topimg
         return agent, wrist, proprio, extra.astype(np.float32)
     return frames
 
 
 def stack(hist, needs_wrist: bool = True) -> dict:
     from sil_step import stack as image_stack
-    return {**image_stack(hist, needs_wrist), 'object': hist[-1][3]}
+    out = {**image_stack(hist, needs_wrist), 'object': hist[-1][3]}
+    if len(hist[-1]) > 4:
+        out['top'] = np.stack([h[4] for h in hist])
+    return out
+
+
+class TopCam:
+    """The env with the close top camera re-applied after every (hard) reset."""
+
+    def __init__(self, env) -> None:
+        self.env = env
+
+    def __getattr__(self, name):
+        return getattr(self.env, name)
+
+    def reset(self):
+        import top_camera
+        self.env.reset()
+        return top_camera.apply(self.env)
 
 
 def object_tracker(obs: dict):
@@ -146,7 +169,7 @@ def main() -> None:
                                             'continuation_inpaint')
     ap.add_argument('--deadline-s', type=float, default=20.0)
     ap.add_argument('--denoise-steps', type=int, default=4, help='paper-1 cells used 4')
-    ap.add_argument('--backend', default='dp', help='dp | act | two_stream | two_stream_chunk | any make_policy backend')
+    ap.add_argument('--backend', default='dp', help='dp | act | two_stream | two_stream_chunk | bev | any make_policy backend')
     ap.add_argument('--weights', default='', help='default: the task\'s DP checkpoint')
     ap.add_argument('--gate-k', type=float, default=2.0,
                     help='close gate position slack in tracker sigmas (Square)')
@@ -182,6 +205,10 @@ def main() -> None:
         import two_stream
         policy = two_stream.TwoStreamPolicy(args.weights)
         ol.CLOUD_LOCAL_REPLAN = args.replan
+    elif args.backend == 'bev':
+        import bev_planner
+        policy = bev_planner.BEVPolicy(args.weights)
+        ol.CLOUD_LOCAL_REPLAN = args.replan
     elif args.backend == 'two_stream_chunk':
         import two_stream
         policy = two_stream.TwoStreamChunkPolicy(args.weights)
@@ -193,9 +220,13 @@ def main() -> None:
         sys.exit('the mechanism executors shift absolute targets; this checkpoint emits deltas')
     tracker = ol.tracker_from(args)
     deadline = int(args.deadline_s * args.hz)
+    needs_top = bool(getattr(policy, 'needs_top', False))
+    cams = ('agentview', 'robot0_eye_in_hand') + (('birdview',) if needs_top else ())
     base = build_env(EnvSpec(env_name=env_name, action_hz=args.hz,
                              max_episode_s=args.deadline_s + 1.0, seed=args.seed,
-                             absolute_actions=True)).env
+                             absolute_actions=True, cameras=cams)).env
+    if needs_top:
+        base = TopCam(base)
 
     refine_fn = None
     if args.refiner:
@@ -242,7 +273,7 @@ def main() -> None:
         stack_fn = refiner.ChunkLabeler(policy, stack, args.label_log)
     ol.run_sweep(args, policy=policy, tracker=tracker, deadline=deadline,
                  make_world=make_world,
-                 frame_fn=make_frames(tracker, pos_key, quat_key), stack_fn=stack_fn,
+                 frame_fn=make_frames(tracker, pos_key, quat_key, needs_top), stack_fn=stack_fn,
                  executor_kw={'roll_fn': functools.partial(proprio_roll, closed_qpos=closed,
                                                        lag=args.roll_lag),
                               'anchor_fn': object_tracker,

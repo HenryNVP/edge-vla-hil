@@ -12,7 +12,8 @@ fresh actions: the local half sees the current images and proprio and knows how 
 is, so staleness becomes an input instead of a splice (HiRT, CloudEdgeVLA). Requests go out
 whenever the single slot is free, so the memory is as fresh as the link allows.
 
-Before the first memory arrives the robot holds (returns None), like every other executor at
+A policy with a `reset()` (a local half that keeps state between plans, such as the BEV planner's
+previous map) is reset with each episode. Before the first memory arrives the robot holds (returns None), like every other executor at
 episode start. Query planner, paper 2 (docs/query-planner-plan.md).
 """
 from __future__ import annotations
@@ -36,6 +37,8 @@ class CloudLocalExecutor(ChunkExecutor):
         self._t_memory = 0
         self._chunk = None
         self._i = 0
+        if hasattr(self.policy, 'reset'):      # a local half with its own state (bev_planner)
+            self.policy.reset()
 
     def step(self, obs, t):
         arrival = self._poll(t)
