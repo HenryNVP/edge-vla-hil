@@ -43,15 +43,17 @@ class Recorder:
         return out
 
 
-def encode(policy, stacked: dict) -> np.ndarray:
-    """global_cond for one stacked history, exactly as predict_inpaint builds it."""
+def encode(policy, stacked: dict, encoder=None) -> np.ndarray:
+    """global_cond for one stacked history, exactly as predict_inpaint builds it (`encoder`
+    swaps in another obs encoder of the same shape, e.g. an untrained control)."""
     import torch
     dp = policy._policy
+    encoder = encoder or dp.obs_encoder
     with torch.no_grad():
         nobs = dp.normalizer.normalize(policy._to_policy_obs(stacked))
         To = policy.n_obs_steps
         this = {k: v[:, :To, ...].reshape(-1, *v.shape[2:]) for k, v in nobs.items()}
-        return dp.obs_encoder(this).reshape(-1).cpu().numpy().astype(np.float32)
+        return encoder(this).reshape(-1).cpu().numpy().astype(np.float32)
 
 
 def state(o) -> dict:
@@ -61,6 +63,25 @@ def state(o) -> dict:
             'held': sq.is_held(o['robot0_eef_pos'], o['robot0_gripper_qpos'],
                                o['SquareNut_pos'], o['SquareNut_quat']),
             'on_peg': sq.on_peg(o['SquareNut_pos'])}
+
+
+def place(env, obs, shift):
+    """The scene's nut moved by shift = (dx, dy[, dyaw_deg]); returns the fresh observation, so
+    the policy's first frame already shows it there."""
+    if not shift.any():
+        return obs
+    from dp_anchor_probe import observe, set_object
+    set_object(env, 'SquareNut_joint0', np.asarray(obs['SquareNut_pos'][:2]) + shift[:2])
+    if len(shift) > 2 and shift[2]:
+        sim = env.sim
+        adr = sim.model.get_joint_qpos_addr('SquareNut_joint0')[0] + 3   # wxyz
+        h = np.radians(shift[2]) / 2
+        w, x, y, z = sim.data.qpos[adr:adr + 4]
+        c, s_ = np.cos(h), np.sin(h)                # q <- rz(dyaw) * q
+        sim.data.qpos[adr:adr + 4] = [c * w - s_ * z, c * x - s_ * y, c * y + s_ * x,
+                                      c * z + s_ * w]
+        sim.forward()
+    return observe(env)
 
 
 def main() -> None:
@@ -74,17 +95,10 @@ def main() -> None:
     p.add_argument('--deadline-s', type=float, default=20.0)
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--shift', default='0,0',
-                   help='dx,dy (m): move the nut at reset, before the first frame (OOD test)')
+                   help='dx,dy[,dyaw_deg]: move (m) and turn the nut at reset, before the first '
+                        'frame (use --shift=-0.02,0: a leading minus reads as an option)')
     args = p.parse_args()
     shift = np.array([float(v) for v in args.shift.split(',')])
-
-    def place(env, obs):
-        """The scene's nut moved by `shift`; the policy's first frame already shows it there."""
-        if not shift.any():
-            return obs
-        from dp_anchor_probe import observe, set_object
-        set_object(env, 'SquareNut_joint0', np.asarray(obs['SquareNut_pos'][:2]) + shift)
-        return observe(env)
 
     from evh_controller.policy import make_policy
     from evh_plant.env_factory import EnvSpec, build_env
@@ -95,7 +109,7 @@ def main() -> None:
                               max_episode_s=args.deadline_s + 1.0, seed=args.seed,
                               absolute_actions=policy.absolute_actions))
     env = built.env
-    obs = place(env, built.obs)
+    obs = place(env, built.obs, shift)
     worker = sil_step.StepWorker(policy, sil_step.fixed_delay(1))
     executor = sil_step.make_strategy('synchronous', worker, policy)
     wins = 0
@@ -126,7 +140,7 @@ def main() -> None:
             wins += ep.success
             print(f'scene {scene}: {cls["cls"]} ticks={ep.ticks} '
                   f'({wins}/{scene - args.first_scene + 1})', flush=True)
-        obs = place(env, env.reset())
+        obs = place(env, env.reset(), shift)
     env.close()
 
 
