@@ -28,7 +28,17 @@ from dp_anchor_probe import observe, predict, set_object  # noqa: E402
 from fuzzy_gate import _data_arrays  # noqa: E402
 from oracle_square import handle_pos  # noqa: E402
 
-JOINT = 'SquareNut_joint0'
+# per task: env, DP checkpoint, object keys and joint, the demos' xy range of the object at
+# reset (robosuite placement ranges), and the grasp point the response is measured at
+TASKS = {
+    'square': dict(env='NutAssemblySquare', ckpt='dp_square_ph_image_cnn.ckpt',
+                   pos='SquareNut_pos', quat='SquareNut_quat', joint='SquareNut_joint0',
+                   lo=(-0.115, 0.11), hi=(-0.11, 0.225),
+                   grasp=lambda o: handle_pos(o['SquareNut_pos'], o['SquareNut_quat'])[:2]),
+    'lift': dict(env='Lift', ckpt='dp_lift_ph_image_cnn.ckpt', pos='cube_pos', quat='cube_quat',
+                 joint='cube_joint0', lo=(-0.03, -0.03), hi=(0.03, 0.03),
+                 grasp=lambda o: np.asarray(o['cube_pos'][:2])),
+}
 
 
 def target(chunk: np.ndarray) -> np.ndarray:
@@ -46,16 +56,15 @@ def jacobians(resp: np.ndarray, step: float) -> np.ndarray:
     return np.stack([jx, jy], axis=-1)
 
 
-def operating_points(env, obs, policy, radii, scene: int):
+def operating_points(env, obs, policy, radii, scene: int, task=TASKS['square']):
     """Roll one scene out synchronously with seeded noise and yield (obs, radius, tick) each
-    time the eef first comes within a radius of the handle (xy) with the gripper still open.
+    time the eef first comes within a radius of the grasp point (xy), gripper still open.
     The caller may probe the sim at a yield but must leave it as it found it."""
     hist = deque([sil_step.frames(obs)] * policy.n_obs_steps, maxlen=policy.n_obs_steps)
     radii = sorted(radii, reverse=True)
     chunk, i, ri = None, 0, 0
     for t in range(400):
-        gap = np.linalg.norm(handle_pos(obs['SquareNut_pos'], obs['SquareNut_quat'])[:2]
-                             - obs['robot0_eef_pos'][:2])
+        gap = np.linalg.norm(task['grasp'](obs) - obs['robot0_eef_pos'][:2])
         while ri < len(radii) and gap < radii[ri]:
             if chunk is not None and chunk[min(i, len(chunk) - 1), 6] > 0:
                 return                               # already closing: nothing left to probe
@@ -70,45 +79,47 @@ def operating_points(env, obs, policy, radii, scene: int):
         hist.append(sil_step.frames(obs))
 
 
-def make_env():
+def make_env(task=TASKS['square']):
     from evh_plant.env_factory import EnvSpec, build_env
-    built = build_env(EnvSpec(env_name='NutAssemblySquare', action_hz=sil_step.CONTROL_HZ,
+    built = build_env(EnvSpec(env_name=task['env'], action_hz=sil_step.CONTROL_HZ,
                               max_episode_s=21.0, seed=0, absolute_actions=True))
     return built.env, built.obs
 
 
 def collect(args) -> dict:
     from evh_controller.policy import make_policy
-    policy = make_policy('dp', args.weights, denoise_steps=args.denoise_steps)
-    env, obs = make_env()
+    task = TASKS[args.task]
+    weights = args.weights or os.path.join(sil_step._REPO, 'checkpoints', task['ckpt'])
+    policy = make_policy(args.backend, weights, denoise_steps=args.denoise_steps)
+    env, obs = make_env(task)
     grid = np.linspace(-args.extent, args.extent, args.grid)
     radii = [float(r) for r in args.radii.split(',')]
     out = {k: [] for k in ('resp', 'scene', 'radius', 'nut_xy', 'eef_xy', 'tick')}
     for scene in range(args.scenes):
         probed = []
-        for o, r, t in operating_points(env, obs, policy, radii, scene):
-            out['resp'].append(probe(env, policy, o, grid, seed=1000 + scene))
+        for o, r, t in operating_points(env, obs, policy, radii, scene, task):
+            out['resp'].append(probe(env, policy, o, grid, 1000 + scene, task))
             out['scene'].append(scene)
             out['radius'].append(r)
-            out['nut_xy'].append(np.asarray(o['SquareNut_pos'][:2]))
+            out['nut_xy'].append(np.asarray(o[task['pos']][:2]))
             out['eef_xy'].append(np.asarray(o['robot0_eef_pos'][:2]))
             out['tick'].append(t)
             probed.append(r)
         print(f'scene {scene}: probed radii {probed}', flush=True)
         obs = env.reset()
     env.close()
-    return {**{k: np.array(v) for k, v in out.items()}, 'grid': grid}
+    return {**{k: np.array(v) for k, v in out.items()}, 'grid': grid, 'task': args.task}
 
 
-def probe(env, policy, o, grid, seed: int) -> np.ndarray:
+def probe(env, policy, o, grid, seed: int, task=TASKS['square']) -> np.ndarray:
     """Response (mm) of the chunk's grasp target to each nut offset; every mjData array is
     restored after each (fuzzy_gate's bitwise restore), so the warm-up carries on unchanged."""
     d = env.sim.data
     saved = _data_arrays(d)
-    xy0 = np.array(o['SquareNut_pos'][:2], float)
+    xy0 = np.array(o[task['pos']][:2], float)
 
     def chunk_at(dx, dy):
-        set_object(env, JOINT, xy0 + [dx, dy])
+        set_object(env, task['joint'], xy0 + [dx, dy])
         cur = sil_step.frames(observe(env))
         c = predict(policy, deque([cur] * policy.n_obs_steps), seed)
         for k, v in saved.items():
@@ -134,6 +145,18 @@ def report(d: dict) -> None:
               f'[[{Jm[0, 0]:.2f} {Jm[0, 1]:.2f}] [{Jm[1, 0]:.2f} {Jm[1, 1]:.2f}]]  '
               f'(rows: response x, y; cols: d/dx, d/dy; identity = follows)  '
               f'gains: max {np.median(sv[:, 0]):.2f}, min {np.median(sv[:, 1]):.2f}')
+        # split the interior grid points by whether the moved object is inside the demos' range
+        task = TASKS[str(d.get('task', 'square'))]
+        g = grid_mm[1:-1] / 1e3
+        pos = d['nut_xy'][d['radius'] == r][:, None, None, :] + np.stack(
+            np.meshgrid(g, g, indexing='ij'), -1)[None]
+        inside = np.all((pos >= task['lo']) & (pos <= task['hi']), axis=-1)
+        for name, m in (('inside', inside), ('outside', ~inside)):
+            if m.any():
+                Js = J[m]
+                print(f'    {name:7s} demo range: {m.sum():4d} points, gain xx '
+                      f'{np.median(Js[:, 0, 0]):.2f}, yy {np.median(Js[:, 1, 1]):.2f}, min sv '
+                      f'{np.median(np.linalg.svd(Js, compute_uv=False)[:, 1]):.2f}')
 
 
 def plot(d: dict, path: str) -> None:
@@ -183,13 +206,14 @@ def plot(d: dict, path: str) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--out', required=True)
-    p.add_argument('--weights', default=os.path.join(sil_step._REPO, 'checkpoints',
-                                                     'dp_square_ph_image_cnn.ckpt'))
+    p.add_argument('--task', default='square', choices=sorted(TASKS))
+    p.add_argument('--backend', default='dp', help='make_policy backend (dp, act)')
+    p.add_argument('--weights', default='', help="default: the task's DP checkpoint")
     p.add_argument('--denoise-steps', type=int, default=16)
     p.add_argument('--scenes', type=int, default=10)
     p.add_argument('--grid', type=int, default=7)
     p.add_argument('--extent', type=float, default=0.06, help='m, each side')
-    p.add_argument('--radii', default='0.08,0.03', help='m, eef-handle xy distance')
+    p.add_argument('--radii', default='0.08,0.03', help='m, eef to grasp point, xy')
     p.add_argument('--report-only', action='store_true')
     p.add_argument('--plot', default='', help='png path for the gain-ellipse figure')
     args = p.parse_args()

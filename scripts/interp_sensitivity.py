@@ -36,7 +36,9 @@ import sil_step  # noqa: E402
 from dp_anchor_probe import observe, set_object  # noqa: E402
 from fuzzy_gate import _data_arrays  # noqa: E402
 from interp_collect import encode  # noqa: E402
-from interp_gainmap import JOINT, make_env, operating_points  # noqa: E402
+from interp_gainmap import TASKS, make_env, operating_points  # noqa: E402
+
+JOINT = TASKS['square']['joint']
 
 D_M = 0.02
 PARTS = {'agentview': ip.BLOCKS['agentview'], 'wrist': ip.BLOCKS['wrist']}
@@ -105,13 +107,19 @@ def probe(env, policy, o, seed: int) -> dict:
     out = {}
     with torch.no_grad():
         t0 = den.target(g0)
-        c0 = den.chunk(g0)[:, :3]
+        full0 = den.chunk(g0)
+        c0 = full0[:, :3]
         for ax, k in (('x', 0), ('y', 1)):
             v = dg[ax]
             out[f'norm_{ax}'] = float(v.norm())
             out[f'gain_{ax}'] = float((den.target(g0 + v) - t0)[k]) / (D_M * 1e3)
             out[f'cross_{ax}'] = float((den.target(g0 + v) - t0)[1 - k]) / (D_M * 1e3)
-            out[f'chunk_{ax}'] = float((den.chunk(g0 + v)[:, :3] - c0).norm(dim=1).mean()) / D_M
+            full = den.chunk(g0 + v)
+            out[f'chunk_{ax}'] = float((full[:, :3] - c0).norm(dim=1).mean()) / D_M
+            # where the change goes: mean signed xyz shift (per mm), rotation and gripper parts
+            out[f'dxyz_{ax}'] = ((full[:, :3] - c0).mean(0) / D_M).cpu().numpy()
+            out[f'drot_{ax}'] = float((full[:, 3:9] - full0[:, 3:9]).norm(dim=1).mean())
+            out[f'dgrip_{ax}'] = float((full[:, 9] - full0[:, 9]).abs().mean())
             for part, cols in PARTS.items():
                 m = torch.zeros_like(v)
                 m[cols] = 1.0
@@ -170,6 +178,12 @@ def report(d: dict) -> None:
                            ('  wrist only', 'patch_wrist'), ('gain via J (linear)', 'jgain'),
                            ('|cos(dg, top J dir)|', 'jcos')):
             print(f'{label:22s} {med(key + "_x", m):7.2f} {med(key + "_y", m):7.2f}')
+        if 'dxyz_x' in d:
+            for ax in 'xy':
+                v = np.median(d[f'dxyz_{ax}'][m], 0)
+                print(f'nut moved in {ax}: mean chunk shift xyz per mm [{v[0]:+.2f} {v[1]:+.2f} '
+                      f'{v[2]:+.2f}], rot6d change {med("drot_" + ax, m):.3f}, '
+                      f'gripper change {med("dgrip_" + ax, m):.3f}')
         fx, fy = d['film_x'][m], d['film_y'][m]
         print(f'FiLM rel. change: x {np.median(fx):.4f}  y {np.median(fy):.4f}  per block x/y: '
               + ' '.join(f'{a:.2f}' for a in np.median(fx, 0) / np.median(fy, 0)))
