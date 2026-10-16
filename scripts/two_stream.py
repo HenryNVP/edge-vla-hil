@@ -226,7 +226,7 @@ def main() -> None:
     t.add_argument('--max-age', type=int, default=MAX_AGE)
     t.add_argument('--save-every', type=int, default=10000)
     t.add_argument('--seed', type=int, default=0)
-    t.add_argument('--local-enc', default='tiny', choices=['tiny', 'shared'])
+    t.add_argument('--local-enc', default='tiny', choices=['tiny', 'mobile', 'shared'])
     t.add_argument('--freeze', action='store_true', help='freeze the ImageNet backbone')
     t.add_argument('--local-drop', type=float, default=0.0)
     t.add_argument('--final-norm', action='store_true', help='LayerNorm closing each stack')

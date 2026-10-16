@@ -20,6 +20,7 @@ Modes, for the ablations that decide whether the cloud is worth anything:
     fresh  cloud on frame t, age 0, no local images (an ACT-like upper bound)
 
 Run 1 options (step 0's local stream overfit: a scratch TinyCNN on 320 demos):
+    local_enc='mobile'  an ImageNet MobileNetV3-Small for the local images (MobileLocal)
     local_enc='shared'  the local images go through the cloud's own ResNet + projection, so both
                         halves write tokens in one feature space (a fresh token can stand in for a
                         stale one, the later changed-patch idea)
@@ -99,6 +100,20 @@ class TinyCNN(nn.Module):
         return self.proj(self.net(_images(img))).flatten(2).transpose(1, 2)
 
 
+class MobileLocal(nn.Module):
+    """ImageNet MobileNetV3-Small cut at stride 16 (48 channels): 84 px -> 6x6 tokens at ~8 M
+    MACs per image, against ~17 M for TinyCNN and ~0.35 G for the cloud's ResNet to layer3."""
+
+    def __init__(self, d: int) -> None:
+        super().__init__()
+        m = torchvision.models.mobilenet_v3_small(weights='IMAGENET1K_V1')
+        self.backbone = m.features[:9]        # named so training gives it the backbone lr
+        self.proj = nn.Conv2d(48, d, 1)
+
+    def forward(self, img: torch.Tensor) -> torch.Tensor:
+        return self.proj(self.backbone(_images(img))).flatten(2).transpose(1, 2)
+
+
 class TwoStream(nn.Module):
     def __init__(self, mode: str = 'two', d: int = 256, state_dim: int = 9, action_dim: int = 10,
                  chunk: int = 16, max_age: int = 48, heads: int = 8, local_enc: str = 'tiny',
@@ -116,8 +131,8 @@ class TwoStream(nn.Module):
         self.null = nn.Parameter(torch.zeros(1, 1, d))
         if local_drop > 0:
             self.dropped = nn.Parameter(torch.zeros(1, 1, d))
-        self.local_cnn = (TinyCNN(d) if mode in ('two', 'local') and local_enc == 'tiny'
-                          else None)
+        local_cls = {'tiny': TinyCNN, 'mobile': MobileLocal}.get(local_enc)
+        self.local_cnn = (local_cls(d) if mode in ('two', 'local') and local_cls else None)
         self.state = nn.Linear(state_dim, d)
         self.age = nn.Embedding(max_age + 1, d)
         self.local_pos = nn.Parameter(torch.randn(1, 2 + 2 * 36, d) * 0.02)
