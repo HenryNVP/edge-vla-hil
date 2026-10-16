@@ -55,7 +55,7 @@ def train(args) -> None:
     torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = True
     amp = torch.autocast('cuda', dtype=torch.bfloat16, enabled=args.amp and dev == 'cuda')
     cfg = {'local_enc': args.local_enc, 'use_prev': args.prev, 'use_local': not args.no_local,
-           'max_age': args.max_age}
+           'use_ta': not args.no_ta, 'local_views': args.local_views, 'max_age': args.max_age}
     model = BEVPlanner(torch.from_numpy(P), **cfg).to(dev)
     print(f'config {cfg}; {sum(p.numel() for p in model.parameters()) / 1e6:.2f} M parameters',
           flush=True)
@@ -177,6 +177,10 @@ def main() -> None:
     ap.add_argument('--local-enc', default='mobile', choices=['tiny', 'mobile'])
     ap.add_argument('--prev', action='store_true', help="feed the robot's previous map")
     ap.add_argument('--no-local', action='store_true', help='ablation: no fresh local images')
+    ap.add_argument('--no-ta', action='store_true',
+                    help='ablation: no temporal attention (cloud map only through the fusion)')
+    ap.add_argument('--local-views', default='both', choices=['both', 'agent', 'top'],
+                    help="ablation: the views in the robot's fresh map")
     ap.add_argument('--replan', type=int, default=4, help='ticks between plans (for --prev)')
     ap.add_argument('--shift', type=int, default=4)
     ap.add_argument('--no-amp', dest='amp', action='store_false', help='train in fp32')

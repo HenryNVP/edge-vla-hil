@@ -10,6 +10,8 @@ cheap map of its own and plans a chunk from it.
     local  (frame t)    MobileNetV3-Small (or TinyCNN) on agentview + top -> the same projection
                         -> fresh BEV_l [256, D] (a grid_sample, no attention); wrist -> 36 tokens
                         per cell: x = Linear([BEV_l ; BEV_c]) + cell position
+                        (BEV_l averages the views per cell with equal weight, so an occluded view
+                        dilutes it; `local_views` restricts it to agentview or top alone)
                         2 layers: self-attention over [x ; wrist ; proprio ; age], then temporal
                         attention: x reads BEV_c (+ age embedding) and, when given, the robot's
                         own previous map (`prev`, BEVFormer's history), so a cell can pull the
@@ -32,6 +34,7 @@ X_RANGE = (-0.32, 0.32)       # table frame, metres; pegs at x = 0.23, the nut s
 Y_RANGE = (-0.32, 0.32)
 Z_LEVELS = (0.82, 0.86, 0.90, 0.94)   # table top and three heights above it (the nut is lifted)
 GRID = 16
+LOCAL_VIEWS = {'both': [0, 1], 'agent': [0], 'top': [1]}   # the robot map's views (P rows)
 IMAGE = 84
 
 
@@ -100,19 +103,25 @@ class CloudBEV(nn.Module):
 
 
 class LocalLayer(nn.Module):
-    """Self-attention over the local tokens, temporal attention to the stale maps, MLP."""
+    """Self-attention over the local tokens, temporal attention to the stale maps (unless
+    `use_ta` is off: the ablation where the cloud map enters only through the per-cell fusion),
+    MLP."""
 
-    def __init__(self, d: int, heads: int) -> None:
+    def __init__(self, d: int, heads: int, use_ta: bool = True) -> None:
         super().__init__()
-        self.n1, self.n2, self.n3 = nn.LayerNorm(d), nn.LayerNorm(d), nn.LayerNorm(d)
+        self.n1, self.n3 = nn.LayerNorm(d), nn.LayerNorm(d)
         self.sa = nn.MultiheadAttention(d, heads, batch_first=True)
-        self.ta = nn.MultiheadAttention(d, heads, batch_first=True)
+        if use_ta:
+            self.n2 = nn.LayerNorm(d)
+            self.ta = nn.MultiheadAttention(d, heads, batch_first=True)
+        self.use_ta = use_ta
         self.mlp = nn.Sequential(nn.Linear(d, 4 * d), nn.GELU(), nn.Linear(4 * d, d))
 
     def forward(self, x, mem):
         h = self.n1(x)
         x = x + self.sa(h, h, h, need_weights=False)[0]
-        x = x + self.ta(self.n2(x), mem, mem, need_weights=False)[0]
+        if self.use_ta:
+            x = x + self.ta(self.n2(x), mem, mem, need_weights=False)[0]
         return x + self.mlp(self.n3(x))
 
 
@@ -120,10 +129,13 @@ class BEVPlanner(nn.Module):
     def __init__(self, P: torch.Tensor | None = None, d: int = 256, state_dim: int = 9,
                  action_dim: int = 10, chunk: int = 16, max_age: int = 48, heads: int = 8,
                  local_enc: str = 'mobile', use_prev: bool = False, use_local: bool = True,
-                 grid: int = GRID) -> None:
+                 use_ta: bool = True, local_views: str = 'both', grid: int = GRID) -> None:
         super().__init__()
+        if local_views not in LOCAL_VIEWS:
+            raise ValueError(f'local_views {local_views!r} not in {tuple(LOCAL_VIEWS)}')
         self.chunk, self.max_age, self.grid = chunk, max_age, grid
         self.use_prev, self.use_local = use_prev, use_local
+        self.local_views = LOCAL_VIEWS[local_views]
         n = grid * grid
         self.register_buffer('P', P if P is not None else torch.zeros(2, 3, 4))
         self.register_buffer('pts', pillar_points(grid))
@@ -137,7 +149,7 @@ class BEVPlanner(nn.Module):
         self.wrist_pos = nn.Parameter(torch.randn(1, 36, d) * 0.02)
         self.src_emb = nn.Parameter(torch.randn(2, 1, 1, d) * 0.02)   # cloud map / previous map
         self.no_prev = nn.Parameter(torch.zeros(1, 1, d))
-        self.layers = nn.ModuleList(LocalLayer(d, heads) for _ in range(2))
+        self.layers = nn.ModuleList(LocalLayer(d, heads, use_ta) for _ in range(2))
         self.norm = nn.LayerNorm(d)
         self.queries = nn.Parameter(torch.randn(1, chunk, d) * 0.02)
         self.head_dec = nn.TransformerDecoder(
@@ -161,7 +173,9 @@ class BEVPlanner(nn.Module):
         bev_c = mem[:, :n]
         if self.local_cnn is not None:
             coords, valid = self._coords()
-            fresh = bev_sample([self._fmap(agent), self._fmap(top)], coords, valid)
+            v = self.local_views
+            imgs = [agent, top]
+            fresh = bev_sample([self._fmap(imgs[i]) for i in v], coords[v], valid[v])
             wrist_tok = self.local_cnn(wrist) + self.wrist_pos
         else:
             fresh = torch.zeros_like(bev_c)

@@ -44,3 +44,17 @@ def test_pillar_points_cover_the_grid():
     p = bm.pillar_points(4)
     assert p.shape == (16, len(bm.Z_LEVELS), 3)
     assert p[..., 0].min() == bm.X_RANGE[0] and p[..., 1].max() == bm.Y_RANGE[1]
+
+
+@pytest.mark.parametrize('kw', [{'use_ta': False}, {'local_views': 'agent'},
+                                {'local_views': 'top'}, {'use_local': False}])
+def test_ablations_plan(kw):
+    P = torch.tensor(np.stack([_P(), _P()]), dtype=torch.float32)
+    m = bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny', **kw).eval()
+    img = torch.zeros(1, 84, 84, 3, dtype=torch.uint8)
+    st = torch.zeros(1, 9)
+    with torch.no_grad():
+        out = m(img, img, st, img, img, img, st, torch.tensor([3]))
+    assert out.shape == (1, 16, 10)
+    if kw.get('use_ta') is False:
+        assert not any('.ta.' in n for n, _ in m.named_parameters())
