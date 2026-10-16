@@ -46,9 +46,12 @@ def collect(args) -> None:
     cfg = sq.SquareConfig(chunk_size=15)
     planner = sq.SquarePolicy(cfg)
     oracle_frames = sq.make_frames(None)
+    cams = ('agentview', 'robot0_eye_in_hand') + (('birdview',) if args.top else ())
     base = build_env(EnvSpec(env_name='NutAssemblySquare', action_hz=20.0,
                              max_episode_s=args.max_s + 1.0, seed=0,
-                             absolute_actions=True)).env
+                             absolute_actions=True, cameras=cams)).env
+    if args.top:
+        import top_camera
 
     def held(o):
         return sq.is_held(o['robot0_eef_pos'], o['robot0_gripper_qpos'], o['SquareNut_pos'],
@@ -68,7 +71,13 @@ def collect(args) -> None:
         np.random.seed(seed_k)
         env.speed = float(np.random.choice(SPEEDS))
         obs = env.reset()
+        extra = {}
+        if args.top:
+            obs = top_camera.apply(base)
+            extra = {f'P_{c}': m for c, m in top_camera.matrices(
+                base, ('agentview', 'birdview'), base.camera_heights[0]).items()}
         agent, wrist, state, actions = [], [], [], []
+        top, nut = [], []
         chunk, i = None, 0
         ok = False
         for _t in range(int(args.max_s * 20)):
@@ -79,6 +88,9 @@ def collect(args) -> None:
             agent.append(a)
             wrist.append(w)
             state.append(s)
+            if args.top:
+                top.append(np.flipud(np.asarray(obs['birdview_image'])).astype(np.uint8))
+                nut.append(np.concatenate([obs['SquareNut_pos'], obs['SquareNut_quat']]))
             actions.append(chunk[i].astype(np.float32))
             obs, *_ = env.step(chunk[i])
             i += 1
@@ -86,7 +98,9 @@ def collect(args) -> None:
                 ok = True
                 break
         if ok:
-            np.savez_compressed(out, agentview=np.stack(agent), wrist=np.stack(wrist),
+            if args.top:
+                extra.update(top=np.stack(top), nut=np.stack(nut).astype(np.float32))
+            np.savez_compressed(out, agentview=np.stack(agent), wrist=np.stack(wrist), **extra,
                                 state=np.stack(state),
                                 action=abs7_to_abs10(np.stack(actions)).astype(np.float32),
                                 speed=env.speed)
@@ -148,6 +162,9 @@ def main() -> None:
                    help='ticks between planner calls (5 halved the planner\'s success: its phase '
                         'logic assumes chunk-length execution)')
     c.add_argument('--max-s', type=float, default=40.0)
+    c.add_argument('--top', action='store_true',
+                   help='also record the close top camera (top_camera.py), the nut pose '
+                        '[pos, quat xyzw] and both scene cameras\' projection matrices')
     c.add_argument('--conveyor-range', type=float, default=0.06)
     w = sub.add_parser('write')
     w.add_argument('--npz-dir', required=True, help='one or more, comma-separated')
