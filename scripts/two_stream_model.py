@@ -24,6 +24,9 @@ Run 1 options (step 0's local stream overfit: a scratch TinyCNN on 320 demos):
                         halves write tokens in one feature space (a fresh token can stand in for a
                         stale one, the later changed-patch idea)
     freeze=True         the ImageNet backbone is frozen (run under no_grad)
+    final_norm=True     a closing LayerNorm on each pre-norm stack. Without it the step-0 models ran
+                        2x worse open loop in eval than with dropout on (the head reads an
+                        unnormalised residual stream; outputs/qp1/dropgap.py)
     local_drop=p        in training, a sample's local image tokens are replaced by one learned
                         token with probability p, so the plan cannot rest on them alone
 
@@ -50,7 +53,7 @@ def _images(x: torch.Tensor) -> torch.Tensor:
 
 class CloudEncoder(nn.Module):
     def __init__(self, d: int, state_dim: int, layers: int = 2, heads: int = 8,
-                 freeze: bool = False) -> None:
+                 freeze: bool = False, final_norm: bool = False, dropout: float = 0.1) -> None:
         super().__init__()
         self.freeze = freeze
         from torchvision.ops.misc import FrozenBatchNorm2d
@@ -63,8 +66,8 @@ class CloudEncoder(nn.Module):
         self.state = nn.Linear(state_dim, d)
         self.pos = nn.Parameter(torch.randn(1, 2 * 36 + 1, d) * 0.02)
         self.enc = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d, heads, 4 * d, 0.1, batch_first=True, norm_first=True),
-            layers)
+            nn.TransformerEncoderLayer(d, heads, 4 * d, dropout, batch_first=True, norm_first=True),
+            layers, norm=nn.LayerNorm(d) if final_norm else None)
 
     def tokens(self, img: torch.Tensor) -> torch.Tensor:
         if self.freeze:
@@ -99,7 +102,8 @@ class TinyCNN(nn.Module):
 class TwoStream(nn.Module):
     def __init__(self, mode: str = 'two', d: int = 256, state_dim: int = 9, action_dim: int = 10,
                  chunk: int = 16, max_age: int = 48, heads: int = 8, local_enc: str = 'tiny',
-                 freeze: bool = False, local_drop: float = 0.0) -> None:
+                 freeze: bool = False, local_drop: float = 0.0, final_norm: bool = False,
+                 dropout: float = 0.1) -> None:
         super().__init__()
         if mode not in MODES:
             raise ValueError(f'mode {mode!r} not in {MODES}')
@@ -107,19 +111,24 @@ class TwoStream(nn.Module):
             raise ValueError("local_enc='shared' needs mode 'two'")
         self.mode, self.chunk, self.max_age = mode, chunk, max_age
         self.local_enc, self.local_drop = local_enc, local_drop
-        self.cloud = None if mode == 'local' else CloudEncoder(d, state_dim, freeze=freeze)
+        self.cloud = None if mode == 'local' else CloudEncoder(
+            d, state_dim, freeze=freeze, final_norm=final_norm, dropout=dropout)
         self.null = nn.Parameter(torch.zeros(1, 1, d))
-        self.dropped = nn.Parameter(torch.zeros(1, 1, d))
+        if local_drop > 0:
+            self.dropped = nn.Parameter(torch.zeros(1, 1, d))
         self.local_cnn = (TinyCNN(d) if mode in ('two', 'local') and local_enc == 'tiny'
                           else None)
         self.state = nn.Linear(state_dim, d)
         self.age = nn.Embedding(max_age + 1, d)
         self.local_pos = nn.Parameter(torch.randn(1, 2 + 2 * 36, d) * 0.02)
-        self.local = nn.TransformerDecoder(
-            nn.TransformerDecoderLayer(d, heads, 4 * d, 0.1, batch_first=True, norm_first=True), 2)
+        def dec():
+            return nn.TransformerDecoder(
+                nn.TransformerDecoderLayer(d, heads, 4 * d, dropout, batch_first=True,
+                                           norm_first=True),
+                2, norm=nn.LayerNorm(d) if final_norm else None)
+        self.local = dec()
         self.queries = nn.Parameter(torch.randn(1, chunk, d) * 0.02)
-        self.head_dec = nn.TransformerDecoder(
-            nn.TransformerDecoderLayer(d, heads, 4 * d, 0.1, batch_first=True, norm_first=True), 2)
+        self.head_dec = dec()
         self.out = nn.Linear(d, action_dim)
 
     def memory(self, agent0, wrist0, state0) -> torch.Tensor:

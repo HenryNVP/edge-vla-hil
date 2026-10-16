@@ -93,7 +93,8 @@ def train(args) -> None:
     print(f'{len(eps)} episodes, {lens.sum()} frames, mode {args.mode}', flush=True)
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
     torch.manual_seed(args.seed)
-    cfg = {'local_enc': args.local_enc, 'freeze': args.freeze, 'local_drop': args.local_drop}
+    cfg = {'local_enc': args.local_enc, 'freeze': args.freeze, 'local_drop': args.local_drop,
+           'final_norm': args.final_norm, 'dropout': args.dropout}
     model = TwoStream(args.mode, max_age=args.max_age, **cfg).to(dev)
     print(f'config {cfg}, shift {args.shift}', flush=True)
     print(f'{sum(p.numel() for p in model.parameters()) / 1e6:.2f} M parameters', flush=True)
@@ -137,6 +138,18 @@ def train(args) -> None:
                         'stats': st, 'step': step, 'cfg': cfg}, args.out)
 
 
+def load_model(ck: dict):
+    """A TwoStream from a checkpoint dict. Run-1 checkpoints carry an unused `dropped` token
+    when trained without local dropout; it is ignored."""
+    from two_stream_model import TwoStream
+    model = TwoStream(ck['mode'], max_age=ck['max_age'], **ck.get('cfg', {}))
+    sd = dict(ck['model'])
+    if not hasattr(model, 'dropped'):
+        sd.pop('dropped', None)
+    model.load_state_dict(sd)
+    return model
+
+
 class TwoStreamPolicy:
     """The harness's ChunkPolicy for a trained TwoStream: `predict(obs)` is the cloud half and
     returns the memory (it travels through StepWorker like a chunk); `local(obs, memory, age)`
@@ -155,8 +168,7 @@ class TwoStreamPolicy:
         ck = torch.load(path, map_location='cpu', weights_only=False)
         self.dev = device if torch.cuda.is_available() else 'cpu'
         self.mode, self.max_age = ck['mode'], ck['max_age']
-        self.model = TwoStream(self.mode, max_age=self.max_age, **ck.get('cfg', {}))
-        self.model.load_state_dict(ck['model'])
+        self.model = load_model(ck)
         self.model.to(self.dev).eval()
         self.st = {k: torch.tensor(v, device=self.dev) for k, v in ck['stats'].items()}
 
@@ -207,6 +219,8 @@ def main() -> None:
     t.add_argument('--local-enc', default='tiny', choices=['tiny', 'shared'])
     t.add_argument('--freeze', action='store_true', help='freeze the ImageNet backbone')
     t.add_argument('--local-drop', type=float, default=0.0)
+    t.add_argument('--final-norm', action='store_true', help='LayerNorm closing each stack')
+    t.add_argument('--dropout', type=float, default=0.1)
     t.add_argument('--shift', type=int, default=0, help='random-shift augmentation pad (px)')
     args = ap.parse_args()
     if args.cmd == 'train':
