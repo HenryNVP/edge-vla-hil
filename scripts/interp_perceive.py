@@ -38,16 +38,22 @@ def collect(args) -> dict:
     grabbed = {}
     feature_module(policy, args.backend).register_forward_hook(
         lambda _m, _i, out: grabbed.__setitem__('f', out))
-    measure = lambda _chunk: grabbed['f'].detach().float().reshape(-1).cpu().numpy() * 1e-3
+    seen_abs = []                                   # every measured feature; [0] is the baseline
+
+    def measure(_chunk):
+        seen_abs.append(grabbed['f'].detach().float().reshape(-1).cpu().numpy())
+        return seen_abs[-1] * 1e-3
     env, obs = make_env(task)
     grid = np.linspace(-args.extent, args.extent, args.grid)
     radii = [float(r) for r in args.radii.split(',')]
-    out = {k: [] for k in ('feat', 'scene', 'radius', 'nut_xy')}
+    out = {k: [] for k in ('feat', 'base', 'scene', 'radius', 'nut_xy')}
     for scene in range(args.scenes):
         for o, r, _t in operating_points(env, obs, policy, radii, scene, task):
             # probe() returns (measure(moved) - measure(base)) * 1e3: the paired feature change
             out['feat'].append(probe(env, policy, o, grid, 1000 + scene, task, measure)
                                .astype(np.float32))
+            out['base'].append(seen_abs[0])
+            seen_abs.clear()
             out['scene'].append(scene)
             out['radius'].append(r)
             out['nut_xy'].append(np.asarray(o[task['pos']][:2]))
