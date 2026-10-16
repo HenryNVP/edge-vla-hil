@@ -20,3 +20,13 @@ def test_chunk_targets_pad_with_the_last_action():
     assert (tgt[3:] == a[-1]).all()
     tgt, mask = ts.chunk_targets(a, 0, h=5)
     assert not mask.any() and (tgt == a[:5]).all()
+
+
+def test_random_shift_keeps_shape_and_moves_content():
+    torch = __import__('pytest').importorskip('torch')
+    x = torch.zeros(64, 12, 12, 3, dtype=torch.uint8)
+    x[:, 6, 6] = 255
+    y = ts.random_shift(x, 2)
+    assert y.shape == x.shape and y.dtype == torch.uint8
+    assert (y.flatten(1).amax(1) == 255).all()             # the dot survives a 2 px shift
+    assert (y[:, 6, 6, 0] != 255).any()                     # and some samples moved it

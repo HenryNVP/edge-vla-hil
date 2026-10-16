@@ -60,6 +60,22 @@ def chunk_targets(action: np.ndarray, t: int, h: int = H) -> tuple[np.ndarray, n
     return a, mask
 
 
+def random_shift(x, pad: int = 4):
+    """DrQ-style augmentation on uint8 [B, H, W, 3]: replicate-pad by `pad`, crop back at a
+    random offset per sample."""
+    import torch
+    import torch.nn.functional as F
+    b, h, w, _ = x.shape
+    p = F.pad(x.permute(0, 3, 1, 2).float(), (pad,) * 4, mode='replicate')
+    ox = torch.randint(0, 2 * pad + 1, (b,), device=x.device)
+    oy = torch.randint(0, 2 * pad + 1, (b,), device=x.device)
+    rows = (oy[:, None] + torch.arange(h, device=x.device))[:, None, :, None]
+    cols = (ox[:, None] + torch.arange(w, device=x.device))[:, None, None, :]
+    out = p[torch.arange(b, device=x.device)[:, None, None, None],
+            torch.arange(3, device=x.device)[None, :, None, None], rows, cols]
+    return out.permute(0, 2, 3, 1).to(torch.uint8)
+
+
 def stats(eps: list[dict]) -> dict:
     s = np.concatenate([e['state'] for e in eps])
     a = np.concatenate([e['action'] for e in eps])
@@ -77,9 +93,11 @@ def train(args) -> None:
     print(f'{len(eps)} episodes, {lens.sum()} frames, mode {args.mode}', flush=True)
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
     torch.manual_seed(args.seed)
-    model = TwoStream(args.mode, max_age=args.max_age).to(dev)
+    cfg = {'local_enc': args.local_enc, 'freeze': args.freeze, 'local_drop': args.local_drop}
+    model = TwoStream(args.mode, max_age=args.max_age, **cfg).to(dev)
+    print(f'config {cfg}, shift {args.shift}', flush=True)
     print(f'{sum(p.numel() for p in model.parameters()) / 1e6:.2f} M parameters', flush=True)
-    bb = [p for n, p in model.named_parameters() if '.backbone.' in n]
+    bb = [p for n, p in model.named_parameters() if '.backbone.' in n and p.requires_grad]
     rest = [p for n, p in model.named_parameters() if '.backbone.' not in n]
     lrs = [args.lr, args.lr * 0.1]                     # pretrained backbone: 10x lower, like ACT
     opt = torch.optim.AdamW([{'params': rest}, {'params': bb}], lr=args.lr, weight_decay=1e-4)
@@ -94,7 +112,10 @@ def train(args) -> None:
         acts, masks = zip(*(chunk_targets(eps[i]['action'], j) for i, j in zip(e, t)))
 
         def grab(key, idx):
-            return torch.from_numpy(np.stack([eps[i][key][j] for i, j in zip(e, idx)])).to(dev)
+            x = torch.from_numpy(np.stack([eps[i][key][j] for i, j in zip(e, idx)])).to(dev)
+            if args.shift and key in ('agentview', 'wrist'):
+                x = random_shift(x, args.shift)
+            return x
         state0 = (grab('state', t0) - sm) / ss
         state = (grab('state', t) - sm) / ss
         target = (torch.from_numpy(np.stack(acts)).to(dev) - am) / as_
@@ -105,7 +126,7 @@ def train(args) -> None:
         loss = (F.l1_loss(pred, target, reduction='none') * ~mask[..., None]).mean()
         opt.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
+        torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], 10.0)
         opt.step()
         sched.step()
         if step % 500 == 0 or step == args.steps:
@@ -113,7 +134,7 @@ def train(args) -> None:
         if step % args.save_every == 0 or step == args.steps:
             os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
             torch.save({'model': model.state_dict(), 'mode': args.mode, 'max_age': args.max_age,
-                        'stats': st, 'step': step}, args.out)
+                        'stats': st, 'step': step, 'cfg': cfg}, args.out)
 
 
 class TwoStreamPolicy:
@@ -134,7 +155,7 @@ class TwoStreamPolicy:
         ck = torch.load(path, map_location='cpu', weights_only=False)
         self.dev = device if torch.cuda.is_available() else 'cpu'
         self.mode, self.max_age = ck['mode'], ck['max_age']
-        self.model = TwoStream(self.mode, max_age=self.max_age)
+        self.model = TwoStream(self.mode, max_age=self.max_age, **ck.get('cfg', {}))
         self.model.load_state_dict(ck['model'])
         self.model.to(self.dev).eval()
         self.st = {k: torch.tensor(v, device=self.dev) for k, v in ck['stats'].items()}
@@ -183,6 +204,10 @@ def main() -> None:
     t.add_argument('--max-age', type=int, default=MAX_AGE)
     t.add_argument('--save-every', type=int, default=10000)
     t.add_argument('--seed', type=int, default=0)
+    t.add_argument('--local-enc', default='tiny', choices=['tiny', 'shared'])
+    t.add_argument('--freeze', action='store_true', help='freeze the ImageNet backbone')
+    t.add_argument('--local-drop', type=float, default=0.0)
+    t.add_argument('--shift', type=int, default=0, help='random-shift augmentation pad (px)')
     args = ap.parse_args()
     if args.cmd == 'train':
         train(args)

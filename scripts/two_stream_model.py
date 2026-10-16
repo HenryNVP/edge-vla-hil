@@ -19,6 +19,14 @@ Modes, for the ablations that decide whether the cloud is worth anything:
     cloud  no local images: the local side has only proprio(t) and age (stale ACT + age)
     fresh  cloud on frame t, age 0, no local images (an ACT-like upper bound)
 
+Run 1 options (step 0's local stream overfit: a scratch TinyCNN on 320 demos):
+    local_enc='shared'  the local images go through the cloud's own ResNet + projection, so both
+                        halves write tokens in one feature space (a fresh token can stand in for a
+                        stale one, the later changed-patch idea)
+    freeze=True         the ImageNet backbone is frozen (run under no_grad)
+    local_drop=p        in training, a sample's local image tokens are replaced by one learned
+                        token with probability p, so the plan cannot rest on them alone
+
 torch only; imported lazily by two_stream.py so the bare-box tests never load it.
 """
 from __future__ import annotations
@@ -41,12 +49,16 @@ def _images(x: torch.Tensor) -> torch.Tensor:
 
 
 class CloudEncoder(nn.Module):
-    def __init__(self, d: int, state_dim: int, layers: int = 2, heads: int = 8) -> None:
+    def __init__(self, d: int, state_dim: int, layers: int = 2, heads: int = 8,
+                 freeze: bool = False) -> None:
         super().__init__()
+        self.freeze = freeze
         from torchvision.ops.misc import FrozenBatchNorm2d
         r = torchvision.models.resnet18(weights='IMAGENET1K_V1', norm_layer=FrozenBatchNorm2d)
         self.backbone = nn.Sequential(r.conv1, r.bn1, r.relu, r.maxpool, r.layer1, r.layer2,
                                       r.layer3)
+        if freeze:
+            self.backbone.requires_grad_(False)
         self.proj = nn.Conv2d(256, d, 1)
         self.state = nn.Linear(state_dim, d)
         self.pos = nn.Parameter(torch.randn(1, 2 * 36 + 1, d) * 0.02)
@@ -55,7 +67,12 @@ class CloudEncoder(nn.Module):
             layers)
 
     def tokens(self, img: torch.Tensor) -> torch.Tensor:
-        f = self.proj(self.backbone(_images(img)))           # [B, D, 6, 6] at 84 px
+        if self.freeze:
+            with torch.no_grad():
+                f = self.backbone(_images(img))
+        else:
+            f = self.backbone(_images(img))
+        f = self.proj(f)                                     # [B, D, 6, 6] at 84 px
         return f.flatten(2).transpose(1, 2)
 
     def forward(self, agent, wrist, state) -> torch.Tensor:
@@ -81,14 +98,20 @@ class TinyCNN(nn.Module):
 
 class TwoStream(nn.Module):
     def __init__(self, mode: str = 'two', d: int = 256, state_dim: int = 9, action_dim: int = 10,
-                 chunk: int = 16, max_age: int = 48, heads: int = 8) -> None:
+                 chunk: int = 16, max_age: int = 48, heads: int = 8, local_enc: str = 'tiny',
+                 freeze: bool = False, local_drop: float = 0.0) -> None:
         super().__init__()
         if mode not in MODES:
             raise ValueError(f'mode {mode!r} not in {MODES}')
+        if local_enc == 'shared' and mode != 'two':
+            raise ValueError("local_enc='shared' needs mode 'two'")
         self.mode, self.chunk, self.max_age = mode, chunk, max_age
-        self.cloud = None if mode == 'local' else CloudEncoder(d, state_dim)
+        self.local_enc, self.local_drop = local_enc, local_drop
+        self.cloud = None if mode == 'local' else CloudEncoder(d, state_dim, freeze=freeze)
         self.null = nn.Parameter(torch.zeros(1, 1, d))
-        self.local_cnn = TinyCNN(d) if mode in ('two', 'local') else None
+        self.dropped = nn.Parameter(torch.zeros(1, 1, d))
+        self.local_cnn = (TinyCNN(d) if mode in ('two', 'local') and local_enc == 'tiny'
+                          else None)
         self.state = nn.Linear(state_dim, d)
         self.age = nn.Embedding(max_age + 1, d)
         self.local_pos = nn.Parameter(torch.randn(1, 2 + 2 * 36, d) * 0.02)
@@ -110,8 +133,13 @@ class TwoStream(nn.Module):
         b = state.shape[0]
         a = self.age(age.clamp(0, self.max_age))[:, None]          # [B, 1, D]
         x = [self.state(state)[:, None], a]
-        if self.local_cnn is not None:
-            x += [self.local_cnn(agent), self.local_cnn(wrist)]
+        enc = self.cloud.tokens if self.local_enc == 'shared' else self.local_cnn
+        if enc is not None and self.mode in ('two', 'local'):
+            img = torch.cat([enc(agent), enc(wrist)], 1)
+            if self.training and self.local_drop > 0:
+                drop = torch.rand(b, 1, 1, device=img.device) < self.local_drop
+                img = torch.where(drop, self.dropped.expand_as(img), img)
+            x += [img]
         x = torch.cat(x, 1)
         x = x + self.local_pos[:, :x.shape[1]]
         m = mem + a                                                  # the memory knows its age
