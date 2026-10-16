@@ -5,7 +5,8 @@ Training is two_stream.py's (random age in [0, max_age], chunk L1, random shift)
 also carry the close top view and the camera matrices (oracle_demos.py collect --top). With
 --prev, each sample also runs the local half on the frame `replan` ticks earlier (same memory, no
 gradient, as BEVFormer treats its history) and feeds that map as the robot's previous BEV; it is
-withheld with probability 0.2 so the planner also works at an episode's first plan.
+withheld with probability 0.2 so the planner also works at an episode's first plan. Training
+runs under bf16 autocast (4x faster attention on the 5060); the policy runs in fp32.
 
     python3 scripts/bev_planner.py --data data/oracle_square_top/npz --out outputs/bev/bev.pt
     python3 scripts/dp_mech.py --task square --backend bev --weights outputs/bev/bev.pt \
@@ -51,6 +52,8 @@ def train(args) -> None:
     print(f'{len(eps)} episodes, {lens.sum()} frames', flush=True)
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
     torch.manual_seed(args.seed)
+    torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = True
+    amp = torch.autocast('cuda', dtype=torch.bfloat16, enabled=args.amp and dev == 'cuda')
     cfg = {'local_enc': args.local_enc, 'use_prev': args.prev, 'use_local': not args.no_local,
            'max_age': args.max_age}
     model = BEVPlanner(torch.from_numpy(P), **cfg).to(dev)
@@ -77,17 +80,19 @@ def train(args) -> None:
         target = (torch.from_numpy(np.stack(acts)).to(dev) - am) / as_
         mask = torch.from_numpy(np.stack(masks)).to(dev)
         age = torch.from_numpy(t - t0).long().to(dev)
-        mem = model.memory(grab('agentview', t0), grab('top', t0), grab('state', t0))
-        prev = None
-        if args.prev and rng.random() > 0.2:
-            tp = np.maximum(t - args.replan, t0)        # the previous plan, same memory
-            with torch.no_grad():
-                _, prev = model.plan(mem, grab('agentview', tp), grab('top', tp),
-                                     grab('wrist', tp), grab('state', tp),
-                                     torch.from_numpy(tp - t0).long().to(dev), return_bev=True)
-        pred = model.plan(mem, grab('agentview', t), grab('top', t), grab('wrist', t),
-                          grab('state', t), age, prev)
-        loss = (F.l1_loss(pred, target, reduction='none') * ~mask[..., None]).mean()
+        with amp:
+            mem = model.memory(grab('agentview', t0), grab('top', t0), grab('state', t0))
+            prev = None
+            if args.prev and rng.random() > 0.2:
+                tp = np.maximum(t - args.replan, t0)        # the previous plan, same memory
+                with torch.no_grad():
+                    _, prev = model.plan(mem, grab('agentview', tp), grab('top', tp),
+                                         grab('wrist', tp), grab('state', tp),
+                                         torch.from_numpy(tp - t0).long().to(dev),
+                                         return_bev=True)
+            pred = model.plan(mem, grab('agentview', t), grab('top', t), grab('wrist', t),
+                              grab('state', t), age, prev)
+        loss = (F.l1_loss(pred.float(), target, reduction='none') * ~mask[..., None]).mean()
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
@@ -174,6 +179,7 @@ def main() -> None:
     ap.add_argument('--no-local', action='store_true', help='ablation: no fresh local images')
     ap.add_argument('--replan', type=int, default=4, help='ticks between plans (for --prev)')
     ap.add_argument('--shift', type=int, default=4)
+    ap.add_argument('--no-amp', dest='amp', action='store_false', help='train in fp32')
     train(ap.parse_args())
 
 
