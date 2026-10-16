@@ -203,6 +203,16 @@ class TwoStreamPolicy:
         return abs10_to_abs7(out.cpu().numpy())
 
 
+class TwoStreamChunkPolicy(TwoStreamPolicy):
+    """The same checkpoint as an ordinary remote chunk policy: `predict(obs)` runs both halves
+    on the request frame (age 0) and returns the 7-dim chunk, which then arrives stale and is
+    played by any stale-chunk executor (synchronous, anchored_gate, ...). With a 'fresh'
+    checkpoint this is the same-model baseline for cloud_local."""
+
+    def predict(self, obs) -> np.ndarray:
+        return self.local(obs, super().predict(obs), 0)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     sub = ap.add_subparsers(dest='cmd', required=True)

@@ -30,3 +30,16 @@ def test_random_shift_keeps_shape_and_moves_content():
     assert y.shape == x.shape and y.dtype == torch.uint8
     assert (y.flatten(1).amax(1) == 255).all()             # the dot survives a 2 px shift
     assert (y[:, 6, 6, 0] != 255).any()                     # and some samples moved it
+
+
+def test_chunk_policy_plans_at_age_zero_from_its_own_memory(monkeypatch):
+    class Fake(ts.TwoStreamChunkPolicy):
+        def __init__(self):                                # no checkpoint
+            self.calls = []
+
+        def local(self, obs, memory, age):
+            self.calls.append((memory, age))
+            return np.zeros((16, 7))
+    p = Fake()
+    monkeypatch.setattr(ts.TwoStreamPolicy, 'predict', lambda self, obs: 'M')   # the cloud half
+    assert p.predict({}).shape == (16, 7) and p.calls == [('M', 0)]

@@ -146,7 +146,7 @@ def main() -> None:
                                             'continuation_inpaint')
     ap.add_argument('--deadline-s', type=float, default=20.0)
     ap.add_argument('--denoise-steps', type=int, default=4, help='paper-1 cells used 4')
-    ap.add_argument('--backend', default='dp', help='dp | act | any make_policy backend')
+    ap.add_argument('--backend', default='dp', help='dp | act | two_stream | two_stream_chunk | any make_policy backend')
     ap.add_argument('--weights', default='', help='default: the task\'s DP checkpoint')
     ap.add_argument('--gate-k', type=float, default=2.0,
                     help='close gate position slack in tracker sigmas (Square)')
@@ -182,6 +182,9 @@ def main() -> None:
         import two_stream
         policy = two_stream.TwoStreamPolicy(args.weights)
         ol.CLOUD_LOCAL_REPLAN = args.replan
+    elif args.backend == 'two_stream_chunk':
+        import two_stream
+        policy = two_stream.TwoStreamChunkPolicy(args.weights)
     else:
         policy = make_policy(args.backend,
                              args.weights or os.path.join(_REPO, 'checkpoints', ckpt),
