@@ -50,14 +50,17 @@ def nearest(X: np.ndarray, Q: np.ndarray, chunk: int = 2048) -> np.ndarray:
         for q in np.array_split(Q, max(1, len(Q) // chunk))])
 
 
-def local_basis(X: np.ndarray, ids: np.ndarray, g: np.ndarray, n: int, k: int) -> np.ndarray:
-    """(D, k): top-k directions of the nearest frame of each of the n demos nearest to g."""
+def local_basis(X: np.ndarray, ids: np.ndarray, g: np.ndarray, n: int, k: int,
+                with_mean: bool = False):
+    """(D, k): top-k directions of the nearest frame of each of the n demos nearest to g (and
+    those frames' mean, with_mean)."""
     dist = np.linalg.norm(X - g, axis=1)
     order = np.lexsort((dist, ids))                         # by demo, then distance
     first = order[np.r_[True, ids[order][1:] != ids[order][:-1]]]
     near = first[np.argsort(dist[first])[:n]]
     Z = X[near] - X[near].mean(0)
-    return np.linalg.svd(Z, full_matrices=False)[2][:k].T
+    B = np.linalg.svd(Z, full_matrices=False)[2][:k].T
+    return (B, X[near].mean(0)) if with_mean else B
 
 
 def demo_scale(demos: dict, n: int = 2000, seed: int = 0) -> float:

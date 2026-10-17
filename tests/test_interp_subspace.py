@@ -27,3 +27,10 @@ def test_local_basis_uses_cross_demo_variation():
     ids = np.repeat(np.arange(5), 2)
     B = local_basis(X, ids, np.zeros(2), n=5, k=1)
     assert np.allclose(abs(B[:, 0]), [1, 0])
+
+
+def test_auroc():
+    from interp_ood import auroc
+    fail = np.array([True, True, False, False])
+    assert auroc(np.array([3.0, 4, 1, 2]), fail) == 1.0
+    assert auroc(np.array([1.0, 1, 1, 1]), fail) == 0.5
