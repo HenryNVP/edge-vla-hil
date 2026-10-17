@@ -97,6 +97,8 @@ def main() -> None:
     p.add_argument('--shift', default='0,0',
                    help='dx,dy[,dyaw_deg]: move (m) and turn the nut at reset, before the first '
                         'frame (use --shift=-0.02,0: a leading minus reads as an option)')
+    p.add_argument('--corrector', default='',
+                   help='interp_corrector label files: run the corrected policy')
     args = p.parse_args()
     shift = np.array([float(v) for v in args.shift.split(',')])
 
@@ -105,6 +107,9 @@ def main() -> None:
 
     os.makedirs(args.out_dir, exist_ok=True)
     policy = make_policy('dp', args.weights, denoise_steps=args.denoise_steps)
+    if args.corrector:
+        from interp_corrector import Corrected, load_fix
+        policy = Corrected(policy, load_fix(args.corrector))
     built = build_env(EnvSpec(env_name='NutAssemblySquare', action_hz=sil_step.CONTROL_HZ,
                               max_episode_s=args.deadline_s + 1.0, seed=args.seed,
                               absolute_actions=policy.absolute_actions))
@@ -139,6 +144,7 @@ def main() -> None:
                                 cls=cls['cls'], ticks=ep.ticks, shift=shift, **cols)
             wins += ep.success
             print(f'scene {scene}: {cls["cls"]} ticks={ep.ticks} '
+                  f'corrected={getattr(policy, "applied", 0)} '
                   f'({wins}/{scene - args.first_scene + 1})', flush=True)
         obs = place(env, env.reset(), shift)
     env.close()

@@ -79,10 +79,10 @@ def operating_points(env, obs, policy, radii, scene: int, task=TASKS['square']):
         hist.append(sil_step.frames(obs))
 
 
-def make_env(task=TASKS['square']):
+def make_env(task=TASKS['square'], seed: int = 0):
     from evh_plant.env_factory import EnvSpec, build_env
     built = build_env(EnvSpec(env_name=task['env'], action_hz=sil_step.CONTROL_HZ,
-                              max_episode_s=21.0, seed=0, absolute_actions=True))
+                              max_episode_s=21.0, seed=seed, absolute_actions=True))
     return built.env, built.obs
 
 
