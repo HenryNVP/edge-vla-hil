@@ -99,6 +99,8 @@ def main() -> None:
                         'frame (use --shift=-0.02,0: a leading minus reads as an option)')
     p.add_argument('--corrector', default='',
                    help='interp_corrector label files: run the corrected policy')
+    p.add_argument('--oracle', action='store_true',
+                   help="correct with the sim's true mistake instead (upper bound)")
     args = p.parse_args()
     shift = np.array([float(v) for v in args.shift.split(',')])
 
@@ -107,13 +109,17 @@ def main() -> None:
 
     os.makedirs(args.out_dir, exist_ok=True)
     policy = make_policy('dp', args.weights, denoise_steps=args.denoise_steps)
-    if args.corrector:
-        from interp_corrector import Corrected, load_fix
-        policy = Corrected(policy, load_fix(args.corrector))
     built = build_env(EnvSpec(env_name='NutAssemblySquare', action_hz=sil_step.CONTROL_HZ,
                               max_episode_s=args.deadline_s + 1.0, seed=args.seed,
                               absolute_actions=policy.absolute_actions))
     env = built.env
+    if args.corrector or args.oracle:
+        from dp_anchor_probe import observe
+        from interp_corrector import Corrected, load_fix, mistake
+        inner = policy
+        fix = ((lambda g: mistake(env, inner, observe(env), 0)[None]) if args.oracle
+               else load_fix(args.corrector))
+        policy = Corrected(policy, fix)
     obs = place(env, built.obs, shift)
     worker = sil_step.StepWorker(policy, sil_step.fixed_delay(1))
     executor = sil_step.make_strategy('synchronous', worker, policy)
