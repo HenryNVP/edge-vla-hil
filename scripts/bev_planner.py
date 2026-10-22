@@ -75,10 +75,17 @@ def train(args) -> None:
         e, t, t0 = sample_index(lens, args.batch, args.max_age, rng)
         acts, masks = zip(*(chunk_targets(eps[i]['action'], j) for i, j in zip(e, t)))
 
+        offsets = {}
+
         def grab(key, idx):
             x = torch.from_numpy(np.stack([eps[i][key][j] for i, j in zip(e, idx)])).to(dev)
             if key in ('agentview', 'top', 'wrist'):
-                return random_shift(x, args.shift) if args.shift else x
+                if not args.shift:
+                    return x
+                if args.paired_shift and key not in offsets:     # t0 and t frames alike
+                    offsets[key] = tuple(torch.randint(0, 2 * args.shift + 1, (len(e),),
+                                                       device=dev) for _ in range(2))
+                return random_shift(x, args.shift, offsets.get(key))
             return (x - sm) / ss
         target = (torch.from_numpy(np.stack(acts)).to(dev) - am) / as_
         mask = torch.from_numpy(np.stack(masks)).to(dev)
@@ -95,20 +102,28 @@ def train(args) -> None:
                                          grab('wrist', tp), grab('state', tp),
                                          torch.from_numpy(tp - t0).long().to(dev),
                                          return_bev=True, local0=local0)
-            pred = model.plan(mem, grab('agentview', t), grab('top', t), grab('wrist', t),
-                              grab('state', t), age, prev, local0=local0)
+            a_t, top_t = grab('agentview', t), grab('top', t)
+            out = model.plan(mem, a_t, top_t, grab('wrist', t), grab('state', t), age, prev,
+                             local0=local0, return_attn=args.corr_aux > 0)
+            pred, attn = out if args.corr_aux > 0 else (out, None)
         loss = (F.l1_loss(pred.float(), target, reduction='none') * ~mask[..., None]).mean()
+        recon = model.corr_recon_loss(attn, a0, top0, a_t, top_t) if attn is not None else None
+        if recon is not None:
+            loss = loss + args.corr_aux * recon
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
         opt.step()
         sched.step()
         if step % 500 == 0 or step == args.steps:
-            print(f'step {step} loss {loss.item():.4f} ({time.time() - t_start:.0f} s)', flush=True)
+            r = f' recon {recon.item():.4f}' if recon is not None else ''
+            print(f'step {step} loss {loss.item():.4f}{r} ({time.time() - t_start:.0f} s)',
+                  flush=True)
         if step % args.save_every == 0 or step == args.steps:
             os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
             torch.save({'model': model.state_dict(), 'cfg': cfg, 'stats': st, 'step': step,
-                        'replan': args.replan}, args.out)
+                        'replan': args.replan, 'corr_aux': args.corr_aux,
+                        'paired_shift': args.paired_shift}, args.out)
 
 
 class BEVPolicy:
@@ -200,6 +215,10 @@ def main() -> None:
     ap.add_argument('--corr', action='store_true',
                     help="same-encoder correspondence attention: robot t0 map keys, cloud values")
     ap.add_argument('--corr-radius', type=int, default=4, help='window half-width (cells)')
+    ap.add_argument('--corr-aux', type=float, default=0.0,
+                    help='weight of the colour-reconstruction loss on the corr attention')
+    ap.add_argument('--paired-shift', action='store_true',
+                    help="shift a sample's t0 and t frames by the same offset")
     ap.add_argument('--replan', type=int, default=4, help='ticks between plans (for --prev)')
     ap.add_argument('--shift', type=int, default=4)
     ap.add_argument('--no-amp', dest='amp', action='store_false', help='train in fp32')

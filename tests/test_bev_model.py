@@ -95,3 +95,15 @@ def test_corr_window_and_identity_match():
     st = torch.zeros(1, 9)
     with torch.no_grad():
         assert m(img, img, st, img, img, img, st, torch.tensor([5])).shape == (1, 16, 10)
+
+
+def test_corr_recon_loss_zero_for_identity_on_a_still_scene():
+    P = torch.tensor(np.stack([_P(), _P()]), dtype=torch.float32)
+    m = bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny', corr=True, local_views='agent')
+    img = torch.randint(0, 255, (2, 84, 84, 3), dtype=torch.uint8)
+    c = m.cell_colors(img, img)
+    assert c.shape == (2, 256, len(bm.Z_LEVELS) * 3)
+    eye = torch.eye(256).expand(2, -1, -1)
+    assert m.corr_recon_loss(eye, img, img, img, img) < 1e-6
+    blur = torch.full((2, 256, 256), 1 / 256)
+    assert m.corr_recon_loss(blur, img, img, img, img) > 0.05     # many cells fall off this image

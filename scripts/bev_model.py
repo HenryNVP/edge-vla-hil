@@ -26,7 +26,11 @@ cheap map of its own and plans a chunk from it.
                         encoder on both sides, so a match means motion, not encoder (the gate's
                         |W_l BEV_l - W_c BEV_c| compared two unaligned spaces; outputs/gate/
                         align.py). x = Linear([BEV_l ; warped BEV_c]); staleness = 1 - the
-                        attention a cell keeps on itself
+                        attention a cell keeps on itself. Trained on the action loss alone it
+                        became local pooling (a cell kept ~20% on itself even with R0 == R), so
+                        `corr_recon_loss` adds a self-supervised target the encoder cannot shape:
+                        the same (head-mean) attention must rebuild each cell's image colours at t
+                        from those at t0 (colourise by pointing, Vondrick et al. 2018)
                         2 layers: self-attention over [x ; wrist ; proprio ; age], then temporal
                         attention: x reads BEV_c (+ age embedding) and, when given, the robot's
                         own previous map (`prev`, BEVFormer's history), so a cell can pull the
@@ -211,6 +215,24 @@ class BEVPlanner(nn.Module):
         v = self.local_views
         imgs = [agent, top]
         return bev_sample([self._fmap(imgs[i]) for i in v], coords[v], valid[v])
+
+    def cell_colors(self, agent, top) -> torch.Tensor:
+        """[B, N, V*Z*3] raw image colours at each cell's pillar points in the robot map's views
+        (0 where a point falls outside an image): the fixed target of corr_recon_loss."""
+        coords, valid = self._coords()
+        imgs = [agent, top]
+        out = []
+        for v in self.local_views:
+            x = _images(imgs[v])
+            g = coords[v][None].expand(x.shape[0], -1, -1, -1).to(x.dtype)
+            c = F.grid_sample(x, g, align_corners=False) * valid[v].to(x.dtype)[None, None]
+            out.append(c.permute(0, 2, 3, 1).flatten(2))                 # [B, N, Z*3]
+        return torch.cat(out, -1)
+
+    def corr_recon_loss(self, attn, agent0, top0, agent, top) -> torch.Tensor:
+        """L1 between attn @ colours(t0) and colours(t); attn [B, N, N] from plan(return_attn)."""
+        c0, c = self.cell_colors(agent0, top0), self.cell_colors(agent, top)
+        return (attn.float() @ c0.float() - c.float()).abs().mean()
 
     def _corr(self, fresh, local0, bev_c):
         """Window attention, queries `fresh`, keys `local0` (same encoder, shared projection),

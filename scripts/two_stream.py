@@ -61,15 +61,18 @@ def chunk_targets(action: np.ndarray, t: int, h: int = H) -> tuple[np.ndarray, n
     return a, mask
 
 
-def random_shift(x, pad: int = 4):
+def random_shift(x, pad: int = 4, offsets=None):
     """DrQ-style augmentation on uint8 [B, H, W, 3]: replicate-pad by `pad`, crop back at a
-    random offset per sample."""
+    random offset per sample, or at `offsets` = (ox, oy) [B] each in [0, 2 pad] (to shift two
+    frames of one sample alike)."""
     import torch
     import torch.nn.functional as F
     b, h, w, _ = x.shape
     p = F.pad(x.permute(0, 3, 1, 2).float(), (pad,) * 4, mode='replicate')
-    ox = torch.randint(0, 2 * pad + 1, (b,), device=x.device)
-    oy = torch.randint(0, 2 * pad + 1, (b,), device=x.device)
+    if offsets is None:
+        offsets = (torch.randint(0, 2 * pad + 1, (b,), device=x.device),
+                   torch.randint(0, 2 * pad + 1, (b,), device=x.device))
+    ox, oy = offsets
     rows = (oy[:, None] + torch.arange(h, device=x.device))[:, None, :, None]
     cols = (ox[:, None] + torch.arange(w, device=x.device))[:, None, None, :]
     out = p[torch.arange(b, device=x.device)[:, None, None, None],
