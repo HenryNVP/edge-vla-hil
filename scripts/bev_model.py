@@ -12,6 +12,12 @@ cheap map of its own and plans a chunk from it.
                         per cell: x = Linear([BEV_l ; BEV_c]) + cell position
                         (BEV_l averages the views per cell with equal weight, so an occluded view
                         dilutes it; `local_views` restricts it to agentview or top alone)
+                        with `gate`: x = g * W_l BEV_l + (1 - g) * W_c BEV_c + cell position, where
+                        the per-cell staleness gate g in (0, 1) is an MLP of [W_l BEV_l ; W_c BEV_c ;
+                        |W_l BEV_l - W_c BEV_c| ; age]: how far the cell's fresh view disagrees
+                        with the cloud's, given how old the cloud's is. Nothing supervises g; the
+                        nut poses in the demos check afterwards whether it opens where the nut
+                        moved (bev_gate.py)
                         2 layers: self-attention over [x ; wrist ; proprio ; age], then temporal
                         attention: x reads BEV_c (+ age embedding) and, when given, the robot's
                         own previous map (`prev`, BEVFormer's history), so a cell can pull the
@@ -129,7 +135,8 @@ class BEVPlanner(nn.Module):
     def __init__(self, P: torch.Tensor | None = None, d: int = 256, state_dim: int = 9,
                  action_dim: int = 10, chunk: int = 16, max_age: int = 48, heads: int = 8,
                  local_enc: str = 'mobile', use_prev: bool = False, use_local: bool = True,
-                 use_ta: bool = True, local_views: str = 'both', grid: int = GRID) -> None:
+                 use_ta: bool = True, local_views: str = 'both', gate: bool = False,
+                 grid: int = GRID) -> None:
         super().__init__()
         if local_views not in LOCAL_VIEWS:
             raise ValueError(f'local_views {local_views!r} not in {tuple(LOCAL_VIEWS)}')
@@ -143,7 +150,12 @@ class BEVPlanner(nn.Module):
         self.pos = nn.Parameter(torch.randn(1, n, d) * 0.02)
         self.local_cnn = ({'tiny': TinyCNN, 'mobile': MobileLocal}[local_enc](d)
                           if use_local else None)
-        self.fuse = nn.Linear(2 * d, d)
+        self.use_gate = gate
+        if gate:
+            self.w_l, self.w_c = nn.Linear(d, d), nn.Linear(d, d)
+            self.gate = nn.Sequential(nn.Linear(4 * d, d), nn.GELU(), nn.Linear(d, 1))
+        else:
+            self.fuse = nn.Linear(2 * d, d)
         self.state = nn.Linear(state_dim, d)
         self.age = nn.Embedding(max_age + 1, d)
         self.wrist_pos = nn.Parameter(torch.randn(1, 36, d) * 0.02)
@@ -165,9 +177,11 @@ class BEVPlanner(nn.Module):
         coords, valid = self._coords()
         return self.cloud([agent0, top0], state0, coords, valid, self.pos)
 
-    def plan(self, mem, agent, top, wrist, state, age, prev=None, return_bev=False):
+    def plan(self, mem, agent, top, wrist, state, age, prev=None, return_bev=False,
+             return_gate=False):
         """The local half. `prev`: the robot's own BEV from its previous plan [B, 256, D] or
-        None. Returns actions [B, H, action_dim] (and this plan's BEV when return_bev)."""
+        None. Returns actions [B, H, action_dim] (and this plan's BEV when return_bev; the gate
+        [B, 256] when return_gate, ones without a gate)."""
         b, n = state.shape[0], self.grid * self.grid
         a = self.age(age.clamp(0, self.max_age))[:, None]
         bev_c = mem[:, :n]
@@ -180,7 +194,14 @@ class BEVPlanner(nn.Module):
         else:
             fresh = torch.zeros_like(bev_c)
             wrist_tok = self.wrist_pos.expand(b, -1, -1)
-        x = self.fuse(torch.cat([fresh, bev_c], -1)) + self.pos
+        if self.use_gate:
+            f, c = self.w_l(fresh), self.w_c(bev_c)
+            g = torch.sigmoid(self.gate(torch.cat([f, c, (f - c).abs(), a.expand_as(f)], -1)))
+            x = g * f + (1 - g) * c + self.pos
+            gate = g[..., 0]
+        else:
+            x = self.fuse(torch.cat([fresh, bev_c], -1)) + self.pos
+            gate = torch.ones(b, n, device=x.device, dtype=x.dtype)
         x = torch.cat([x, wrist_tok, self.state(state)[:, None], a, mem[:, n:]], 1)
         stale = [mem + a + self.src_emb[0]]
         if self.use_prev:
@@ -191,7 +212,8 @@ class BEVPlanner(nn.Module):
             x = layer(x, stale)
         x = self.norm(x)
         out = self.out(self.head_dec(self.queries.expand(b, -1, -1), x))
-        return (out, x[:, :n]) if return_bev else out
+        extra = ([x[:, :n]] if return_bev else []) + ([gate] if return_gate else [])
+        return (out, *extra) if extra else out
 
     def _fmap(self, img):
         """The local encoder's spatial map [B, D, 6, 6] (its tokens, unflattened)."""

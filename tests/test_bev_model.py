@@ -58,3 +58,17 @@ def test_ablations_plan(kw):
     assert out.shape == (1, 16, 10)
     if kw.get('use_ta') is False:
         assert not any('.ta.' in n for n, _ in m.named_parameters())
+
+
+def test_gate_is_per_cell_in_unit_interval_and_absent_by_default():
+    P = torch.tensor(np.stack([_P(), _P()]), dtype=torch.float32)
+    m = bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny', gate=True, local_views='agent').eval()
+    img = torch.zeros(2, 84, 84, 3, dtype=torch.uint8)
+    st = torch.zeros(2, 9)
+    with torch.no_grad():
+        mem = m.memory(img, img, st)
+        out, gate = m.plan(mem, img, img, img, st, torch.tensor([0, 30]), return_gate=True)
+    assert out.shape == (2, 16, 10) and gate.shape == (2, 256)
+    assert ((gate > 0) & (gate < 1)).all()
+    plain = bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny')
+    assert not hasattr(plain, 'gate') and hasattr(plain, 'fuse')
