@@ -72,3 +72,26 @@ def test_gate_is_per_cell_in_unit_interval_and_absent_by_default():
     assert ((gate > 0) & (gate < 1)).all()
     plain = bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny')
     assert not hasattr(plain, 'gate') and hasattr(plain, 'fuse')
+
+
+def test_corr_window_and_identity_match():
+    P = torch.tensor(np.stack([_P(), _P()]), dtype=torch.float32)
+    m = bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny', corr=True, corr_radius=2,
+                      local_views='agent').eval()
+    assert (m.corr_idx[0, 3] < 0) and (m.corr_idx[0, 2] >= 0)       # 3 cells away: outside
+    torch.manual_seed(0)
+    fresh = torch.randn(1, 256, 32)
+    fresh[0, 1] *= 5                    # a large-norm neighbour must not outscore an exact match
+    cloud = torch.randn(1, 256, 32)
+    with torch.no_grad():
+        m.corr_qk.weight.copy_(torch.eye(32))
+        m.corr_qk.bias.zero_()
+        m.corr_logtau.fill_(4.0)                                       # tau ~55: sharp matching
+        _, attn = m._corr(fresh, fresh, cloud)                         # nothing moved
+    assert attn.shape == (1, 256, 256)
+    assert (attn.diagonal(dim1=-2, dim2=-1) > 0.9).all()
+    assert torch.allclose(attn.sum(-1), torch.ones(1, 256), atol=1e-5)
+    img = torch.zeros(1, 84, 84, 3, dtype=torch.uint8)
+    st = torch.zeros(1, 9)
+    with torch.no_grad():
+        assert m(img, img, st, img, img, img, st, torch.tensor([5])).shape == (1, 16, 10)

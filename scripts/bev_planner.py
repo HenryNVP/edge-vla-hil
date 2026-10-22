@@ -57,6 +57,8 @@ def train(args) -> None:
     cfg = {'local_enc': args.local_enc, 'use_prev': args.prev, 'use_local': not args.no_local,
            'use_ta': not args.no_ta, 'local_views': args.local_views, 'gate': args.gate,
            'max_age': args.max_age}
+    if args.corr:
+        cfg.update(corr=True, corr_radius=args.corr_radius)
     model = BEVPlanner(torch.from_numpy(P), **cfg).to(dev)
     print(f'config {cfg}; {sum(p.numel() for p in model.parameters()) / 1e6:.2f} M parameters',
           flush=True)
@@ -82,7 +84,9 @@ def train(args) -> None:
         mask = torch.from_numpy(np.stack(masks)).to(dev)
         age = torch.from_numpy(t - t0).long().to(dev)
         with amp:
-            mem = model.memory(grab('agentview', t0), grab('top', t0), grab('state', t0))
+            a0, top0 = grab('agentview', t0), grab('top', t0)
+            mem = model.memory(a0, top0, grab('state', t0))
+            local0 = model.local_map(a0, top0) if args.corr else None
             prev = None
             if args.prev and rng.random() > 0.2:
                 tp = np.maximum(t - args.replan, t0)        # the previous plan, same memory
@@ -90,9 +94,9 @@ def train(args) -> None:
                     _, prev = model.plan(mem, grab('agentview', tp), grab('top', tp),
                                          grab('wrist', tp), grab('state', tp),
                                          torch.from_numpy(tp - t0).long().to(dev),
-                                         return_bev=True)
+                                         return_bev=True, local0=local0)
             pred = model.plan(mem, grab('agentview', t), grab('top', t), grab('wrist', t),
-                              grab('state', t), age, prev)
+                              grab('state', t), age, prev, local0=local0)
         loss = (F.l1_loss(pred.float(), target, reduction='none') * ~mask[..., None]).mean()
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -110,7 +114,10 @@ def train(args) -> None:
 class BEVPolicy:
     """The harness's policy for a trained BEVPlanner (cloud_local executor): `predict(obs)` is
     the cloud half (memory), `local(obs, memory, age)` the robot half, which keeps its previous
-    map between plans when trained with --prev; `reset()` clears it per episode."""
+    map between plans when trained with --prev; `reset()` clears it per episode. With --corr the
+    robot also maps the frame it sent (t0) with its own encoder; that runs on the robot at
+    request time in deployment, and here rides along with the memory (appended rows), which is
+    the same frame and the same timing."""
     absolute_actions = True
     needs_wrist = True
     needs_top = True
@@ -145,7 +152,10 @@ class BEVPolicy:
         import torch
         agent, top, _, state = self._obs(obs)
         with torch.no_grad():
-            return self.model.memory(agent, top, state)[0].cpu().numpy()
+            mem = self.model.memory(agent, top, state)
+            if self.model.use_corr:
+                mem = torch.cat([mem, self.model.local_map(agent, top)], 1)
+            return mem[0].cpu().numpy()
 
     def predict_inpaint(self, obs, prefix, weights):
         return self.predict(obs)
@@ -157,8 +167,12 @@ class BEVPolicy:
             agent, top, wrist, state = self._obs(obs)
             a = torch.tensor([int(age)], device=self.dev)
             mem = torch.from_numpy(np.asarray(memory, np.float32))[None].to(self.dev)
+            local0 = None
+            if self.model.use_corr:
+                n = self.model.grid ** 2
+                mem, local0 = mem[:, :n + 1], mem[:, n + 1:]
             out, bev = self.model.plan(mem, agent, top, wrist, state, a, self._prev,
-                                       return_bev=True)
+                                       return_bev=True, local0=local0)
             if self.model.use_prev:
                 self._prev = bev
             out = out[0] * self.st['action_std'] + self.st['action_mean']
@@ -183,6 +197,9 @@ def main() -> None:
     ap.add_argument('--local-views', default='both', choices=['both', 'agent', 'top'],
                     help="ablation: the views in the robot's fresh map")
     ap.add_argument('--gate', action='store_true', help='per-cell staleness gate in the fusion')
+    ap.add_argument('--corr', action='store_true',
+                    help="same-encoder correspondence attention: robot t0 map keys, cloud values")
+    ap.add_argument('--corr-radius', type=int, default=4, help='window half-width (cells)')
     ap.add_argument('--replan', type=int, default=4, help='ticks between plans (for --prev)')
     ap.add_argument('--shift', type=int, default=4)
     ap.add_argument('--no-amp', dest='amp', action='store_false', help='train in fp32')

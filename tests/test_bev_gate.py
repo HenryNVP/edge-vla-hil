@@ -21,3 +21,8 @@ def test_regions_priority_and_rest():
 def test_region_means_nan_for_empty():
     mu = bg.region_means(np.array([1.0, 0.0, 0.5]), np.array([0, 4, 4]))
     assert mu[0] == 1.0 and mu[4] == 0.25 and np.isnan(mu[1])
+
+
+def test_attn_centroid_is_the_weighted_mean():
+    cells = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+    assert np.allclose(bg.attn_centroid(np.array([0.5, 0.5, 0.0]), cells), [0.5, 0.0])

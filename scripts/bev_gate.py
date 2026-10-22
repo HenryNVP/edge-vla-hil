@@ -13,6 +13,11 @@ put in one region by priority
 and the gate is averaged per region. The hoped-for answer: nut_now / nut_then / gripper > rest
 ~ pegs, and growing with the age and with how far the nut moved. Also writes a few gate maps.
 
+With a `corr` model the gate is its staleness (1 - the attention a cell keeps on itself), and a
+second check asks where the cell under the nut fetched its cloud feature from: if the
+correspondence works, the attention centroid of that cell sits nearer the nut's t0 position than
+the cell itself does, once the nut has moved.
+
     python3 scripts/bev_gate.py --weights outputs/gate/g0.pt --data data/oracle_square_top/heldout \
         --out outputs/gate/analysis
 """
@@ -53,6 +58,11 @@ def region_means(gate: np.ndarray, reg: np.ndarray) -> np.ndarray:
                      for i in range(len(REGIONS))])
 
 
+def attn_centroid(attn_row: np.ndarray, cells: np.ndarray) -> np.ndarray:
+    """[2] attention-weighted source position of one query cell (its row of [N, N])."""
+    return (attn_row[:, None] * cells).sum(0) / attn_row.sum()
+
+
 def main() -> None:
     import torch
     from bev_planner import BEVPolicy, KEYS
@@ -71,6 +81,7 @@ def main() -> None:
     os.makedirs(args.out, exist_ok=True)
     files = sorted(glob.glob(os.path.join(args.data, '*.npz')))
     rows = []      # (age, nut displacement m, region means...)
+    fetch = []     # corr: (age, disp, |cell - nut_then|, |centroid - nut_then|)
     maps = []
     for f in files:
         z = np.load(f)
@@ -83,14 +94,22 @@ def main() -> None:
             s = lambda i: (g('state', i).float() - st['state_mean']) / st['state_std']
             with torch.no_grad():
                 mem = m.memory(g('agentview', t0), g('top', t0), s(t0))
-                _, gate = m.plan(mem, g('agentview', t), g('top', t), g('wrist', t), s(t),
-                                 torch.from_numpy(t - t0).long().to(dev), return_gate=True)
+                local0 = m.local_map(g('agentview', t0), g('top', t0)) if m.use_corr else None
+                _, gate, attn = m.plan(mem, g('agentview', t), g('top', t), g('wrist', t), s(t),
+                                       torch.from_numpy(t - t0).long().to(dev), return_gate=True,
+                                       local0=local0, return_attn=True)
             gate = gate.float().cpu().numpy()
+            attn = attn.float().cpu().numpy() if attn is not None else None
             for j in range(len(t)):
                 nut_now, nut_then = e['nut'][t[j], :3], e['nut'][t0[j], :3]
                 reg = regions(cells, nut_now, nut_then, e['state'][t[j], :3])
                 disp = float(np.linalg.norm(nut_now[:2] - nut_then[:2]))
                 rows.append([age, disp, *region_means(gate[j], reg)])
+                if attn is not None and disp > 0.02:
+                    c = np.argmin(np.linalg.norm(cells - nut_now[:2], axis=1))
+                    cen = attn_centroid(attn[j, c], cells)
+                    fetch.append([age, disp, np.linalg.norm(cells[c] - nut_then[:2]),
+                                  np.linalg.norm(cen - nut_then[:2])])
             if age == max(map(int, args.ages.split(','))) and len(maps) < 6:
                 j = len(t) // 2
                 maps.append((os.path.basename(f), age, gate[j].reshape(m.grid, m.grid),
@@ -107,6 +126,15 @@ def main() -> None:
                 mu = np.nanmean(rows[sel, 2:], 0)
                 print(f'age {int(age):2d} {lab:15s}' + ''.join(f'{v:10.3f}' for v in mu)
                       + f'   n={sel.sum()}')
+    if fetch:
+        fetch = np.array(fetch)
+        print('corr: where the cell under the nut fetched from (nut moved > 2 cm), metres to the '
+              "nut's t0 position")
+        for age in sorted(set(fetch[:, 0])):
+            sel = fetch[:, 0] == age
+            print(f'age {int(age):2d}  cell {fetch[sel, 2].mean():.3f}   attention centroid '
+                  f'{fetch[sel, 3].mean():.3f}   closer in {np.mean(fetch[sel, 3] < fetch[sel, 2]):.0%}'
+                  f'   n={sel.sum()}')
     _plot(maps, cells, os.path.join(args.out, 'gate_maps.png'))
 
 

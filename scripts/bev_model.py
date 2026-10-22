@@ -18,6 +18,15 @@ cheap map of its own and plans a chunk from it.
                         with the cloud's, given how old the cloud's is. Nothing supervises g; the
                         nut poses in the demos check afterwards whether it opens where the nut
                         moved (bev_gate.py)
+                        with `corr` instead: the robot also maps the frame it sent (t0) with its own
+                        encoder, R0, and each fresh cell attends over a window of R0 cells
+                        (queries R, keys R0 through one shared projection + a learned per-offset
+                        bias; values the cloud's cells): "where at t0 did my own features look like
+                        what I see here now", then the cloud's richer feature from there. Same
+                        encoder on both sides, so a match means motion, not encoder (the gate's
+                        |W_l BEV_l - W_c BEV_c| compared two unaligned spaces; outputs/gate/
+                        align.py). x = Linear([BEV_l ; warped BEV_c]); staleness = 1 - the
+                        attention a cell keeps on itself
                         2 layers: self-attention over [x ; wrist ; proprio ; age], then temporal
                         attention: x reads BEV_c (+ age embedding) and, when given, the robot's
                         own previous map (`prev`, BEVFormer's history), so a cell can pull the
@@ -136,8 +145,12 @@ class BEVPlanner(nn.Module):
                  action_dim: int = 10, chunk: int = 16, max_age: int = 48, heads: int = 8,
                  local_enc: str = 'mobile', use_prev: bool = False, use_local: bool = True,
                  use_ta: bool = True, local_views: str = 'both', gate: bool = False,
-                 grid: int = GRID) -> None:
+                 corr: bool = False, corr_radius: int = 4, grid: int = GRID) -> None:
         super().__init__()
+        if gate and corr:
+            raise ValueError('gate and corr are alternatives')
+        if corr and not use_local:
+            raise ValueError('corr needs the local encoder')
         if local_views not in LOCAL_VIEWS:
             raise ValueError(f'local_views {local_views!r} not in {tuple(LOCAL_VIEWS)}')
         self.chunk, self.max_age, self.grid = chunk, max_age, grid
@@ -156,6 +169,21 @@ class BEVPlanner(nn.Module):
             self.gate = nn.Sequential(nn.Linear(4 * d, d), nn.GELU(), nn.Linear(d, 1))
         else:
             self.fuse = nn.Linear(2 * d, d)
+        self.use_corr = corr
+        if corr:
+            self.corr_heads = 4
+            self.corr_qk = nn.Linear(d, d)
+            self.corr_v = nn.Linear(d, d)
+            self.corr_o = nn.Linear(d, d)
+            w = 2 * corr_radius + 1
+            self.corr_bias = nn.Parameter(torch.zeros(self.corr_heads, w * w))
+            self.corr_logtau = nn.Parameter(torch.full((self.corr_heads, 1, 1), 2.3))   # tau 10
+            ij = torch.stack(torch.meshgrid(torch.arange(grid), torch.arange(grid),
+                                            indexing='ij'), -1).reshape(-1, 2)
+            off = ij[None, :] - ij[:, None]                       # [query, key, 2]
+            inside = (off.abs() <= corr_radius).all(-1)
+            idx = (off[..., 0] + corr_radius) * w + off[..., 1] + corr_radius
+            self.register_buffer('corr_idx', torch.where(inside, idx, -1), persistent=False)
         self.state = nn.Linear(state_dim, d)
         self.age = nn.Embedding(max_age + 1, d)
         self.wrist_pos = nn.Parameter(torch.randn(1, 36, d) * 0.02)
@@ -177,19 +205,43 @@ class BEVPlanner(nn.Module):
         coords, valid = self._coords()
         return self.cloud([agent0, top0], state0, coords, valid, self.pos)
 
+    def local_map(self, agent, top) -> torch.Tensor:
+        """The robot encoder's fresh map [B, 256, D] (with `corr`, also run on the t0 frame)."""
+        coords, valid = self._coords()
+        v = self.local_views
+        imgs = [agent, top]
+        return bev_sample([self._fmap(imgs[i]) for i in v], coords[v], valid[v])
+
+    def _corr(self, fresh, local0, bev_c):
+        """Window attention, queries `fresh`, keys `local0` (same encoder, shared projection),
+        values the cloud cells -> (warped cloud map [B, N, D], attention [B, N, N] head mean).
+        Cosine logits with a learned temperature per head: a plain dot product lets a neighbour
+        with a larger norm outscore an exact match, which is wrong for correspondence."""
+        b, n, d = fresh.shape
+        h = self.corr_heads
+        split = lambda t: t.view(b, n, h, d // h).transpose(1, 2)        # [B, h, N, d/h]
+        q, k, v = split(self.corr_qk(fresh)), split(self.corr_qk(local0)), split(self.corr_v(bev_c))
+        q, k = F.normalize(q, dim=-1), F.normalize(k, dim=-1)
+        logits = self.corr_logtau.exp() * (q @ k.transpose(-1, -2))
+        idx = self.corr_idx
+        bias = self.corr_bias[:, idx.clamp(min=0)]                       # [h, N, N]
+        logits = (logits + bias).masked_fill(idx < 0, float('-inf'))
+        attn = logits.softmax(-1)
+        out = (attn @ v).transpose(1, 2).reshape(b, n, d)
+        return self.corr_o(out), attn.mean(1)
+
     def plan(self, mem, agent, top, wrist, state, age, prev=None, return_bev=False,
-             return_gate=False):
+             return_gate=False, local0=None, return_attn=False):
         """The local half. `prev`: the robot's own BEV from its previous plan [B, 256, D] or
-        None. Returns actions [B, H, action_dim] (and this plan's BEV when return_bev; the gate
-        [B, 256] when return_gate, ones without a gate)."""
+        None. `local0`: with `corr`, the robot's own map of the t0 frame (local_map). Returns
+        actions [B, H, action_dim] (and this plan's BEV when return_bev; the gate / staleness
+        [B, 256] when return_gate, ones with neither; the corr attention [B, 256, 256] when
+        return_attn)."""
         b, n = state.shape[0], self.grid * self.grid
         a = self.age(age.clamp(0, self.max_age))[:, None]
         bev_c = mem[:, :n]
         if self.local_cnn is not None:
-            coords, valid = self._coords()
-            v = self.local_views
-            imgs = [agent, top]
-            fresh = bev_sample([self._fmap(imgs[i]) for i in v], coords[v], valid[v])
+            fresh = self.local_map(agent, top)
             wrist_tok = self.local_cnn(wrist) + self.wrist_pos
         else:
             fresh = torch.zeros_like(bev_c)
@@ -199,6 +251,12 @@ class BEVPlanner(nn.Module):
             g = torch.sigmoid(self.gate(torch.cat([f, c, (f - c).abs(), a.expand_as(f)], -1)))
             x = g * f + (1 - g) * c + self.pos
             gate = g[..., 0]
+        elif self.use_corr:
+            if local0 is None:
+                raise ValueError('corr needs local0, the robot map of the t0 frame')
+            warped, attn = self._corr(fresh, local0, bev_c)
+            x = self.fuse(torch.cat([fresh, warped], -1)) + self.pos
+            gate = 1 - attn.diagonal(dim1=-2, dim2=-1)
         else:
             x = self.fuse(torch.cat([fresh, bev_c], -1)) + self.pos
             gate = torch.ones(b, n, device=x.device, dtype=x.dtype)
@@ -213,6 +271,8 @@ class BEVPlanner(nn.Module):
         x = self.norm(x)
         out = self.out(self.head_dec(self.queries.expand(b, -1, -1), x))
         extra = ([x[:, :n]] if return_bev else []) + ([gate] if return_gate else [])
+        if return_attn:
+            extra.append(attn if self.use_corr else None)
         return (out, *extra) if extra else out
 
     def _fmap(self, img):
@@ -222,4 +282,6 @@ class BEVPlanner(nn.Module):
         return t.transpose(1, 2).reshape(t.shape[0], -1, s, s)
 
     def forward(self, agent0, top0, state0, agent, top, wrist, state, age, prev=None):
-        return self.plan(self.memory(agent0, top0, state0), agent, top, wrist, state, age, prev)
+        local0 = self.local_map(agent0, top0) if self.use_corr else None
+        return self.plan(self.memory(agent0, top0, state0), agent, top, wrist, state, age, prev,
+                         local0=local0)
