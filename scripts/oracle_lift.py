@@ -316,6 +316,7 @@ def make_env(control_hz: float, horizon: int):
 
 
 CLOUD_LOCAL_REPLAN = 4         # entries of each local plan played (dp_mech --replan sets it)
+CLOUD_LOCAL_DROP_AFTER = None  # plan with no memory past this age (dp_mech --drop-after)
 
 
 def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None,
@@ -361,7 +362,8 @@ def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None
         from evh_controller.chunk_executor.cloud_local import CloudLocalExecutor
         return CloudLocalExecutor(worker, policy, replan=CLOUD_LOCAL_REPLAN,
                                   max_age=getattr(policy, 'max_age', None),
-                                  refresh=name == 'cloud_local')
+                                  refresh=name == 'cloud_local',
+                                  drop_after=CLOUD_LOCAL_DROP_AFTER)
     if name == 'refined':
         from evh_controller.chunk_executor.refined import RefinedExecutor
         if refine_fn is None:

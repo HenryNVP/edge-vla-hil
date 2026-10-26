@@ -269,6 +269,9 @@ def main() -> None:
     ap.add_argument('--replan', type=int, default=4,
                     help="cloud_local: entries of each local plan played before replanning")
     ap.add_argument('--refiner-lead', type=int, default=0, help='predicted entry whose position is played')
+    ap.add_argument('--drop-after', type=int, default=None,
+                    help='cloud_local: plan with no cloud memory once it is older than this many '
+                         'ticks (for policies trained with --cloud-dropout)')
     ap.add_argument('--goal-switch', type=int, default=None,
                     help='nut_goal: flip the goal once at that tick (cancelled if the goal nut '
                          'is already lifted; default: no switch)')
@@ -294,6 +297,7 @@ def main() -> None:
         import bev_planner
         policy = bev_planner.BEVPolicy(args.weights)
         ol.CLOUD_LOCAL_REPLAN = args.replan
+        ol.CLOUD_LOCAL_DROP_AFTER = args.drop_after
     elif args.backend == 'two_stream_chunk':
         import two_stream
         policy = two_stream.TwoStreamChunkPolicy(args.weights)
