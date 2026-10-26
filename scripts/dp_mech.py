@@ -6,6 +6,17 @@ same executors and the same sweep (oracle_lift.run_sweep, the same conveyor, tra
 delay tokens) on the image DP checkpoints, so the open question is only whether a learned,
 image-conditioned chunk behaves like the planner's.
 
+`--task nut_goal` runs the goal-from-cloud task (nut_goal.py): both nuts are on the table and the
+episode's goal — scene k gets goal k % 2, `--goal-switch TICK` flips it once — says which one to
+seat. GoalWorld wraps the env OUTERMOST (it owns the goal and its switch) around the conveyor
+(MovingCube on the episode's initial goal nut), and its keys ('goal', 'goal_nut_pos',
+'goal_nut_quat') follow the current goal, so the gates and anchoring read the goal nut unchanged.
+The goal rides in the policy's obs as obs['goal'] (an int, from the newest frame), so the cloud
+half of a split policy reads it at request time — link-delayed, which is the point: the robot
+learns of a switch only from a memory requested after it. Three extra CSV columns (goal,
+switched, wrong_nut) feed the robot-only guess analysis; every other task's behaviour and CSV
+are unchanged.
+
 Two ways to continue a DP plan from the end of the queue, since images cannot be rolled forward:
 
     continuation[_anchored]          proprio roll (VLASH-style): current images, the proprio
@@ -32,44 +43,62 @@ import sys
 
 import numpy as np
 
+import nut_goal
 import oracle_lift as ol
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-TASKS = {   # env, checkpoint, object keys, conveyor half range, closed finger qpos
+TASKS = {   # env, checkpoint, object keys, conveyor joint, half range, closed finger qpos
     'lift': ('Lift', 'dp_lift_ph_image_cnn.ckpt', 'cube_pos', 'cube_quat', 'cube_joint0',
              0.12, 0.02),
     'square': ('NutAssemblySquare', 'dp_square_ph_image_cnn.ckpt', 'SquareNut_pos',
                'SquareNut_quat', 'SquareNut_joint0', 0.06, 0.01),
-}
+    'nut_goal': (nut_goal.ENV_NAME, 'dp_square_ph_image_cnn.ckpt', 'goal_nut_pos',
+                 'goal_nut_quat', None, 0.06, 0.01),
+}   # nut_goal's joint is per-episode (the initial goal nut's, retargeted by nut_reset) and the
+    # checkpoint default is the Square one — the closest there is; the split planners that the
+    # task is for take --weights anyway
 OPEN_QPOS = 0.04
 
 
-def make_frames(tracker, pos_key: str, quat_key: str, top: bool = False):
-    """(agentview, wrist, proprio, extra[, top]); extra = [object(3), quat(4), tracked(3), ok(1)];
-    top = the close top camera's upright image (top_camera.py), for policies with needs_top."""
+def make_frames(tracker, pos_key: str, quat_key: str, top: bool = False, goal: bool = False,
+                watch=None):
+    """(agentview, wrist, proprio, extra[, goal[, top]]); extra = [object(3), quat(4),
+    tracked(3), ok(1)]; top = the close top camera's upright image (top_camera.py), for policies
+    with needs_top; goal (nut_goal) appends the observation's goal int for stack to hand the
+    policy as obs['goal']; watch (nut_goal) sees every observation (NutWatch)."""
     from sil_step import frames as image_frames
 
     def frames(obs: dict, needs_wrist: bool = True):
+        if watch is not None:
+            watch.note(obs)
         agent, wrist, proprio = image_frames(obs, needs_wrist)
-        if top:
-            topimg = np.flipud(np.asarray(obs['birdview_image'])).astype(np.uint8)
         obj = np.asarray(obs[pos_key], np.float32)
         est = obj if tracker is None else tracker.update(obj)
         ok = est is not None
         extra = np.concatenate([obj, np.asarray(obs[quat_key], np.float32),
                                 np.asarray(est if ok else obj, np.float32), [float(ok)]])
+        out = [agent, wrist, proprio, extra.astype(np.float32)]
+        if goal:
+            out.append(int(obs['goal']))
         if top:
-            return agent, wrist, proprio, extra.astype(np.float32), topimg
-        return agent, wrist, proprio, extra.astype(np.float32)
+            topimg = np.flipud(np.asarray(obs['birdview_image'])).astype(np.uint8)
+            out.append(topimg)
+        return tuple(out)
     return frames
 
 
 def stack(hist, needs_wrist: bool = True) -> dict:
+    """The policy obs from the frame history; anything make_frames appended after the extra
+    vector rides along: an int is the goal (nut_goal; the NEWEST frame's, i.e. the current one),
+    an ndarray is the top camera's image stacked over the history."""
     from sil_step import stack as image_stack
     out = {**image_stack(hist, needs_wrist), 'object': hist[-1][3]}
-    if len(hist[-1]) > 4:
-        out['top'] = np.stack([h[4] for h in hist])
+    for i, cell in enumerate(hist[-1][4:], start=4):
+        if isinstance(cell, np.ndarray):
+            out['top'] = np.stack([h[i] for h in hist])
+        else:
+            out['goal'] = int(cell)
     return out
 
 
@@ -95,15 +124,16 @@ def object_tracker(obs: dict):
 
 def oracle_layout(obs: dict, task: str) -> dict:
     """The oracle testbeds' proprio layout, rebuilt from the policy's proprio and 'object', so
-    their gates run unchanged. Square: [proprio(9), nut(3), nut quat(4), tracked(3), ok(1)] is
-    exactly proprio + object; Lift has no object quaternion."""
+    their gates run unchanged. Square (and nut_goal, whose 'object' is the goal nut's):
+    [proprio(9), nut(3), nut quat(4), tracked(3), ok(1)] is exactly proprio + object; Lift has
+    no object quaternion."""
     o = obs['object']
-    tail = o if task == 'square' else np.concatenate([o[0:3], o[7:11]])
+    tail = o if task in ('square', 'nut_goal') else np.concatenate([o[0:3], o[7:11]])
     return {'proprio': np.concatenate([np.asarray(obs['proprio'])[-1], tail])[None]}
 
 
 def task_gate(obs: dict, action, task: str, slack: float = 0.0) -> bool:
-    if task == 'square':
+    if task in ('square', 'nut_goal'):        # nut_goal gates on the goal nut like Square's
         import oracle_square as sq
         return sq.square_gate(oracle_layout(obs, task), action, slack=slack)
     return ol.lift_gate(oracle_layout(obs, task), action)
@@ -128,6 +158,58 @@ class SquareLift:
             return True
         return (since_close >= self.min_ticks and prev is not None
                 and abs(w - prev) < self.settle_m)
+
+
+class NutWatch:
+    """nut_goal's CSV extras, watched from the observation stream: the harness only ever shows the
+    env to frames and the success check, so this rides along with them. `start(goal)` at reset,
+    `note(obs)` on every frame, `row(env)` at episode end. wrong_nut marks the NON-goal nut
+    (w.r.t. the final goal — a switch re-grades) lifted at any tick (the same start-height test
+    GoalWorld uses) or seated on its peg at the end (robosuite's objects_on_pegs): the robot-only
+    guess going to the nut the goal did not name."""
+
+    def __init__(self) -> None:
+        self.start(0)
+
+    def start(self, goal: int) -> None:
+        self.goal0, self._z0, self._lifted = goal, None, [False, False]
+
+    def note(self, obs: dict) -> None:
+        if self._z0 is None:
+            self._z0 = [float(obs[f'{n}_pos'][2]) for n in nut_goal.NUTS]
+        for i, n in enumerate(nut_goal.NUTS):
+            self._lifted[i] |= float(obs[f'{n}_pos'][2]) > self._z0[i] + nut_goal.LIFTED_M
+
+    def row(self, env) -> dict:
+        env.success()                          # refreshes objects_on_pegs behind the goal check
+        other = 1 - env.goal
+        return {'goal': self.goal0, 'switched': int(env.switched),
+                'wrong_nut': int(self._lifted[other] or bool(env.objects_on_pegs[other]))}
+
+
+def nut_reset(env, k: int, switch_tick: int | None = None):
+    """nut_goal's per-episode reset: scene k gets goal k % 2, the same in every cell, and the
+    conveyor is pointed at that nut — its joint's qpos/qvel addresses and raw position key, which
+    are per nut (GoalWorld's goal_ keys follow the CURRENT goal, but the conveyor tracks the
+    episode's initial nut all along). Held = the nut in the gripper (oracle_square's test) for
+    the square nut, GoalWorld's lift test for the round one."""
+    goal = k % 2
+    nut = nut_goal.NUTS[goal]
+    mc = env.env                                # the MovingCube inside GoalWorld
+    mc._qadr = env.sim.model.get_joint_qpos_addr(f'{nut}_joint0')[0]
+    mc._vadr = env.sim.model.get_joint_qvel_addr(f'{nut}_joint0')[0]
+    mc.pos_key = f'{nut}_pos'
+    if goal == 0:
+        import oracle_square as sq
+
+        def held(o, nut=nut):
+            return sq.is_held(o['robot0_eef_pos'], o['robot0_gripper_qpos'],
+                              o[f'{nut}_pos'], o[f'{nut}_quat'])
+    else:
+        def held(o, goal=goal):
+            return env.lifted(o, goal)
+    mc.held_fn = held
+    return env.reset(goal=goal, switch_tick=switch_tick)
 
 
 def proprio_roll(obs: dict, queued: np.ndarray, closed_qpos: float = 0.02,
@@ -187,6 +269,9 @@ def main() -> None:
     ap.add_argument('--replan', type=int, default=4,
                     help="cloud_local: entries of each local plan played before replanning")
     ap.add_argument('--refiner-lead', type=int, default=0, help='predicted entry whose position is played')
+    ap.add_argument('--goal-switch', type=int, default=None,
+                    help='nut_goal: flip the goal once at that tick (cancelled if the goal nut '
+                         'is already lifted; default: no switch)')
     ol.add_common_args(ap)
     args = ap.parse_args()
     if args.hz != 20.0:
@@ -250,9 +335,19 @@ def main() -> None:
     if args.fuzzy_gate:
         import fuzzy_gate
         gate_fn = fuzzy_gate.make_gate_fn(fuzzy_gate.FuzzyGate(args.fuzzy_gate), object_tracker)
+    nutgoal = args.task == 'nut_goal'
+    nutwatch = NutWatch() if nutgoal else None
     probers, traced, tracers = [], [], []
 
     def make_world(v):
+        if nutgoal:
+            # GoalWorld outermost: it owns the goal and its switch, and its goal_ keys follow the
+            # CURRENT goal (so frames, anchoring and the gate read the goal nut). The conveyor
+            # rides the episode's INITIAL goal nut; nut_reset (via run_sweep's reset_fn) points
+            # it there each episode — the keys here only have to cover construction
+            return nut_goal.GoalWorld(ol.MovingCube(
+                base, v, args.hz, joint=f'{nut_goal.NUTS[0]}_joint0',
+                pos_key=f'{nut_goal.NUTS[0]}_pos', half_range=half_range))
         world = ol.MovingCube(base, v, args.hz, joint=joint, pos_key=pos_key, held_fn=held,
                               half_range=half_range)
         if args.fail_log:
@@ -273,12 +368,20 @@ def main() -> None:
         stack_fn = refiner.ChunkLabeler(policy, stack, args.label_log)
     ol.run_sweep(args, policy=policy, tracker=tracker, deadline=deadline,
                  make_world=make_world,
-                 frame_fn=make_frames(tracker, pos_key, quat_key, needs_top), stack_fn=stack_fn,
+                 frame_fn=make_frames(tracker, pos_key, quat_key, needs_top,
+                                      goal=nutgoal, watch=nutwatch), stack_fn=stack_fn,
                  executor_kw={'roll_fn': functools.partial(proprio_roll, closed_qpos=closed,
                                                        lag=args.roll_lag),
                               'anchor_fn': object_tracker,
                               'gate_fn': gate_fn, 'refine_fn': refine_fn,
-                              'lift_fn': SquareLift() if args.task == 'square' else None})
+                              'lift_fn': SquareLift() if args.task in ('square', 'nut_goal')
+                              else None},
+                 is_success=(lambda e: e.success()) if nutgoal else None,
+                 reset_fn=(lambda e, k: (nutwatch.start(k % 2),
+                                         nut_reset(e, k, args.goal_switch))[1]) if nutgoal
+                 else None,
+                 columns=['goal', 'switched', 'wrong_nut'] if nutgoal else None,
+                 row_fn=nutwatch.row if nutgoal else None)
     if args.refiner_log:
         refine_fn.save()
     if args.label_log:

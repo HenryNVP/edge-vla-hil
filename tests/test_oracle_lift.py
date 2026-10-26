@@ -123,3 +123,59 @@ def test_frames_carry_the_tracked_position_for_anchoring():
     assert cube_tracker({'proprio': p[None]}) is None           # no fix yet
     p = make_frames()(obs)[2]
     assert np.allclose(cube_tracker({'proprio': p[None]}), CUBE)
+
+
+# ------------------------------------------------------------------ run_sweep seams
+import csv                                    # noqa: E402
+import types                                  # noqa: E402
+
+from oracle_lift import COLUMNS, run_sweep    # noqa: E402
+
+
+class TableEnv:
+    """A stand-in env with the obs keys the harness touches. Success stays False, so a '1' in the
+    success column can only come from the is_success override."""
+
+    def __init__(self):
+        self.resets = 0
+
+    def _obs(self):
+        return {'robot0_eef_pos': np.zeros(3), 'robot0_eef_quat': np.array([0.0, 0.0, 0.0, 1.0]),
+                'robot0_gripper_qpos': np.array(OPEN), 'cube_pos': CUBE}
+
+    def reset(self):
+        self.resets += 1
+        return self._obs()
+
+    def step(self, action):
+        return self._obs(), 0.0, False, {}
+
+    def _check_success(self):
+        return False
+
+
+def _sweep_args(out, episodes=2):
+    return types.SimpleNamespace(speeds='0', delays='1', strategies='synchronous',
+                                 episodes=episodes, seed=0, world_speed=1.0, out=str(out))
+
+
+def test_run_sweep_seams_override_success_reset_and_columns(tmp_path):
+    env, seen = TableEnv(), []
+    out = tmp_path / 'seams.csv'
+    run_sweep(_sweep_args(out), policy=OraclePolicy(CFG), deadline=1, make_world=lambda v: env,
+              frame_fn=make_frames(), tracker=TrackerModel(TrackerSpec()),
+              is_success=lambda e: True,
+              reset_fn=lambda e, k: (seen.append(k), e.reset())[1],
+              columns=['goal'], row_fn=lambda e: {'goal': seen[-1] % 2})
+    rows = list(csv.DictReader(open(out)))
+    assert len(rows) == 2 and [r['success'] for r in rows] == ['1', '1']  # the override, not
+    assert seen == [0, 1] and env.resets == 2                             # _check_success()
+    assert [r['goal'] for r in rows] == ['0', '1'] and list(rows[0])[-1] == 'goal'
+
+
+def test_run_sweep_without_seams_writes_the_plain_header(tmp_path):
+    out = tmp_path / 'plain.csv'
+    run_sweep(_sweep_args(out), policy=OraclePolicy(CFG), deadline=1,
+              make_world=lambda v: TableEnv(), frame_fn=make_frames(),
+              tracker=TrackerModel(TrackerSpec()))
+    assert open(out).readline().strip().split(',') == COLUMNS + ['flushes', 'lift_holds']

@@ -475,16 +475,23 @@ def tracker_from(args) -> TrackerModel:
 
 
 def run_sweep(args, *, policy, make_world, frame_fn, tracker: TrackerModel, deadline: int,
-              executor_kw: dict | None = None, stack_fn=None) -> None:
+              executor_kw: dict | None = None, stack_fn=None, is_success=None, reset_fn=None,
+              columns=None, row_fn=None) -> None:
     """Delay x object speed x strategy, scene k identical in every cell. `make_world(speed)`
     returns the (wrapped) env; `executor_kw` passes the task's roll/anchor/diverged functions;
-    `stack_fn` turns the frame history into the policy's obs (default: proprio only)."""
+    `stack_fn` turns the frame history into the policy's obs (default: proprio only).
+
+    Task seams, all off by default so Lift and Square run exactly as before: `is_success(env)`
+    replaces the robosuite success check (nut_goal grades the goal nut only, not any nut);
+    `reset_fn(env, k)` replaces `env.reset()` (nut_goal's goal schedule, k % 2); `columns` +
+    `row_fn(env)` append task-specific columns to every row."""
     from evh_plant.env_factory import hold_action
     from sil_step import StepWorker, TraceDelay, make_delay, run_episode
     executor_kw = executor_kw or {}
+    is_success = is_success or (lambda e: bool(e._check_success()))
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, 'w', newline='') as fh:
-        w = csv.DictWriter(fh, fieldnames=COLUMNS + ['flushes', 'lift_holds'])
+        w = csv.DictWriter(fh, fieldnames=COLUMNS + ['flushes', 'lift_holds'] + list(columns or []))
         w.writeheader()
         for speed in [float(x) for x in args.speeds.split(',')]:
             env = make_world(speed)
@@ -494,7 +501,7 @@ def run_sweep(args, *, policy, make_world, frame_fn, tracker: TrackerModel, dead
                     ok = 0
                     for k in range(args.episodes):
                         np.random.seed(args.seed + k)      # scene k is the same in every cell
-                        obs = env.reset()
+                        obs = reset_fn(env, k) if reset_fn else env.reset()
                         tracker.reset(args.seed + k)
                         if isinstance(delay, TraceDelay):
                             delay.for_episode(args.seed + k)   # same channel for every strategy
@@ -502,20 +509,23 @@ def run_sweep(args, *, policy, make_world, frame_fn, tracker: TrackerModel, dead
                         ex = make_executor_for(strat, worker, policy, **executor_kw)
                         ep = run_episode(env, obs, policy, ex, worker, deadline_ticks=deadline,
                                          world_speed=args.world_speed, absolute=True,
-                                         is_success=lambda e: bool(e._check_success()),
+                                         is_success=is_success,
                                          frame_fn=frame_fn, stack_fn=stack_fn or stack,
                                          hold_fn=lambda o: hold_action(o, True, 7))
                         ok += ep.success
-                        w.writerow({'strategy': strat, 'delay': d, 'speed': speed,
-                                    'world_speed': args.world_speed,
-                                    'tracker': tracker.spec.tag, 'scene': k,
-                                    'success': int(ep.success), 'ticks': ep.ticks,
-                                    'idle_frac': round(ep.idle / max(ep.ticks, 1), 4),
-                                    'requests': ep.requests,
-                                    'path_mm': round(ep.path_m * 1e3, 1),
-                                    'flushes': getattr(ex, 'flushes', 0),
-                                    'lift_holds': ex.lift.holds if getattr(ex, 'lift', None)
-                                    else 0})
+                        row = {'strategy': strat, 'delay': d, 'speed': speed,
+                               'world_speed': args.world_speed,
+                               'tracker': tracker.spec.tag, 'scene': k,
+                               'success': int(ep.success), 'ticks': ep.ticks,
+                               'idle_frac': round(ep.idle / max(ep.ticks, 1), 4),
+                               'requests': ep.requests,
+                               'path_mm': round(ep.path_m * 1e3, 1),
+                               'flushes': getattr(ex, 'flushes', 0),
+                               'lift_holds': ex.lift.holds if getattr(ex, 'lift', None)
+                               else 0}
+                        if row_fn:
+                            row.update(row_fn(env))
+                        w.writerow(row)
                     fh.flush()
                     print(f'{tracker.spec.tag} speed={speed} d={d} {strat}: {ok}/{args.episodes}',
                           flush=True)
