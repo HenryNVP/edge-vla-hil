@@ -192,23 +192,17 @@ def nut_reset(env, k: int, switch_tick: int | None = None):
     conveyor is pointed at that nut — its joint's qpos/qvel addresses and raw position key, which
     are per nut (GoalWorld's goal_ keys follow the CURRENT goal, but the conveyor tracks the
     episode's initial nut all along). Held = the nut in the gripper (oracle_square's test) for
-    the square nut, GoalWorld's lift test for the round one."""
+    either nut (oracle_square.is_held with that nut's spec)."""
+    import oracle_square as sq
     goal = k % 2
-    nut = nut_goal.NUTS[goal]
+    spec = sq.spec_for(goal)
+    nut = spec.name
     mc = env.env                                # the MovingCube inside GoalWorld
     mc._qadr = env.sim.model.get_joint_qpos_addr(f'{nut}_joint0')[0]
     mc._vadr = env.sim.model.get_joint_qvel_addr(f'{nut}_joint0')[0]
     mc.pos_key = f'{nut}_pos'
-    if goal == 0:
-        import oracle_square as sq
-
-        def held(o, nut=nut):
-            return sq.is_held(o['robot0_eef_pos'], o['robot0_gripper_qpos'],
-                              o[f'{nut}_pos'], o[f'{nut}_quat'])
-    else:
-        def held(o, goal=goal):
-            return env.lifted(o, goal)
-    mc.held_fn = held
+    mc.held_fn = lambda o: sq.is_held(o['robot0_eef_pos'], o['robot0_gripper_qpos'],
+                                      o[f'{nut}_pos'], o[f'{nut}_quat'], spec)
     return env.reset(goal=goal, switch_tick=switch_tick)
 
 
