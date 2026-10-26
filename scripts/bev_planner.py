@@ -94,6 +94,9 @@ def train(args) -> None:
         with amp:
             a0, top0 = grab('agentview', t0), grab('top', t0)
             mem = model.memory(a0, top0, grab('state', t0))
+            if args.cloud_dropout:     # some samples plan with no cloud map: a fallback to rely on
+                keep = torch.rand(len(e), 1, 1, device=dev) >= args.cloud_dropout
+                mem = mem * keep.to(mem.dtype)
             local0 = model.local_map(a0, top0) if args.corr else None
             prev = None
             if args.prev and rng.random() > 0.2:
@@ -124,6 +127,7 @@ def train(args) -> None:
             os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
             torch.save({'model': model.state_dict(), 'cfg': cfg, 'stats': st, 'step': step,
                         'replan': args.replan, 'corr_aux': args.corr_aux,
+                        'cloud_dropout': args.cloud_dropout,
                         'paired_shift': args.paired_shift}, args.out)
 
 
@@ -210,6 +214,8 @@ def main() -> None:
     ap.add_argument('--no-local', action='store_true', help='ablation: no fresh local images')
     ap.add_argument('--no-cloud', action='store_true',
                     help='control: no cloud map (zeros); the robot plans from its own images')
+    ap.add_argument('--cloud-dropout', type=float, default=0.0,
+                    help='probability a training sample gets a zero cloud map (as --no-cloud)')
     ap.add_argument('--height-channels', action='store_true',
                     help='keep the pillar heights as channels instead of averaging them')
     ap.add_argument('--no-ta', action='store_true',
