@@ -40,6 +40,27 @@ def test_bev_sample_reads_the_projected_pixel():
     assert out.shape == (1, 2, 1) and out[0, 0, 0] > 0.9 and out[0, 1, 0] == 0
 
 
+def test_bev_sample_per_height_keeps_the_heights_apart():
+    P = torch.tensor(_P(), dtype=torch.float32)[None]
+    fmap = torch.zeros(1, 2, 84, 84)
+    fmap[:, :, 40:44, 40:44] = torch.tensor([1.0, 2.0])[:, None, None]
+    pts = torch.tensor([[[0.0, 0.0, 0.0], [0.3, 0.3, 0.5]]])        # on the spot; off it
+    g, valid = bm.sample_coords(P, pts)
+    out = bm.bev_sample([fmap], g, valid, per_height=True)
+    assert out.shape == (1, 1, 4)                                   # [B, N, Z*D], height-major
+    assert torch.allclose(out[0, 0], torch.tensor([1.0, 2.0, 0.0, 0.0]))
+    assert torch.allclose(bm.bev_sample([fmap], g, valid)[0, 0], torch.tensor([0.5, 1.0]))
+
+
+def test_no_cloud_memory_is_zero_and_needs_some_input():
+    P = torch.tensor(np.stack([_P(), _P()]), dtype=torch.float32)
+    m = bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny', use_cloud=False)
+    img = torch.zeros(2, 84, 84, 3, dtype=torch.uint8)
+    assert m.cloud is None and not m.memory(img, img, torch.zeros(2, 9)).any()
+    with pytest.raises(ValueError):
+        bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny', use_cloud=False, use_local=False)
+
+
 def test_pillar_points_cover_the_grid():
     p = bm.pillar_points(4)
     assert p.shape == (16, len(bm.Z_LEVELS), 3)
@@ -47,7 +68,9 @@ def test_pillar_points_cover_the_grid():
 
 
 @pytest.mark.parametrize('kw', [{'use_ta': False}, {'local_views': 'agent'},
-                                {'local_views': 'top'}, {'use_local': False}])
+                                {'local_views': 'top'}, {'use_local': False},
+                                {'use_cloud': False}, {'height_channels': True},
+                                {'height_channels': True, 'corr': True, 'local_views': 'agent'}])
 def test_ablations_plan(kw):
     P = torch.tensor(np.stack([_P(), _P()]), dtype=torch.float32)
     m = bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny', **kw).eval()

@@ -13,7 +13,9 @@ is, so staleness becomes an input instead of a splice (HiRT, CloudEdgeVLA). Requ
 whenever the single slot is free, so the memory is as fresh as the link allows.
 
 A policy with a `reset()` (a local half that keeps state between plans, such as the BEV planner's
-previous map) is reset with each episode. Before the first memory arrives the robot holds (returns None), like every other executor at
+previous map) is reset with each episode. `refresh=False` (strategy `cloud_local_once`) keeps the
+episode's first memory and never asks again: a link outage right after the first map, the stress
+test of how long the robot can run on one stale map. Before the first memory arrives the robot holds (returns None), like every other executor at
 episode start. Query planner, paper 2 (docs/query-planner-plan.md).
 """
 from __future__ import annotations
@@ -26,8 +28,9 @@ from evh_controller.chunk_executor.base import ChunkExecutor
 class CloudLocalExecutor(ChunkExecutor):
     name = 'cloud_local'
 
-    def __init__(self, worker, policy, *, replan: int = 4, max_age: int | None = None) -> None:
-        self.replan = replan
+    def __init__(self, worker, policy, *, replan: int = 4, max_age: int | None = None,
+                 refresh: bool = True) -> None:
+        self.replan, self.refresh = replan, refresh
         self.max_age = max_age                # ages beyond the trained range are clamped
         self.ages: list[int] = []             # age of the memory behind each local plan
         super().__init__(worker, policy)
@@ -44,7 +47,7 @@ class CloudLocalExecutor(ChunkExecutor):
         arrival = self._poll(t)
         if arrival is not None:
             self._memory, self._t_memory = arrival.chunk, arrival.t_issue
-        if self._pending_t is None:
+        if self._pending_t is None and (self.refresh or self._memory is None):
             self._issue(obs, t)
         if self._memory is None:
             return None

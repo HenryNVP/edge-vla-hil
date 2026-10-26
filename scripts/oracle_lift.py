@@ -332,7 +332,8 @@ def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None
                                prefix), _anchored (+ M1), _check (+ divergence flush),
                                _gate (+ close gating), _lift (+ lift gating, `lift_fn`)
         cloud_local            query planner: the remote model returns a memory, the robot plans
-                               from it every `CLOUD_LOCAL_REPLAN` ticks (two_stream.py)
+                               from it every `CLOUD_LOCAL_REPLAN` ticks (two_stream.py);
+                               _once keeps the first memory (outage after it)
         refined                Phase D, the no-skip queue with every action from a learned
                                local refiner (`refine_fn`, refiner.make_refine_fn) in place of
                                anchoring and the gate
@@ -356,10 +357,11 @@ def make_executor_for(name: str, worker, policy, *, roll_fn=None, anchor_fn=None
             diverged_fn=diverged_fn if 'check' in parts else None,
             gate_fn=gate_fn if 'gate' in parts else None,
             lift_fn=_need_lift(lift_fn, parts))
-    if name == 'cloud_local':
+    if name in ('cloud_local', 'cloud_local_once'):
         from evh_controller.chunk_executor.cloud_local import CloudLocalExecutor
         return CloudLocalExecutor(worker, policy, replan=CLOUD_LOCAL_REPLAN,
-                                  max_age=getattr(policy, 'max_age', None))
+                                  max_age=getattr(policy, 'max_age', None),
+                                  refresh=name == 'cloud_local')
     if name == 'refined':
         from evh_controller.chunk_executor.refined import RefinedExecutor
         if refine_fn is None:

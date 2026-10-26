@@ -55,3 +55,11 @@ def test_age_is_clamped_to_the_trained_range():
     for t in range(45):
         ex.step({}, t)
     assert max(a for _, a in p.calls) == 10
+
+
+def test_once_keeps_the_first_memory_and_stops_asking():
+    p = Policy()
+    ex = CloudLocalExecutor(Worker(3), p, replan=2, refresh=False)
+    for t in range(20):
+        ex.step({}, t)
+    assert {m for m, _ in p.calls} == {0} and p.calls[-1][1] == 19

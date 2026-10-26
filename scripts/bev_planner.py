@@ -56,7 +56,8 @@ def train(args) -> None:
     amp = torch.autocast('cuda', dtype=torch.bfloat16, enabled=args.amp and dev == 'cuda')
     cfg = {'local_enc': args.local_enc, 'use_prev': args.prev, 'use_local': not args.no_local,
            'use_ta': not args.no_ta, 'local_views': args.local_views, 'gate': args.gate,
-           'max_age': args.max_age}
+           'max_age': args.max_age, 'use_cloud': not args.no_cloud,
+           'height_channels': args.height_channels}
     if args.corr:
         cfg.update(corr=True, corr_radius=args.corr_radius)
     model = BEVPlanner(torch.from_numpy(P), **cfg).to(dev)
@@ -207,6 +208,10 @@ def main() -> None:
     ap.add_argument('--local-enc', default='mobile', choices=['tiny', 'mobile'])
     ap.add_argument('--prev', action='store_true', help="feed the robot's previous map")
     ap.add_argument('--no-local', action='store_true', help='ablation: no fresh local images')
+    ap.add_argument('--no-cloud', action='store_true',
+                    help='control: no cloud map (zeros); the robot plans from its own images')
+    ap.add_argument('--height-channels', action='store_true',
+                    help='keep the pillar heights as channels instead of averaging them')
     ap.add_argument('--no-ta', action='store_true',
                     help='ablation: no temporal attention (cloud map only through the fusion)')
     ap.add_argument('--local-views', default='both', choices=['both', 'agent', 'top'],

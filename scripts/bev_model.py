@@ -79,23 +79,27 @@ def sample_coords(P: torch.Tensor, pts: torch.Tensor, size: int = IMAGE):
     return g, valid
 
 
-def bev_sample(maps: list[torch.Tensor], coords: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+def bev_sample(maps: list[torch.Tensor], coords: torch.Tensor, valid: torch.Tensor,
+               per_height: bool = False) -> torch.Tensor:
     """maps: per view [B, D, h, w]; coords [V, N, Z, 2]; valid [V, N, Z] -> [B, N, D], the
-    mean over the valid (view, height) samples of each cell."""
+    mean over the valid (view, height) samples of each cell; with `per_height`, [B, N, Z*D],
+    the mean over views at each height, heights stacked as channels (keeps what the mean over
+    heights throws away: at what height a feature sits)."""
     b = maps[0].shape[0]
     acc, cnt = 0, 0
     for v, m in enumerate(maps):
         g = coords[v][None].expand(b, -1, -1, -1).to(m.dtype)          # [B, N, Z, 2]
         s = F.grid_sample(m, g, align_corners=False)                    # [B, D, N, Z]
         mask = valid[v].to(m.dtype)[None, None]
-        acc = acc + (s * mask).sum(-1)
-        cnt = cnt + mask.sum(-1)
-    return (acc / cnt.clamp(min=1)).transpose(1, 2)
+        acc = acc + (s * mask if per_height else (s * mask).sum(-1))
+        cnt = cnt + (mask if per_height else mask.sum(-1))
+    out = acc / cnt.clamp(min=1)
+    return out.permute(0, 2, 3, 1).flatten(2) if per_height else out.transpose(1, 2)
 
 
 class CloudBEV(nn.Module):
     def __init__(self, d: int, state_dim: int, layers: int = 2, heads: int = 8,
-                 upsample: int = 2) -> None:
+                 upsample: int = 2, heights: int = 0) -> None:
         super().__init__()
         from torchvision.ops.misc import FrozenBatchNorm2d
         r = torchvision.models.resnet18(weights='IMAGENET1K_V1', norm_layer=FrozenBatchNorm2d)
@@ -103,6 +107,7 @@ class CloudBEV(nn.Module):
                                       r.layer3)
         self.proj = nn.Conv2d(256, d, 1)
         self.upsample = upsample
+        self.zproj = nn.Linear(heights * d, d) if heights else None      # height channels -> D
         self.state = nn.Linear(state_dim, d)
         self.enc = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d, heads, 4 * d, 0.0, batch_first=True, norm_first=True),
@@ -116,7 +121,10 @@ class CloudBEV(nn.Module):
 
     def forward(self, views, state, coords, valid, pos) -> torch.Tensor:
         """views: list of uint8 images (agentview, top) -> memory [B, 256 + 1, D]."""
-        bev = bev_sample([self.fmap(v) for v in views], coords, valid) + pos
+        bev = bev_sample([self.fmap(v) for v in views], coords, valid, self.zproj is not None)
+        if self.zproj is not None:
+            bev = self.zproj(bev)
+        bev = bev + pos
         x = torch.cat([bev, self.state(state)[:, None]], 1)
         return self.enc(x)
 
@@ -149,12 +157,15 @@ class BEVPlanner(nn.Module):
                  action_dim: int = 10, chunk: int = 16, max_age: int = 48, heads: int = 8,
                  local_enc: str = 'mobile', use_prev: bool = False, use_local: bool = True,
                  use_ta: bool = True, local_views: str = 'both', gate: bool = False,
-                 corr: bool = False, corr_radius: int = 4, grid: int = GRID) -> None:
+                 corr: bool = False, corr_radius: int = 4, use_cloud: bool = True,
+                 height_channels: bool = False, grid: int = GRID) -> None:
         super().__init__()
         if gate and corr:
             raise ValueError('gate and corr are alternatives')
         if corr and not use_local:
             raise ValueError('corr needs the local encoder')
+        if not (use_cloud or use_local):
+            raise ValueError('needs the cloud map, the robot images or both')
         if local_views not in LOCAL_VIEWS:
             raise ValueError(f'local_views {local_views!r} not in {tuple(LOCAL_VIEWS)}')
         self.chunk, self.max_age, self.grid = chunk, max_age, grid
@@ -163,10 +174,13 @@ class BEVPlanner(nn.Module):
         n = grid * grid
         self.register_buffer('P', P if P is not None else torch.zeros(2, 3, 4))
         self.register_buffer('pts', pillar_points(grid))
-        self.cloud = CloudBEV(d, state_dim)
+        hz = len(Z_LEVELS) if height_channels else 0
+        self.d = d
+        self.cloud = CloudBEV(d, state_dim, heights=hz) if use_cloud else None
         self.pos = nn.Parameter(torch.randn(1, n, d) * 0.02)
         self.local_cnn = ({'tiny': TinyCNN, 'mobile': MobileLocal}[local_enc](d)
                           if use_local else None)
+        self.local_zproj = nn.Linear(hz * d, d) if hz and use_local else None
         self.use_gate = gate
         if gate:
             self.w_l, self.w_c = nn.Linear(d, d), nn.Linear(d, d)
@@ -205,7 +219,10 @@ class BEVPlanner(nn.Module):
         return sample_coords(self.P, self.pts)
 
     def memory(self, agent0, top0, state0) -> torch.Tensor:
-        """The cloud half: [B, 257, D] (256 cells + a proprio token)."""
+        """The cloud half: [B, 257, D] (256 cells + a proprio token); zeros without the cloud
+        (`use_cloud` off: the robot-only control)."""
+        if self.cloud is None:
+            return self.pos.new_zeros(state0.shape[0], self.grid ** 2 + 1, self.d)
         coords, valid = self._coords()
         return self.cloud([agent0, top0], state0, coords, valid, self.pos)
 
@@ -214,7 +231,9 @@ class BEVPlanner(nn.Module):
         coords, valid = self._coords()
         v = self.local_views
         imgs = [agent, top]
-        return bev_sample([self._fmap(imgs[i]) for i in v], coords[v], valid[v])
+        z = self.local_zproj
+        bev = bev_sample([self._fmap(imgs[i]) for i in v], coords[v], valid[v], z is not None)
+        return z(bev) if z is not None else bev
 
     def cell_colors(self, agent, top) -> torch.Tensor:
         """[B, N, V*Z*3] raw image colours at each cell's pillar points in the robot map's views
