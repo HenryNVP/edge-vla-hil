@@ -3,8 +3,8 @@
 
   fig_seen_vs_action  seen vs action gain, inside vs outside the demos' range
   fig_swap            the 2x2 head-state x feature-direction swap table
-  fig_closepoint      per nut shift: success, and how much of the shift the first gripper
-                      close followed (1 = at the real handle, 0 = at the demo position)
+  fig_closepoint      per object shift and policy: success, and how much of the shift the first
+                      gripper close followed (1 = at the real object, 0 = at the demo position)
   fig_gain_space      local gain over the Lift workspace (DP, ACT), demo range outlined
 
 Every gains/swap number is plotted at the SMALLER probe radius (square DP 3 cm, lift 2 cm).
@@ -138,40 +138,41 @@ def fig_swap(rows: list, out: str) -> None:
 
 
 def fig_closepoint(rows: list, out: str) -> None:
-    """Success and followed-fraction vs nut shift; blue = x shift, orange = y shift."""
-    fig, axes = plt.subplots(2, 1, figsize=(SINGLE, 2.6), sharex=True, height_ratios=(1, 1.2),
-                             constrained_layout=True)
-    series = []
-    for i, (name, color) in enumerate((('x shift', BLUE), ('y shift', ORANGE))):
-        pts = sorted((r['shift'][i] * 100.0, r) for r in rows if r['shift'][i] != 0)
-        if pts:
-            series.append((name, color, pts))
-    for name, color, pts in series:
-        xs = [p[0] for p in pts]
-        for ax, (est, lo, hi) in zip(axes, (('success', 'success_lo', 'success_hi'),
-                                            ('followed', 'followed_lo', 'followed_hi'))):
-            ys = [p[1][est] for p in pts]
-            ax.errorbar(xs, ys, yerr=[[max(0.0, y - p[1][lo]) for y, p in zip(ys, pts)],
-                                      [max(0.0, p[1][hi] - y) for y, p in zip(ys, pts)]],
-                        fmt='o-', color=color, ms=3, lw=0.8, markeredgewidth=0.8,
-                        capsize=2, capthick=0.9, zorder=3)
-    axes[0].set_ylim(0.0, 1.0)
-    axes[0].set_ylabel('success')
-    xs_all = [p[0] for _, _, pts in series for p in pts]
-    tx = max(xs_all) + 0.02 * (max(xs_all) - min(xs_all))
-    for y, lab, va in ((1.0, 'real handle', 'bottom'), (0.0, 'demo position', 'top')):
-        axes[1].axhline(y, ls='--', lw=0.8, color='0.45', zorder=2)
-        axes[1].text(tx, y + (0.015 if va == 'bottom' else -0.015), lab, ha='right', va=va,
-                     color='0.25')
-    axes[1].set_ylim(min(0.0, min(r['followed_lo'] for r in rows) - 0.2),
-                     max(1.0, max(r['followed_hi'] for r in rows) + 0.2))
-    axes[1].set_ylabel('shift followed')
-    fig.align_ylabels(axes)
-    axes[1].set_xlabel('nut shift (cm)')
-    for ax in axes:
-        style(ax)
+    """Per policy (columns): success and followed fraction vs object shift; blue = x, orange = y."""
+    fig, axes = plt.subplots(2, len(POLICIES), figsize=(DOUBLE, 2.6), sharex='col', sharey='row',
+                             height_ratios=(1, 1.2), constrained_layout=True)
+    for ci, pol in enumerate(POLICIES):
+        mine = [r for r in rows if r.get('policy', 'square DP') == pol]
+        for i, color in enumerate((BLUE, ORANGE)):
+            pts = sorted((r['shift'][i] * 100.0, r) for r in mine if r['shift'][i] != 0)
+            if not pts:
+                continue
+            xs = [p[0] for p in pts]
+            for ax, (est, lo, hi) in zip(axes[:, ci], (('success', 'success_lo', 'success_hi'),
+                                                       ('followed', 'followed_lo', 'followed_hi'))):
+                ys = [p[1][est] for p in pts]
+                ax.errorbar(xs, ys, yerr=[[max(0.0, y - p[1][lo]) for y, p in zip(ys, pts)],
+                                          [max(0.0, p[1][hi] - y) for y, p in zip(ys, pts)]],
+                            fmt='o-', color=color, ms=3, lw=0.8, markeredgewidth=0.8,
+                            capsize=2, capthick=0.9, zorder=3)
+        for y in (0.0, 1.0):
+            axes[1, ci].axhline(y, ls='--', lw=0.8, color='0.45', zorder=2)
+        axes[0, ci].set_title(pol)
+        axes[1, ci].set_xlabel('object shift (cm)')
+        for ax in axes[:, ci]:
+            style(ax)
+    axes[0, 0].set_ylim(0.0, 1.05)
+    axes[1, 0].set_ylim(min(0.0, min(r['followed_lo'] for r in rows) - 0.1),
+                        max(1.0, max(r['followed_hi'] for r in rows) + 0.1))
+    axes[0, 0].set_ylabel('success')
+    axes[1, 0].set_ylabel('shift followed')
+    axes[1, -1].text(1.0, 1.0, 'real object', transform=axes[1, -1].get_yaxis_transform(),
+                     ha='right', va='bottom', color='0.25')
+    axes[1, -1].text(1.0, 0.0, 'demo position', transform=axes[1, -1].get_yaxis_transform(),
+                     ha='right', va='top', color='0.25')
+    fig.align_ylabels(axes[:, 0])
     fig.legend(handles=[Line2D([], [], ls='-', lw=0.8, marker='o', ms=3, color=c, label=n)
-                        for n, c, _ in series],
+                        for n, c in (('x shift', BLUE), ('y shift', ORANGE))],
                loc='outside lower center', ncol=2, frameon=False)
     save(fig, 'fig_closepoint', out)
 
@@ -218,8 +219,7 @@ def main(argv=None) -> None:
         rows = json.load(fh)
     fig_seen_vs_action([r for r in rows if r['section'] == 'gains'], args.out)
     fig_swap([r for r in rows if r['section'] == 'swap'], args.out)
-    fig_closepoint([r for r in rows if r['section'] == 'rollouts'
-                    and r.get('policy', 'square DP') == 'square DP'], args.out)
+    fig_closepoint([r for r in rows if r['section'] == 'rollouts'], args.out)
     fig_gain_space(args.data, args.out)
 
 
