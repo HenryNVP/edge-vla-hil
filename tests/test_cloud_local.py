@@ -11,7 +11,7 @@ class Policy:
         self.calls = []
 
     def local(self, obs, memory, age):
-        self.calls.append((int(memory), age))
+        self.calls.append((None if memory is None else int(memory), age))
         c = np.zeros((4, 7), np.float32)
         c[:, 0] = np.arange(4)
         return c
@@ -63,3 +63,11 @@ def test_once_keeps_the_first_memory_and_stops_asking():
     for t in range(20):
         ex.step({}, t)
     assert {m for m, _ in p.calls} == {0} and p.calls[-1][1] == 19
+
+
+def test_drop_after_plans_with_no_memory_once_it_is_too_old():
+    p = Policy()
+    ex = CloudLocalExecutor(Worker(3), p, replan=1, refresh=False, drop_after=5)
+    for t in range(10):
+        ex.step({}, t)
+    assert [m for m, _ in p.calls] == [0, 0, 0] + [None] * 4      # ages 3, 4, 5, then 6..9

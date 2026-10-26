@@ -24,6 +24,15 @@ import numpy as np
 from two_stream import H, MAX_AGE, chunk_targets, random_shift, sample_index, stats
 
 KEYS = ('agentview', 'top', 'wrist', 'state', 'action')
+GOALS = 2                      # nut_goal demos carry a per-frame goal (nut_goal.NUTS)
+
+
+def goal_consistent_t0(goals: np.ndarray, t: int, t0: int) -> int:
+    """The memory frame for a sample whose goal switched between t0 and t: the first frame at or
+    after t0 with t's goal. The demonstrator re-targets at the switch, so a memory from before it
+    would pair the old goal with actions for the new one, which no policy can learn; this keeps
+    the pair causal (the robot learns of a switch only from a memory requested after it)."""
+    return t0 + int(np.argmax(goals[t0:t + 1] == goals[t]))
 
 
 def load_npz(dirs: str) -> tuple[list[dict], np.ndarray]:
@@ -38,7 +47,7 @@ def load_npz(dirs: str) -> tuple[list[dict], np.ndarray]:
                 P = p
             elif not np.allclose(P, p, atol=1e-3):
                 raise ValueError(f'{f}: camera matrices differ from the first episode')
-            eps.append({k: z[k] for k in KEYS})
+            eps.append({k: z[k] for k in KEYS + (('goal',) if 'goal' in z else ())})
     return eps, P
 
 
@@ -57,7 +66,8 @@ def train(args) -> None:
     cfg = {'local_enc': args.local_enc, 'use_prev': args.prev, 'use_local': not args.no_local,
            'use_ta': not args.no_ta, 'local_views': args.local_views, 'gate': args.gate,
            'max_age': args.max_age, 'use_cloud': not args.no_cloud,
-           'height_channels': args.height_channels}
+           'height_channels': args.height_channels,
+           'goals': GOALS if 'goal' in eps[0] else 0}
     if args.corr:
         cfg.update(corr=True, corr_radius=args.corr_radius)
     model = BEVPlanner(torch.from_numpy(P), **cfg).to(dev)
@@ -74,6 +84,10 @@ def train(args) -> None:
     t_start = time.time()
     for step in range(1, args.steps + 1):
         e, t, t0 = sample_index(lens, args.batch, args.max_age, rng)
+        goal0 = None
+        if cfg['goals']:
+            t0 = np.array([goal_consistent_t0(eps[i]['goal'], j, j0) for i, j, j0 in zip(e, t, t0)])
+            goal0 = torch.from_numpy(np.array([eps[i]['goal'][j] for i, j in zip(e, t0)])).long().to(dev)
         acts, masks = zip(*(chunk_targets(eps[i]['action'], j) for i, j in zip(e, t)))
 
         offsets = {}
@@ -93,7 +107,7 @@ def train(args) -> None:
         age = torch.from_numpy(t - t0).long().to(dev)
         with amp:
             a0, top0 = grab('agentview', t0), grab('top', t0)
-            mem = model.memory(a0, top0, grab('state', t0))
+            mem = model.memory(a0, top0, grab('state', t0), goal0)
             if args.cloud_dropout:     # some samples plan with no cloud map: a fallback to rely on
                 keep = torch.rand(len(e), 1, 1, device=dev) >= args.cloud_dropout
                 mem = mem * keep.to(mem.dtype)
@@ -171,8 +185,10 @@ class BEVPolicy:
     def predict(self, obs) -> np.ndarray:
         import torch
         agent, top, _, state = self._obs(obs)
+        goal = (torch.tensor([int(obs['goal'])], device=self.dev)
+                if self.model.cloud is not None and self.model.cloud.goal is not None else None)
         with torch.no_grad():
-            mem = self.model.memory(agent, top, state)
+            mem = self.model.memory(agent, top, state, goal)
             if self.model.use_corr:
                 mem = torch.cat([mem, self.model.local_map(agent, top)], 1)
             return mem[0].cpu().numpy()
@@ -186,7 +202,12 @@ class BEVPolicy:
         with torch.no_grad():
             agent, top, wrist, state = self._obs(obs)
             a = torch.tensor([int(age)], device=self.dev)
-            mem = torch.from_numpy(np.asarray(memory, np.float32))[None].to(self.dev)
+            if memory is None:          # the executor dropped a map past the trained age range
+                if self.model.use_corr:
+                    raise ValueError('corr needs a memory')
+                mem = torch.zeros(1, self.model.grid ** 2 + 1, self.model.d, device=self.dev)
+            else:
+                mem = torch.from_numpy(np.asarray(memory, np.float32))[None].to(self.dev)
             local0 = None
             if self.model.use_corr:
                 n = self.model.grid ** 2

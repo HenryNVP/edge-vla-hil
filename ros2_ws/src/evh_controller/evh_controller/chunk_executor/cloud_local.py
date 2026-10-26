@@ -15,7 +15,10 @@ whenever the single slot is free, so the memory is as fresh as the link allows.
 A policy with a `reset()` (a local half that keeps state between plans, such as the BEV planner's
 previous map) is reset with each episode. `refresh=False` (strategy `cloud_local_once`) keeps the
 episode's first memory and never asks again: a link outage right after the first map, the stress
-test of how long the robot can run on one stale map. Before the first memory arrives the robot holds (returns None), like every other executor at
+test of how long the robot can run on one stale map. `drop_after=N` plans with no memory
+(`policy.local(obs, None, age)`) once the memory is more than N ticks old: a map past the
+trained age range misleads (outputs/stress/: one map then outage did worse than no map), so a
+policy trained with cloud-map dropout falls back to its robot-only behaviour instead. Before the first memory arrives the robot holds (returns None), like every other executor at
 episode start. Query planner, paper 2 (docs/query-planner-plan.md).
 """
 from __future__ import annotations
@@ -29,8 +32,8 @@ class CloudLocalExecutor(ChunkExecutor):
     name = 'cloud_local'
 
     def __init__(self, worker, policy, *, replan: int = 4, max_age: int | None = None,
-                 refresh: bool = True) -> None:
-        self.replan, self.refresh = replan, refresh
+                 refresh: bool = True, drop_after: int | None = None) -> None:
+        self.replan, self.refresh, self.drop_after = replan, refresh, drop_after
         self.max_age = max_age                # ages beyond the trained range are clamped
         self.ages: list[int] = []             # age of the memory behind each local plan
         super().__init__(worker, policy)
@@ -53,9 +56,12 @@ class CloudLocalExecutor(ChunkExecutor):
             return None
         if self._chunk is None or self._i >= min(self.replan, len(self._chunk)):
             age = t - self._t_memory
+            memory = self._memory
+            if self.drop_after is not None and age > self.drop_after:
+                memory = None
             if self.max_age is not None:
                 age = min(age, self.max_age)
-            self._chunk = np.asarray(self.policy.local(obs, self._memory, age))
+            self._chunk = np.asarray(self.policy.local(obs, memory, age))
             self._i = 0
             self.ages.append(age)
         a = self._chunk[self._i]

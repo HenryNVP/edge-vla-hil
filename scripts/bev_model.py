@@ -99,7 +99,7 @@ def bev_sample(maps: list[torch.Tensor], coords: torch.Tensor, valid: torch.Tens
 
 class CloudBEV(nn.Module):
     def __init__(self, d: int, state_dim: int, layers: int = 2, heads: int = 8,
-                 upsample: int = 2, heights: int = 0) -> None:
+                 upsample: int = 2, heights: int = 0, goals: int = 0) -> None:
         super().__init__()
         from torchvision.ops.misc import FrozenBatchNorm2d
         r = torchvision.models.resnet18(weights='IMAGENET1K_V1', norm_layer=FrozenBatchNorm2d)
@@ -109,6 +109,7 @@ class CloudBEV(nn.Module):
         self.upsample = upsample
         self.zproj = nn.Linear(heights * d, d) if heights else None      # height channels -> D
         self.state = nn.Linear(state_dim, d)
+        self.goal = nn.Embedding(goals, d) if goals else None    # the task goal, cloud-only
         self.enc = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d, heads, 4 * d, 0.0, batch_first=True, norm_first=True),
             layers, norm=nn.LayerNorm(d))
@@ -119,13 +120,19 @@ class CloudBEV(nn.Module):
             x = F.interpolate(x, scale_factor=self.upsample, mode='bilinear', align_corners=False)
         return self.proj(self.backbone(x))
 
-    def forward(self, views, state, coords, valid, pos) -> torch.Tensor:
-        """views: list of uint8 images (agentview, top) -> memory [B, 256 + 1, D]."""
+    def forward(self, views, state, coords, valid, pos, goal=None) -> torch.Tensor:
+        """views: list of uint8 images (agentview, top) -> memory [B, 256 + 1, D]. `goal` [B]
+        (long) joins the proprio token; the encoder spreads it over the cells."""
         bev = bev_sample([self.fmap(v) for v in views], coords, valid, self.zproj is not None)
         if self.zproj is not None:
             bev = self.zproj(bev)
         bev = bev + pos
-        x = torch.cat([bev, self.state(state)[:, None]], 1)
+        tok = self.state(state)
+        if self.goal is not None:
+            if goal is None:
+                raise ValueError('this cloud encoder is goal-conditioned: pass goal')
+            tok = tok + self.goal(goal)
+        x = torch.cat([bev, tok[:, None]], 1)
         return self.enc(x)
 
 
@@ -158,7 +165,7 @@ class BEVPlanner(nn.Module):
                  local_enc: str = 'mobile', use_prev: bool = False, use_local: bool = True,
                  use_ta: bool = True, local_views: str = 'both', gate: bool = False,
                  corr: bool = False, corr_radius: int = 4, use_cloud: bool = True,
-                 height_channels: bool = False, grid: int = GRID) -> None:
+                 height_channels: bool = False, goals: int = 0, grid: int = GRID) -> None:
         super().__init__()
         if gate and corr:
             raise ValueError('gate and corr are alternatives')
@@ -176,7 +183,7 @@ class BEVPlanner(nn.Module):
         self.register_buffer('pts', pillar_points(grid))
         hz = len(Z_LEVELS) if height_channels else 0
         self.d = d
-        self.cloud = CloudBEV(d, state_dim, heights=hz) if use_cloud else None
+        self.cloud = CloudBEV(d, state_dim, heights=hz, goals=goals) if use_cloud else None
         self.pos = nn.Parameter(torch.randn(1, n, d) * 0.02)
         self.local_cnn = ({'tiny': TinyCNN, 'mobile': MobileLocal}[local_enc](d)
                           if use_local else None)
@@ -218,13 +225,13 @@ class BEVPlanner(nn.Module):
     def _coords(self):
         return sample_coords(self.P, self.pts)
 
-    def memory(self, agent0, top0, state0) -> torch.Tensor:
+    def memory(self, agent0, top0, state0, goal0=None) -> torch.Tensor:
         """The cloud half: [B, 257, D] (256 cells + a proprio token); zeros without the cloud
         (`use_cloud` off: the robot-only control)."""
         if self.cloud is None:
             return self.pos.new_zeros(state0.shape[0], self.grid ** 2 + 1, self.d)
         coords, valid = self._coords()
-        return self.cloud([agent0, top0], state0, coords, valid, self.pos)
+        return self.cloud([agent0, top0], state0, coords, valid, self.pos, goal0)
 
     def local_map(self, agent, top) -> torch.Tensor:
         """The robot encoder's fresh map [B, 256, D] (with `corr`, also run on the t0 frame)."""
@@ -322,7 +329,7 @@ class BEVPlanner(nn.Module):
         s = int(round(t.shape[1] ** 0.5))
         return t.transpose(1, 2).reshape(t.shape[0], -1, s, s)
 
-    def forward(self, agent0, top0, state0, agent, top, wrist, state, age, prev=None):
+    def forward(self, agent0, top0, state0, agent, top, wrist, state, age, prev=None, goal0=None):
         local0 = self.local_map(agent0, top0) if self.use_corr else None
-        return self.plan(self.memory(agent0, top0, state0), agent, top, wrist, state, age, prev,
-                         local0=local0)
+        return self.plan(self.memory(agent0, top0, state0, goal0), agent, top, wrist, state, age,
+                         prev, local0=local0)

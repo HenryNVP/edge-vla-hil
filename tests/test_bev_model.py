@@ -130,3 +130,15 @@ def test_corr_recon_loss_zero_for_identity_on_a_still_scene():
     assert m.corr_recon_loss(eye, img, img, img, img) < 1e-6
     blur = torch.full((2, 256, 256), 1 / 256)
     assert m.corr_recon_loss(blur, img, img, img, img) > 0.05     # many cells fall off this image
+
+
+def test_goal_conditioned_memory_depends_on_the_goal_and_requires_it():
+    P = torch.tensor(np.stack([_P(), _P()]), dtype=torch.float32)
+    m = bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny', goals=2).eval()
+    img = torch.zeros(1, 84, 84, 3, dtype=torch.uint8)
+    st = torch.zeros(1, 9)
+    with torch.no_grad():
+        a, b = (m.memory(img, img, st, torch.tensor([g])) for g in (0, 1))
+        assert not torch.allclose(a, b)
+        with pytest.raises(ValueError):
+            m.memory(img, img, st)
