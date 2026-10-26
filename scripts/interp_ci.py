@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import sys
 
@@ -29,6 +30,8 @@ from interp_swap import block_gains, directions  # noqa: E402
 from plot_sweep import wilson  # noqa: E402
 
 OUT = 'outputs/interp'
+ROWS = []                                   # every printed number, for --json
+
 SWEEPS = [('square DP', 'perceive_square_dp', 'gainmap', 'swap_square_dp'),
           ('lift DP', 'perceive_lift_dp', 'gainmap_lift_dp', 'swap_lift_dp'),
           ('lift ACT', 'perceive_lift_act', 'gainmap_lift_act', '')]
@@ -72,6 +75,13 @@ def gains(name: str, perceive: str, action: str) -> None:
         for label, i in (('action inside', 0), ('action outside', 2), ('action drop in-out', 8),
                          ('seen inside', 4), ('seen outside', 6)):
             print(f'    {label:20s} x {fmt(*e, i)}   y {fmt(*e, i + 1)}')
+            record('gains', name, r, label, e, i)
+
+
+def record(section, name, r, label, e, i) -> None:
+    for k, ax in ((i, 'x'), (i + 1, 'y')):
+        ROWS.append(dict(section=section, policy=name, radius=float(r), label=label, axis=ax,
+                         est=float(e[0][k]), lo=float(e[1][k]), hi=float(e[2][k])))
 
 
 def swap(name: str, perceive: str, swapf: str) -> None:
@@ -92,6 +102,7 @@ def swap(name: str, perceive: str, swapf: str) -> None:
         for label, i in (('head in, dir in', 0), ('head in, dir out', 2), ('head out, dir in', 4),
                          ('head out, dir out', 6), ('direction effect', 8), ('head effect', 10)):
             print(f'    {label:20s} x {fmt(*e, i)}   y {fmt(*e, i + 1)}')
+            record('swap', name, r, label, e, i)
 
 
 def rollouts(dirs: str) -> None:
@@ -129,6 +140,11 @@ def rollouts(dirs: str) -> None:
         okc = ok[mc]
         sf = ' / '.join(f'{np.median(fol[x]):5.2f}' if x.any() else '  nan' for x in (okc, ~okc))
         cross = np.median((close[mc] - real)[:, 1 - k]) * 1e3
+        ROWS.append(dict(section='rollouts', shift=s[:2].tolist(), n=int(m.sum()),
+                         success=float(ok[m].mean()), success_lo=lo, success_hi=hi,
+                         followed=float(e[0][0]), followed_lo=float(e[1][0]),
+                         followed_hi=float(e[2][0]), nearer_ghost=float(nearer),
+                         cross_mm=float(cross)))
         print(f'  {s[0]:+.2f} {s[1]:+.2f}  {m.sum():4d}  {ok[m].mean():.2f} [{lo:.2f}, {hi:.2f}]'
               f'   {fmt(*e, 0)}   {nearer:5.2f}         {sf}        {cross:+6.1f}')
 
@@ -136,12 +152,15 @@ def rollouts(dirs: str) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--dirs', default=f'{OUT}/dp_square,{OUT}/shift_*')
+    p.add_argument('--json', default=f'{OUT}/ci.json')
     args = p.parse_args()
     for name, perceive, action, swapf in SWEEPS:
         gains(name, perceive, action)
         if swapf:
             swap(name, perceive, swapf)
     rollouts(args.dirs)
+    with open(args.json, 'w') as f:
+        json.dump(ROWS, f, indent=1)
 
 
 if __name__ == '__main__':
