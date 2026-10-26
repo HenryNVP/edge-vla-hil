@@ -6,7 +6,8 @@
             scenes (the decode is fitted once, so its own training variance is not included)
   swap      interp_swap's 2x2 head-state x feature-direction table, the direction effect (dir
             in - dir out, averaged over head rows) and the head effect; bootstrap over scenes
-  rollouts  per nut shift: success (Wilson), and where the gripper first closes: the fraction of
+  rollouts  per object shift (Square DP; Lift DP / ACT when lift_<backend>_shift_* exist):
+            success (Wilson), and where the gripper first closes: the fraction of
             the shift it followed (1 = at the real handle, 0 = where the unshifted handle would be),
             the share of episodes nearer that "ghost" target than the real one, and the cross-axis
             drift (mm); bootstrap over episodes
@@ -105,7 +106,7 @@ def swap(name: str, perceive: str, swapf: str) -> None:
             record('swap', name, r, label, e, i)
 
 
-def rollouts(dirs: str) -> None:
+def rollouts(dirs: str, name: str = 'square DP') -> None:
     rows = []
     for f in (f for p in dirs.split(',') for dd in sorted(glob.glob(p)) if os.path.isdir(dd)
               for f in sorted(glob.glob(os.path.join(dd, 'ep*.npz')))):
@@ -114,8 +115,10 @@ def rollouts(dirs: str) -> None:
         if 'shift' in e:
             s[:len(e['shift'])] = e['shift']
         c = np.flatnonzero(e['commands'][:, 6] > 0)
-        # the gripper grasps the handle, which swings with the nut's random yaw
-        rows.append((s, bool(e['success']), handle_pos(e['nut_pos'][0], e['nut_quat'][0])[:2],
+        # Square: the gripper grasps the handle, which swings with the nut's random yaw
+        grasp = (handle_pos(e['nut_pos'][0], e['nut_quat'][0]) if str(e.get('task', 'square'))
+                 == 'square' else e['nut_pos'][0])
+        rows.append((s, bool(e['success']), grasp[:2],
                      e['eef_pos'][c[0], :2] if len(c) else np.full(2, np.nan)))
     S = np.array([r[0] for r in rows])
     ok = np.array([r[1] for r in rows])
@@ -123,7 +126,7 @@ def rollouts(dirs: str) -> None:
     closed = ~np.isnan(close[:, 0])
     base = (np.abs(S).sum(1) == 0) & closed
     o = np.median(close[base] - nut0[base], 0)
-    print(f'rollouts: {len(rows)} episodes, {(~closed).sum()} never closed; unshifted '
+    print(f'{name} rollouts: {len(rows)} episodes, {(~closed).sum()} never closed; unshifted '
           f'success {ok[np.abs(S).sum(1) == 0].mean():.2f} (n {(np.abs(S).sum(1) == 0).sum()})')
     print('  shift (m)      n  success [Wilson]     followed [boot]      nearer ghost  '
           'followed succ / fail  cross-axis mm')
@@ -140,7 +143,7 @@ def rollouts(dirs: str) -> None:
         okc = ok[mc]
         sf = ' / '.join(f'{np.median(fol[x]):5.2f}' if x.any() else '  nan' for x in (okc, ~okc))
         cross = np.median((close[mc] - real)[:, 1 - k]) * 1e3
-        ROWS.append(dict(section='rollouts', shift=s[:2].tolist(), n=int(m.sum()),
+        ROWS.append(dict(section='rollouts', policy=name, shift=s[:2].tolist(), n=int(m.sum()),
                          success=float(ok[m].mean()), success_lo=lo, success_hi=hi,
                          followed=float(e[0][0]), followed_lo=float(e[1][0]),
                          followed_hi=float(e[2][0]), nearer_ghost=float(nearer),
@@ -159,6 +162,9 @@ def main() -> None:
         if swapf:
             swap(name, perceive, swapf)
     rollouts(args.dirs)
+    for b in ('dp', 'act'):
+        if glob.glob(f'{OUT}/lift_{b}_shift_*/ep*.npz'):
+            rollouts(f'{OUT}/lift_{b}_shift_*', f'lift {b.upper()}')
     with open(args.json, 'w') as f:
         json.dump(ROWS, f, indent=1)
 

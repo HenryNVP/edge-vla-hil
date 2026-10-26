@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Interp step 0: roll out DP on Square and log, per control tick, what the policy saw next to the
+"""Interp step 0: roll out DP (or ACT, --backend act) on Square (or Lift, --task lift) and log, per control tick, what the policy saw next to the
 sim's ground truth (docs/interp-plan.md).
 
 Per tick: `global_cond` (the obs encoder's output, the only thing the denoiser is conditioned on;
 for the robomimic Square checkpoint 2 obs steps x [agentview 64 | wrist 64 | proprio 9]), the
 executed command, and the state: eef pose, gripper, nut pose, held, on_peg. Per episode: success
-and the square_failures class. One compressed .npz per episode in --out-dir.
+and the square_failures class (Lift: success / fail). One compressed .npz per episode in --out-dir.
+nut_pos / nut_quat are the task object's pose (the cube on Lift); feats are saved for DP only.
 
 The rollout is sil_step's own loop (synchronous, d = 1), so episodes match the paper-2 harness.
 The encoder is run once more per tick on the same stacked history the executor gets; it does
@@ -25,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sil_step  # noqa: E402  (puts the ROS-free packages on sys.path)
 import oracle_square as sq  # noqa: E402
 import square_failures  # noqa: E402
+from interp_gainmap import TASKS  # noqa: E402
 
 
 class Recorder:
@@ -56,25 +58,27 @@ def encode(policy, stacked: dict, encoder=None) -> np.ndarray:
         return encoder(this).reshape(-1).cpu().numpy().astype(np.float32)
 
 
-def state(o) -> dict:
-    return {'eef_pos': o['robot0_eef_pos'], 'eef_quat': o['robot0_eef_quat'],
-            'grip': o['robot0_gripper_qpos'], 'nut_pos': o['SquareNut_pos'],
-            'nut_quat': o['SquareNut_quat'],
-            'held': sq.is_held(o['robot0_eef_pos'], o['robot0_gripper_qpos'],
-                               o['SquareNut_pos'], o['SquareNut_quat']),
-            'on_peg': sq.on_peg(o['SquareNut_pos'])}
+def state(o, task=TASKS['square']) -> dict:
+    s = {'eef_pos': o['robot0_eef_pos'], 'eef_quat': o['robot0_eef_quat'],
+         'grip': o['robot0_gripper_qpos'], 'nut_pos': o[task['pos']],
+         'nut_quat': o[task['quat']]}
+    if task is TASKS['square']:
+        s['held'] = sq.is_held(o['robot0_eef_pos'], o['robot0_gripper_qpos'],
+                               o['SquareNut_pos'], o['SquareNut_quat'])
+        s['on_peg'] = sq.on_peg(o['SquareNut_pos'])
+    return s
 
 
-def place(env, obs, shift):
+def place(env, obs, shift, task=TASKS['square']):
     """The scene's nut moved by shift = (dx, dy[, dyaw_deg]); returns the fresh observation, so
     the policy's first frame already shows it there."""
     if not shift.any():
         return obs
     from dp_anchor_probe import observe, set_object
-    set_object(env, 'SquareNut_joint0', np.asarray(obs['SquareNut_pos'][:2]) + shift[:2])
+    set_object(env, task['joint'], np.asarray(obs[task['pos']][:2]) + shift[:2])
     if len(shift) > 2 and shift[2]:
         sim = env.sim
-        adr = sim.model.get_joint_qpos_addr('SquareNut_joint0')[0] + 3   # wxyz
+        adr = sim.model.get_joint_qpos_addr(task['joint'])[0] + 3   # wxyz
         h = np.radians(shift[2]) / 2
         w, x, y, z = sim.data.qpos[adr:adr + 4]
         c, s_ = np.cos(h), np.sin(h)                # q <- rz(dyaw) * q
@@ -87,8 +91,9 @@ def place(env, obs, shift):
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--out-dir', required=True)
-    p.add_argument('--weights', default=os.path.join(sil_step._REPO, 'checkpoints',
-                                                     'dp_square_ph_image_cnn.ckpt'))
+    p.add_argument('--task', default='square', choices=sorted(TASKS))
+    p.add_argument('--backend', default='dp', help='make_policy backend (dp, act)')
+    p.add_argument('--weights', default='', help="default: the task's DP checkpoint")
     p.add_argument('--denoise-steps', type=int, default=16)
     p.add_argument('--episodes', type=int, default=200)
     p.add_argument('--first-scene', type=int, default=0, help='resume: skip scenes below this')
@@ -103,13 +108,15 @@ def main() -> None:
                    help="correct with the sim's true mistake instead (upper bound)")
     args = p.parse_args()
     shift = np.array([float(v) for v in args.shift.split(',')])
+    task = TASKS[args.task]
+    weights = args.weights or os.path.join(sil_step._REPO, 'checkpoints', task['ckpt'])
 
     from evh_controller.policy import make_policy
     from evh_plant.env_factory import EnvSpec, build_env
 
     os.makedirs(args.out_dir, exist_ok=True)
-    policy = make_policy('dp', args.weights, denoise_steps=args.denoise_steps)
-    built = build_env(EnvSpec(env_name='NutAssemblySquare', action_hz=sil_step.CONTROL_HZ,
+    policy = make_policy(args.backend, weights, denoise_steps=args.denoise_steps)
+    built = build_env(EnvSpec(env_name=task['env'], action_hz=sil_step.CONTROL_HZ,
                               max_episode_s=args.deadline_s + 1.0, seed=args.seed,
                               absolute_actions=policy.absolute_actions))
     env = built.env
@@ -120,7 +127,7 @@ def main() -> None:
         fix = ((lambda g: mistake(env, inner, observe(env), 0)[None]) if args.oracle
                else load_fix(args.corrector))
         policy = Corrected(policy, fix)
-    obs = place(env, built.obs, shift)
+    obs = place(env, built.obs, shift, task)
     worker = sil_step.StepWorker(policy, sil_step.fixed_delay(1))
     executor = sil_step.make_strategy('synchronous', worker, policy)
     wins = 0
@@ -131,28 +138,31 @@ def main() -> None:
 
             def stack_fn(hist, needs_wrist):
                 stacked = sil_step.stack(hist, needs_wrist)
-                feats.append(encode(policy, stacked))
-                states.append(state(rec.obs))
+                if args.backend == 'dp':
+                    feats.append(encode(policy, stacked))
+                states.append(state(rec.obs, task))
                 return stacked
 
             ep = sil_step.run_episode(rec, obs, policy, executor, worker,
                                       deadline_ticks=int(args.deadline_s * sil_step.CONTROL_HZ),
                                       absolute=policy.absolute_actions, stack_fn=stack_fn)
-            states.append(state(rec.obs))           # the state after the last step
+            states.append(state(rec.obs, task))     # the state after the last step
             cols = {k: np.array([s[k] for s in states]) for k in states[0]}
             cmds = np.array(rec.commands)
             nut0 = cols['nut_pos'][0]
-            cls = square_failures.classify(cols['held'][1:], cols['nut_pos'][1:],
-                                           cols['on_peg'][1:], ep.success, cmds[:, 6] > 0,
-                                           nut0[2], sq.PEG)
+            cls = (square_failures.classify(cols['held'][1:], cols['nut_pos'][1:],
+                                            cols['on_peg'][1:], ep.success, cmds[:, 6] > 0,
+                                            nut0[2], sq.PEG) if args.task == 'square' else
+                   {'cls': 'success' if ep.success else 'fail'})
             np.savez_compressed(os.path.join(args.out_dir, f'ep{scene:04d}.npz'),
                                 feats=np.array(feats), commands=cmds, success=ep.success,
-                                cls=cls['cls'], ticks=ep.ticks, shift=shift, **cols)
+                                cls=cls['cls'], ticks=ep.ticks, shift=shift, task=args.task,
+                                **cols)
             wins += ep.success
             print(f'scene {scene}: {cls["cls"]} ticks={ep.ticks} '
                   f'corrected={getattr(policy, "applied", 0)} '
                   f'({wins}/{scene - args.first_scene + 1})', flush=True)
-        obs = place(env, env.reset(), shift)
+        obs = place(env, env.reset(), shift, task)
     env.close()
 
 
