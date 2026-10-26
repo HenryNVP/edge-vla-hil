@@ -25,7 +25,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from interp_gainmap import handle_pos, inside_demo_range, jacobians  # noqa: E402
+from interp_gainmap import TASKS, handle_pos, inside_demo_range, jacobians  # noqa: E402
 from interp_perceive import seen  # noqa: E402
 from interp_swap import block_gains, directions  # noqa: E402
 from plot_sweep import wilson  # noqa: E402
@@ -36,6 +36,9 @@ ROWS = []                                   # every printed number, for --json
 SWEEPS = [('square DP', 'perceive_square_dp', 'gainmap', 'swap_square_dp'),
           ('lift DP', 'perceive_lift_dp', 'gainmap_lift_dp', 'swap_lift_dp'),
           ('lift ACT', 'perceive_lift_act', 'gainmap_lift_act', '')]
+# Lift ACT retrained on demos replayed with the cube shifted along one axis (interp_augment)
+AXIS_MAPS = [('lift ACT', 'gainmap_lift_act'), ('lift ACT base', 'gainmap_lift_act_base'),
+             ('lift ACT x-aug', 'gainmap_lift_act_x'), ('lift ACT y-aug', 'gainmap_lift_act_y')]
 
 
 def boot(groups: np.ndarray, stat, n: int = 2000, seed: int = 0):
@@ -83,6 +86,33 @@ def record(section, name, r, label, e, i) -> None:
     for k, ax in ((i, 'x'), (i + 1, 'y')):
         ROWS.append(dict(section=section, policy=name, radius=float(r), label=label, axis=ax,
                          est=float(e[0][k]), lo=float(e[1][k]), hi=float(e[2][k])))
+
+
+def axis_gains(name: str, action: str) -> None:
+    """Lift: each axis's gain in the original demo range vs with the cube out of it along that
+    axis only (the other axis in range), and the in - out drop; bootstrap over scenes."""
+    a = dict(np.load(f'{OUT}/{action}.npz'))
+    step = (a['grid'][1] - a['grid'][0]) * 1e3
+    lo, hi = np.array(TASKS['lift']['lo']), np.array(TASKS['lift']['hi'])
+    for r in sorted(set(a['radius']), reverse=True):
+        m = a['radius'] == r
+        J = np.array([jacobians(x, step) for x in a['resp'][m]])
+        g = a['grid'][1:-1]
+        pos = a['nut_xy'][m][:, None, None, :] + np.stack(np.meshgrid(g, g, indexing='ij'), -1)
+        inr = (pos >= lo) & (pos <= hi)                              # per axis
+        both = inr.all(-1)
+
+        def stat(idx):
+            v = []
+            for k in (0, 1):
+                out_k = ~inr[idx][..., k] & inr[idx][..., 1 - k]
+                v += [np.median(J[idx][both[idx]][:, k, k]), np.median(J[idx][out_k][:, k, k])]
+            return np.array([v[0], v[2], v[1], v[3], v[0] - v[1], v[2] - v[3]])
+        e = boot(a['scene'][m], stat)
+        print(f'{name} per-axis gain, radius {r * 100:.0f} cm')
+        for label, i in (('in range', 0), ('out along own axis', 2), ('drop', 4)):
+            print(f'    {label:20s} x {fmt(*e, i)}   y {fmt(*e, i + 1)}')
+            record('axis', name, r, label, e, i)
 
 
 def swap(name: str, perceive: str, swapf: str) -> None:
@@ -161,10 +191,14 @@ def main() -> None:
         gains(name, perceive, action)
         if swapf:
             swap(name, perceive, swapf)
+    for name, action in AXIS_MAPS:
+        if os.path.exists(f'{OUT}/{action}.npz'):
+            axis_gains(name, action)
     rollouts(args.dirs)
-    for b in ('dp', 'act'):
+    for b in ('dp', 'act', 'act_base', 'act_x', 'act_y'):
         if glob.glob(f'{OUT}/lift_{b}_shift_*/ep*.npz'):
-            rollouts(f'{OUT}/lift_{b}_shift_*', f'lift {b.upper()}')
+            rollouts(f'{OUT}/lift_{b}_shift_*', 'lift ' + b.upper().replace('_', ' ')
+                     .replace('BASE', 'base').replace(' X', ' x-aug').replace(' Y', ' y-aug'))
     with open(args.json, 'w') as f:
         json.dump(ROWS, f, indent=1)
 
