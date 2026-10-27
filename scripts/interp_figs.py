@@ -6,6 +6,7 @@
   fig_closepoint      per object shift and policy: success, and how much of the shift the first
                       gripper close followed (1 = at the real object, 0 = at the demo position)
   fig_gain_space      local gain over the Lift workspace (DP, ACT), demo range outlined
+  fig_fix             coverage fix: ACT retrained with one axis augmented, success and gains
 
 Every gains/swap number is plotted at the SMALLER probe radius (square DP 3 cm, lift 2 cm).
 Whiskers are always the 95% CIs recorded in ci.json (bootstrap, Wilson for success rates),
@@ -206,6 +207,49 @@ def fig_gain_space(data: str, out: str) -> None:
     save(fig, 'fig_gain_space', out)
 
 
+def fig_fix(rows: list, out: str) -> None:
+    """Coverage fix (Lift ACT retrained on demos shifted along one axis): per model (columns),
+    success vs shift (top) and each axis's one-chunk gain in range vs out along its own axis
+    (bottom, 2 cm); blue = x, orange = y."""
+    arms = (('lift ACT base', 'original coverage'), ('lift ACT x-aug', 'x coverage added'),
+            ('lift ACT y-aug', 'y coverage added'))
+    fig, axes = plt.subplots(2, 3, figsize=(DOUBLE, 2.9), sharey='row', height_ratios=(1.2, 1),
+                             constrained_layout=True)
+    for ci, (pol, title) in enumerate(arms):
+        ax = axes[0, ci]
+        for i, color in enumerate((BLUE, ORANGE)):
+            pts = sorted((r['shift'][i] * 100.0, r) for r in rows
+                         if r['section'] == 'rollouts' and r.get('policy') == pol
+                         and r['shift'][i] != 0)
+            xs, ys = [p[0] for p in pts], [p[1]['success'] for p in pts]
+            ax.errorbar(xs, ys, yerr=[[max(0.0, y - p[1]['success_lo']) for y, p in zip(ys, pts)],
+                                      [max(0.0, p[1]['success_hi'] - y) for y, p in zip(ys, pts)]],
+                        fmt='o-', color=color, ms=3, lw=0.8, markeredgewidth=0.8, capsize=2,
+                        capthick=0.9, zorder=3)
+        ax.set_title(title)
+        ax.set_xlabel('cube shift (cm)')
+        ax = axes[1, ci]
+        for k, (axis, color) in enumerate((('x', BLUE), ('y', ORANGE))):
+            for j, (label, inside) in enumerate((('in range', True), ('out along own axis', False))):
+                dot(ax, k + 0.18 * (j - 0.5), pick(rows, section='axis', policy=pol, radius=0.02,
+                                                   label=label, axis=axis), color, inside)
+        ax.axhline(0.0, lw=0.6, color='0.6', zorder=1)
+        ax.set_xticks((0, 1), ('x gain', 'y gain'))
+        ax.set_xlim(-0.5, 1.5)
+        for a in axes[:, ci]:
+            style(a)
+    axes[0, 0].set_ylim(0.0, 1.05)
+    axes[0, 0].set_ylabel('success')
+    axes[1, 0].set_ylabel('gain (mm / mm)')
+    fig.align_ylabels(axes[:, 0])
+    fig.legend(handles=[Line2D([], [], ls='-', lw=0.8, marker='o', ms=3, color=BLUE, label='x'),
+                        Line2D([], [], ls='-', lw=0.8, marker='o', ms=3, color=ORANGE, label='y'),
+                        legend_handle('0.3', 'in demo range'),
+                        legend_handle('0.3', 'out along own axis', inside=False)],
+               loc='outside lower center', ncol=4, frameon=False)
+    save(fig, 'fig_fix', out)
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--data', default='outputs/interp', help='dir with ci.json and the gain maps')
@@ -221,6 +265,8 @@ def main(argv=None) -> None:
     fig_swap([r for r in rows if r['section'] == 'swap'], args.out)
     fig_closepoint([r for r in rows if r['section'] == 'rollouts'], args.out)
     fig_gain_space(args.data, args.out)
+    if any(r['section'] == 'axis' for r in rows):
+        fig_fix(rows, args.out)
 
 
 if __name__ == '__main__':

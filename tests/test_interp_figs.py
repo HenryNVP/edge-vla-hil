@@ -8,7 +8,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 from interp_figs import main  # noqa: E402
 
-FIGS = ('fig_seen_vs_action', 'fig_swap', 'fig_closepoint', 'fig_gain_space')
+FIGS = ('fig_seen_vs_action', 'fig_swap', 'fig_closepoint', 'fig_gain_space', 'fig_fix')
 RADII = {'square DP': (0.08, 0.03), 'lift DP': (0.06, 0.02), 'lift ACT': (0.06, 0.02)}
 GAIN_LABELS = ('action inside', 'action outside', 'action drop in-out', 'seen inside',
                'seen outside')
@@ -37,6 +37,15 @@ def write_ci(path) -> None:
                          success_lo=0.1 + 0.1 * j, success_hi=0.65 + 0.1 * j,
                          followed=0.3 + 0.1 * j, followed_lo=0.05 + 0.1 * j,
                          followed_hi=0.6 + 0.1 * j, nearer_ghost=0.2, cross_mm=1.5))
+    for pol in ('lift ACT base', 'lift ACT x-aug', 'lift ACT y-aug'):
+        for label in ('in range', 'out along own axis'):
+            for axis in ('x', 'y'):
+                rows.append(dict(section='axis', policy=pol, radius=0.02, label=label, axis=axis,
+                                 est=0.4, lo=0.3, hi=0.5))
+        for s in ((-0.05, 0.0), (0.05, 0.0), (0.0, -0.05), (0.0, 0.05)):
+            rows.append(dict(section='rollouts', policy=pol, shift=list(s), n=10, success=0.6,
+                             success_lo=0.3, success_hi=0.8, followed=0.5, followed_lo=0.2,
+                             followed_hi=0.8, nearer_ghost=0.2, cross_mm=1.0))
     with open(path, 'w') as fh:
         json.dump(rows, fh)
 
