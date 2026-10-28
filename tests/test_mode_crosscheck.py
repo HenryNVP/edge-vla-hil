@@ -294,6 +294,7 @@ def test_the_plant_and_controller_share_one_phase_grid():
 # must not import the simulator package). Both halves are pinned here because the way this fails
 # is silent: cv2 is BGR and the policy is RGB, so a disagreement yields plausible images with red
 # and blue exchanged, which no shape check would catch.
+@requires_ros2
 def test_raw_and_compressed_quality_thresholds_agree():
     from evh_controller import image_codec
     from evh_plant import messages

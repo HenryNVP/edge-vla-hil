@@ -511,6 +511,7 @@ def test_resume_skips_complete_rows_and_reruns_truncated_ones(tmp_path):
     assert completed_labels(str(tmp_path / 'missing.csv')) == set()
 
 
+@requires_ros2
 def test_the_observation_quality_is_recorded_in_the_results():
     """A lossy observation path is provenance, not a footnote.
 
@@ -537,6 +538,7 @@ def test_the_frozen_sweeps_pin_raw_images_rather_than_inheriting_the_default():
 # mid-sweep once put a trials count of 30 into `success_rate` and shifted every metric one column
 # left, in a file that still parsed cleanly. The per-episode log survived (fixed schema); the summary
 # did not. These pin the guard.
+@requires_ros2
 def test_appending_with_the_same_columns_is_allowed(tmp_path):
     from evh_bringup.benchmark import _check_header
     p = tmp_path / 'sweep.csv'
@@ -544,6 +546,7 @@ def test_appending_with_the_same_columns_is_allowed(tmp_path):
     _check_header(str(p), ['a', 'b', 'c'])       # must not raise
 
 
+@requires_ros2
 def test_appending_after_a_column_was_added_is_refused_and_names_it(tmp_path):
     import pytest as _pytest
 
@@ -555,6 +558,7 @@ def test_appending_after_a_column_was_added_is_refused_and_names_it(tmp_path):
     assert 'image_quality' in str(exc.value)
 
 
+@requires_ros2
 def test_appending_after_a_column_was_removed_is_also_refused(tmp_path):
     import pytest as _pytest
 
@@ -565,6 +569,7 @@ def test_appending_after_a_column_was_removed_is_also_refused(tmp_path):
         _check_header(str(p), ['a', 'c'])
 
 
+@requires_ros2
 def test_an_empty_file_is_not_treated_as_drift(tmp_path):
     """A zero-byte file from an interrupted run should be written fresh, not refused."""
     from evh_bringup.benchmark import _check_header
@@ -573,6 +578,7 @@ def test_an_empty_file_is_not_treated_as_drift(tmp_path):
     _check_header(str(p), ['a', 'b'])
 
 
+@requires_ros2
 def test_the_episode_horizon_is_recorded_in_the_results():
     """The horizon is an experimental factor now, so it cannot live only in the launch command.
 
@@ -585,6 +591,7 @@ def test_the_episode_horizon_is_recorded_in_the_results():
     assert 'max_episode_s' in _TAG_COLUMNS
 
 
+@requires_ros2
 def test_every_recorded_column_is_supplied_by_the_per_cell_namespace():
     """The durable form of a bug that has now cost two sweeps.
 
