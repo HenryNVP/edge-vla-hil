@@ -37,15 +37,16 @@ def load(pattern: str, stride: int, first_group: int = 0, absolute: bool = False
     files = sorted(f for d in sorted(glob.glob(pattern)) for f in glob.glob(f'{d}/ep*.npz'))
     for g, f in enumerate(files):
         e = np.load(f)
-        idx = np.arange(0, len(e['dec']), stride)
+        T = len(e['dec'] if 'dec' in e else e['feats'])          # ACT head inputs / DP global_cond
+        idx = np.arange(0, T, stride)
         if absolute:
-            q = e['nut_pos'][:len(e['dec'])] - e['nut_pos'][0]   # it settles a little in z at reset
+            q = e['nut_pos'][:T] - e['nut_pos'][0]   # it settles a little in z at reset
             moved = (np.linalg.norm(q[:, :2], axis=1) > 0.003) | (q[:, 2] > 0.005)
-            first = np.argmax(moved) if moved.any() else len(e['dec'])
+            first = np.argmax(moved) if moved.any() else T
             idx = idx[idx < first]
             if not len(idx):
                 continue
-        X.append(e['dec'][idx].reshape(len(idx), -1).astype(np.float32))
+        X.append((e['dec'] if 'dec' in e else e['feats'])[idx].reshape(len(idx), -1).astype(np.float32))
         Y.append((e['nut_pos'][idx, :2] if absolute else
                   e['nut_pos'][idx, :2] - e['eef_pos'][idx, :2]) * 1e3)
         G.append(np.full(len(idx), first_group + g))

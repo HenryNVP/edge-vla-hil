@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -272,7 +273,7 @@ class ACTBackend(ChunkPolicy):
             self._model = None
             return
 
-        ACTPolicy = _import_act_policy()
+        ACTPolicy = self._import_policy()
         self._torch_device = _resolve_device(self.device)
         logger.info('Loading ACT policy from %s on %s', self.ckpt_path, self._torch_device)
         self._model = ACTPolicy.from_pretrained(self.ckpt_path)
@@ -324,6 +325,9 @@ class ACTBackend(ChunkPolicy):
             self.absolute_actions,
         )
 
+    def _import_policy(self):
+        return _import_act_policy()
+
     def _obs_to_batch(self, obs: dict) -> dict:
         import torch
         import torch.nn.functional as F
@@ -370,6 +374,26 @@ class ACTBackend(ChunkPolicy):
         n = min(self.chunk_size, chunk.shape[0])
         chunk = np.asarray(chunk[:n], dtype=np.float32)
         return abs10_to_abs7(chunk) if self._rot6d else chunk
+
+
+class SmolVLABackend(ACTBackend):
+    """LeRobot SmolVLA checkpoint: the ACT backend's observation and action contract, plus the
+    language instruction it was fine-tuned with (instruction.txt beside the weights, else the
+    Lift sentence robomimic_to_lerobot writes)."""
+
+    def _import_policy(self):
+        return importlib.import_module('lerobot.policies.smolvla.modeling_smolvla').SmolVLAPolicy
+
+    def _load(self) -> None:
+        super()._load()
+        path = os.path.join(self.ckpt_path, 'instruction.txt') if self.ckpt_path else ''
+        self.instruction = (open(path).read().strip() if path and os.path.exists(path)
+                            else 'lift the cube')
+
+    def _obs_to_batch(self, obs: dict) -> dict:
+        batch = super()._obs_to_batch(obs)
+        batch['task'] = [self.instruction]
+        return batch
 
 
 class PyTorchBackend(ChunkPolicy):
@@ -661,6 +685,8 @@ def _make_backend(backend: str, weights_path: str, denoise_steps: int,
         return DiffusionPolicyRepoBackend(weights_path, denoise_steps=denoise_steps)
     if backend in ('act', 'act_lerobot'):
         return ACTBackend(weights_path, absolute=absolute)
+    if backend == 'smolvla':
+        return SmolVLABackend(weights_path, absolute=absolute)
     if backend in ('onnx', 'act_onnx'):
         return ONNXBackend(weights_path, absolute=absolute)
     if backend in ('dp_onnx', 'diffusion_onnx'):

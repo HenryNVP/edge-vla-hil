@@ -129,19 +129,23 @@ def self_label(env, policy, obs, batch, task, delta: float = 0.01, full: bool = 
     return label
 
 
-def cf_label(env, policy, nuis) -> np.ndarray:
+def cf_label(env, policy, nuis, backend: str = 'act') -> np.ndarray:
     """Exact label for an appearance shift (interp_nuisance): the policy's own chunk (abs10) on
-    the same state rendered without the shift."""
+    the same state rendered without the shift. DP: its full horizon ('action_pred', both history
+    frames showing the shift-free render)."""
     import torch
     from dp_anchor_probe import observe
-    from interp_act_sites import forward
     if nuis is not None:
         nuis.off(env)
-    b = policy._obs_to_batch(sil_step.stack([sil_step.frames(observe(env))], True))
+    stacked = sil_step.stack([sil_step.frames(observe(env))] * policy.n_obs_steps, True)
     if nuis is not None:
         nuis.on(env)
     with torch.no_grad():
-        return forward(policy._model, b)[0].cpu().numpy()
+        if backend == 'dp':
+            out = policy._policy.predict_action(policy._to_policy_obs(stacked))
+            return out['action_pred'][0].cpu().numpy()
+        from interp_act_sites import forward
+        return forward(policy._model, policy._obs_to_batch(stacked))[0].cpu().numpy()
 
 
 def main() -> None:
@@ -190,7 +194,7 @@ def main() -> None:
         fix = ((lambda g: mistake(env, inner, observe(env), 0)[None]) if args.oracle
                else load_fix(args.corrector))
         policy = Corrected(policy, fix)
-    if args.teacher or args.selflabel:
+    if (args.teacher or args.selflabel) and args.backend == 'act':
         import torch
         from interp_act_sites import Sites, forward
         sites = Sites(policy._model)
@@ -218,7 +222,9 @@ def main() -> None:
                 stacked = sil_step.stack(hist, needs_wrist)
                 if args.backend == 'dp':
                     feats.append(encode(policy, stacked))
-                if args.teacher or args.selflabel:
+                if args.selflabel == 'cf' and args.backend == 'dp':   # its head input: feats
+                    labels.append(cf_label(env, policy, nuis, 'dp'))
+                elif args.teacher or args.selflabel:
                     b = policy._obs_to_batch(stacked)
                     with torch.no_grad():
                         forward(policy._model, b)
@@ -247,8 +253,8 @@ def main() -> None:
                                 feats=np.array(feats), commands=cmds, success=ep.success,
                                 cls=cls['cls'], ticks=ep.ticks, shift=shift, task=args.task,
                                 nuisance=args.nuisance,
-                                **cols, **({'dec': np.array(heads), 'teacher': np.array(labels)}
-                                           if args.teacher or args.selflabel else {}))
+                                **cols, **({'dec': np.array(heads)} if heads else {}),
+                                **({'teacher': np.array(labels)} if labels else {}))
             wins += ep.success
             print(f'scene {scene}: {cls["cls"]} ticks={ep.ticks} '
                   f'corrected={getattr(policy, "applied", 0)} '

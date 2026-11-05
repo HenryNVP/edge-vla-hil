@@ -1,0 +1,233 @@
+\documentclass[10pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+
+\title{Seeing Is Not Acting: Diagnosing and Repairing\\Distribution-Shift Failures in Visuomotor Policies}
+\author{\todo{author}}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Imitation-learned visuomotor policies fail when an object, a camera or the scene's appearance
+moves outside what their demonstrations covered. We give a three-step protocol that explains such
+a failure and says whether a cheap fix exists. \emph{Locate}: test at each layer whether the
+shift-relevant variable is still linearly readable, and whether the action responds to it
+(a swap test of head state versus feature direction). \emph{Attribute}: test whether coverage of
+the shift in the demonstrations restores the response, axis by axis. \emph{Repair}: refit only the
+layer that reads the features, with exact labels obtained by rendering the same simulator state
+without the shift. On ACT in robomimic Lift, the cube's offset stays readable up to the linear
+action head while the action ignores it; demo coverage along one axis restores that axis only; and
+a refit of the last layer (at most 5{,}130 of 52M weights) recovers the out-of-range success of a
+400-demonstration retrain (159 vs.\ 160 of 160 episodes on fresh scenes) when its labels come from
+the policy's own rollouts, and 56\% of the gap with no demonstrations at all. The same repair fixes
+camera, lighting and zoom shifts of both cameras (e.g.\ 4\% $\rightarrow$ 63\%), but not a shift
+that removes the object from the images, where it only reaches a blind ceiling.
+\todo{Diffusion Policy, Square, SmolVLA results.}
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+Behaviour-cloned visuomotor policies such as ACT~\citep{zhao2023act} and Diffusion
+Policy~\citep{chi2023diffusion}, and vision-language-action models fine-tuned on a task, succeed
+inside the conditions their demonstrations cover and fail just outside them: a cube placed a few
+centimetres beyond the demonstrated region, a moved camera, a changed table. This is well
+documented behaviourally~\citep{xie2024decomposing,xue2025demogen,he2025demystifying,zhou2025liberopro}.
+What a practitioner needs next is a diagnosis: is the failure in perception, which would call for
+new data or a new encoder, or in how the policy acts on what it already perceives, which a far
+cheaper intervention could fix?
+
+Recent probing work shows that a VLA's hidden states can locate an object while its action misses
+it~\citep{zhang2026probeact}. That observation is correlational and stops short of two questions
+this paper answers with interventions: \emph{where} along the network the information stops being
+used, and \emph{whether} acting on it is a matter of the readout alone. We package the answers as a
+protocol with three steps and apply it to\todo{N} policies, \todo{M} tasks and several shift types.
+
+\paragraph{Contributions.}
+\begin{itemize}
+\item A protocol that turns a distribution-shift failure into a localized, causally tested
+  diagnosis: per-layer linear readability, a swap test separating feature direction from head
+  state, and a coverage dissociation (Section~\ref{sec:protocol}).
+\item A repairability test that refits only the policy's readout with exact counterfactual labels
+  (the same state rendered without the shift), plus a negative control that removes the
+  information; it separates ``unread'' from ``unseen'' failures (Section~\ref{sec:repair}).
+\item Findings on ACT, Diffusion Policy and SmolVLA \todo{update}: for ACT, out-of-range position
+  and two-camera appearance shifts are readout gaps; a last-layer refit recovers the retrain's
+  success on the states the policy visits, and an object made invisible is the one shift it cannot
+  repair.
+\end{itemize}
+
+\section{Related work}
+\label{sec:related}
+\paragraph{Generalization of imitation policies.} Factor-wise studies rank how camera pose,
+lighting, textures and object placement hurt visual imitation~\citep{xie2024decomposing}.
+Spatial generalization is limited to the neighbourhood of demonstrated object
+configurations~\citep{xue2025demogen}, motivating synthetic demonstration
+generation~\citep{mandlekar2023mimicgen,xue2025demogen} and equivariant
+architectures~\citep{wang2024equivariant}. Diffusion policies trained on small datasets behave
+like action lookup tables~\citep{he2025demystifying}, and fine-tuned VLAs largely replay memorized
+trajectories when objects move~\citep{zhou2025liberopro}. We study the mechanism behind these
+failures and when it is cheap to fix.
+\paragraph{Probing and steering robot policies.} Linear probes find object and action states in
+OpenVLA's layers~\citep{lu2025probing}; ProbeAct reads object positions from a VLA while its
+action misses them and corrects actions at run time~\citep{zhang2026probeact}; activation
+steering changes a VLA's speed and direction~\citep{haon2025mechanistic}; and selected attention
+heads can be fine-tuned from few demonstrations~\citep{mitra2025robotic}. Our tests are
+interventional (feature swaps, coverage changes, weight refits) rather than correlational.
+\paragraph{Last-layer retraining and interactive imitation.} Retraining only the last layer
+removes spurious correlations in image classifiers~\citep{kirichenko2023last}, and DAgger collects
+labels on the learner's own states~\citep{ross2011dagger}. We use both as instruments: a
+last-layer refit that succeeds is evidence that the features already suffice.
+
+\section{The protocol}
+\label{sec:protocol}
+\paragraph{Behavioural measures.} Closed-loop success under a shift, and two finer measures. The
+\emph{gain map} freezes the simulator with the gripper 6 or 2\,cm from the object, moves the object
+over a $9\times9$ grid ($\pm8$\,cm), predicts one action chunk per offset with common random
+numbers, and takes the $2\times2$ Jacobian of the chunk's grasp target (its last open-gripper
+waypoint) with respect to the object offset; a gain of 1 means the plan follows the object. The
+\emph{close point} is where the gripper first closes, relative to the object, giving the fraction of a
+shift that closed-loop behaviour followed.
+\paragraph{Locate.} At each site along the action path we fit a ridge readout of the object offset
+from the change in activations (group cross-validation over scenes) and report its Jacobian, the
+\emph{seen gain}, inside and outside the demonstrated range. A site where the seen gain stays near 1
+while the action gain collapses carries information the downstream layers do not use. The
+\emph{swap test} separates two explanations. To first order the action gain at a state is
+$J_\text{head}(g)\,V$, the head's Jacobian at features $g$ times the feature direction $V$ an object
+move produces. Pairing heads and directions from in-range and out-of-range states of the same
+operating point gives a $2\times2$ table: a collapse that follows the direction column means the
+head is blind to the new directions; one that follows the head row means the head itself goes flat.
+\paragraph{Attribute.} We replay each demonstration in simulation with the object translated along
+one axis (actions shifted with a short ramp, images re-rendered, kept if the replay succeeds) and
+retrain. If coverage is the cause, coverage along $x$ restores the response along $x$ only.
+
+\section{Repairability test}
+\label{sec:repair}
+If the information reaches the layer that reads features into actions, refitting that layer alone
+should be able to act on it. We refit only that \emph{readout}: ACT's linear action head; Diffusion
+Policy's FiLM conditioning layers, the only path from observation features into the denoiser;
+SmolVLA's action-expert output projection. Everything upstream is frozen, so features recorded
+from the unedited policy are exactly those the edited one computes.
+\paragraph{Labels.} For appearance shifts the simulator gives exact labels for free: at each
+decision of a rollout under the shift, the same state is rendered without the shift and the
+unedited policy's chunk on that render is the target. For object-position shifts we compare
+labels from a policy retrained with shifted demonstrations, collected on the learner's own states
+over two DAgger rounds~\citep{ross2011dagger}; labels from 40 shifted demonstrations; and labels
+without any demonstration, where the object is moved back into the demonstrated range in
+simulation and the policy's own response there is extended by its local slope.
+\paragraph{Fit.} ACT's head is linear and its inputs fixed, so the refit is a weighted ridge
+regression in closed form, with the policy's training states added at zero target change to
+preserve in-range behaviour. Diffusion Policy and SmolVLA refits use the policies' own denoising
+and flow-matching losses with only the readout trainable.
+\paragraph{Negative control.} Making the object fully transparent (physics unchanged) removes it
+from every image. If the protocol's logic holds, no readout refit can do better than a policy that
+reaches for where the object usually is.
+
+\section{Setup}
+\label{sec:setup}
+robomimic~\citep{mandlekar2021robomimic} Lift and Square (proficient-human demonstrations) in
+robosuite 1.4.1~\citep{zhu2020robosuite}, two 84$\times$84 cameras (agentview and wrist), absolute
+end-effector actions with 6-D rotations. ACT (52M parameters, chunk 16, 100k steps); Diffusion
+Policy (CNN, DDIM 16 steps); SmolVLA~\citep{shukor2025smolvla} fine-tuned from its base checkpoint
+\todo{steps}. Lift demonstrations place the cube within $\pm3$\,cm in $x$ and $y$; Square varies the
+nut by 5\,mm in $x$. Closed-loop numbers use 40 episodes per shift (100 unshifted) on scenes not
+used for any choice; Wilson 95\% intervals and scene-bootstrap intervals throughout.
+
+\section{Results}
+\label{sec:results}
+\subsection{ACT on Lift: the action ignores what perception sees}
+Outside the demonstrated range the cube's offset remains linearly readable at every site up to the
+action head's input (seen gain 0.85 in $x$, 0.78 in $y$ at 2\,cm) while the action gain falls to
+0.28 and 0.09. Cross-attention mass per camera does not change. The swap test puts the collapse in
+the feature direction: heads from either state give 0.28/0.09 on out-of-range directions and
+0.65/0.58 on in-range ones. Demonstration coverage along one axis restores that axis only: success
+at $\pm7$\,cm rises from 13--14/40 to 40/40 along the covered axis and stays at 14--20/40 along the
+other (Figure~\ref{fig:fix}).
+
+\subsection{A last-layer refit repairs it}
+Table~\ref{tab:edit} reports closed-loop success on fresh scenes. With on-policy labels the refit
+matches the retrain on $x$; with 40 shifted demonstrations a rank-2 change (1{,}044 weights)
+recovers most of it, while the same recipe with unshifted labels does nothing; each edit leaves
+the other axis at the base level. Without any demonstration the refit recovers 56\% of the gap.
+No single-layer edit, at any of seven layers and ranks up to 8, restores the one-chunk response at
+off-path states (best 0.31 against the retrain's 0.67); the closed-loop repair works because the
+policy stays on states the refit covers.
+
+\begin{table}[t]
+\centering
+\caption{ACT Lift, closed loop on fresh scenes: successes over the $\pm5$ and $\pm7$\,cm shifts
+(40 episodes each, so out of 160) along each axis, and unshifted (out of 100).}
+\label{tab:edit}
+\begin{tabular}{lrrrr}
+\toprule
+Model & $x$ & $y$ & unshifted & weights changed\\
+\midrule
+Base & 88 & 75 & 100 & --\\
+Retrain, 400 shifted demos (per axis) & 160 & 160 & 100 & 52M\\
+Refit, on-policy labels (per axis) & 159 & 145 & 100 & 5{,}130\\
+Refit, 40 shifted demos (per axis) & 138 & 96 & 100 & 1{,}044\\
+Refit, no demonstrations & 136 & 115 & 99 & 5{,}130\\
+Refit, unshifted labels (control) & 88 & 79 & 100 & 1{,}044\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Beyond position: unread versus unseen}
+\begin{table}[t]
+\centering
+\caption{ACT Lift under appearance shifts of both cameras: linear readability of the cube's
+position at the head input (joint readout over shifted and unshifted states; R$^2$ of the
+original readout in brackets), and success out of 100 on fresh scenes before and after a refit with
+counterfactual labels. Every repaired policy keeps 100/100 unshifted.}
+\label{tab:shifts}
+\begin{tabular}{lccc}
+\toprule
+Shift & readable (R$^2$) & base & repaired\\
+\midrule
+agentview turned 30$^\circ$ + wrist rolled 90$^\circ$ & 0.94 ($-0.71$) & 4 & 63\\
+red table + dim light + wrist rolled & 0.85 (0.06) & 49 & 78\\
+both cameras upside down & 0.85 ($-0.79$) & 36 & 85\\
+both cameras zoomed & 0.83 ($-1.77$) & 37 & 83\\
+cube faint (opacity 0.1) & 0.63 ($-0.33$) & 82 & 100\\
+cube invisible (opacity 0) & 0.39 ($-0.91$) & 28 & 50\\
+\bottomrule
+\end{tabular}
+\end{table}
+Single-camera shifts barely affect this policy (14--20/20): the two cameras cover for each other.
+When both are shifted, every case that keeps the cube visible moves its code to a new direction
+(the original readout fails) but keeps it linearly readable, and the refit repairs it
+(Table~\ref{tab:shifts}). With the cube invisible the refit reaches 50\%, and its successes depend
+on where the cube happens to be (66\% near the centre, 34\% far), the signature of a blind reach;
+with the cube faint it reaches 100\% wherever the cube is. Readability separates these extremes but
+does not rank the repairs in between.
+
+\subsection{Across policies and tasks}
+\todo{Diffusion Policy (Lift, Square), ACT Square, SmolVLA Lift: same protocol and tables.}
+
+\section{Limitations}
+Counterfactual labels need a simulator, or an image-editing substitute on a real robot. The
+readout is a design choice per architecture, and for Diffusion Policy it is large. Readability is
+a necessary condition in our data, not a predictor of the size of a repair.
+\todo{finalize after the grid.}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/fig_fix.pdf}
+\caption{Coverage along one axis restores that axis only (ACT Lift).}
+\label{fig:fix}
+\end{figure}
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+\end{document}
