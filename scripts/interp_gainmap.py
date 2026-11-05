@@ -38,6 +38,10 @@ TASKS = {
     'lift': dict(env='Lift', ckpt='dp_lift_ph_image_cnn.ckpt', pos='cube_pos', quat='cube_quat',
                  joint='cube_joint0', lo=(-0.03, -0.03), hi=(0.03, 0.03),
                  grasp=lambda o: np.asarray(o['cube_pos'][:2])),
+    # shortcut: lo/hi unset (no gain map yet); the tool is the object logged and moved
+    'toolhang': dict(env='ToolHang', ckpt='', pos='tool_pos', quat='tool_quat', joint='tool_joint0',
+                     lo=(-np.inf, -np.inf), hi=(np.inf, np.inf),
+                     grasp=lambda o: np.asarray(o['tool_pos'][:2])),
 }
 
 
