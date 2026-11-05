@@ -255,21 +255,21 @@ def fig_edit(rows: list, out: str) -> None:
     (left) and y (right), Wilson 95% intervals; each panel's edits use labels along that axis
     (the dotted x edit on y is the dissociation check). Unshifted success is 99-100% for all."""
     GREY, PURPLE = '0.55', '#CC79A7'
-    panels = (
+    panels = (                                 # fresh scenes (env seed 3): the headline runs
         (0, 'cube moved along x', (
-            ('lift ACT base', 'base', GREY, '-'),
-            ('lift ACT edit x_head_r2_b1_unsh', 'edit, unshifted labels', GREY, ':'),
-            ('lift ACT edit transplant2', 'edit, no demos', ORANGE, '-'),
-            ('lift ACT edit x_head_r2_b1', 'edit, 40 shifted demos', BLUE, '-'),
-            ('lift ACT edit x_onpolicy_head_r2', 'edit, on-policy labels', GREEN, '-'),
-            ('lift ACT x-aug', 'retrain, 400 shifted demos', 'k', '--'))),
+            ('lift ACT base s3', 'base', GREY, '-'),
+            ('lift ACT edit_x_head_r2_b1_unsh s3', 'edit, unshifted labels', GREY, ':'),
+            ('lift ACT edit_slfull_b3 s3', 'edit, no demos', ORANGE, '-'),
+            ('lift ACT edit_x_head_r2_b1 s3', 'edit, 40 shifted demos', BLUE, '-'),
+            ('lift ACT edit_x_onpolicy_head_r2 s3', 'edit, on-policy labels', GREEN, '-'),
+            ('lift ACT xaug s3', 'retrain, 400 shifted demos', 'k', '--'))),
         (1, 'cube moved along y', (
-            ('lift ACT base', 'base', GREY, '-'),
-            ('lift ACT edit x_onpolicy_head_r2', 'x edit (on-policy) on y', PURPLE, ':'),
-            ('lift ACT edit transplant2', 'edit, no demos', ORANGE, '-'),
-            ('lift ACT edit y_head_r2_b1', 'edit, 40 shifted demos', BLUE, '-'),
-            ('lift ACT edit y_onpolicy_head_r2', 'edit, on-policy labels', GREEN, '-'),
-            ('lift ACT y-aug', 'retrain, 400 shifted demos', 'k', '--'))))
+            ('lift ACT base s3', 'base', GREY, '-'),
+            ('lift ACT edit_x_onpolicy_head_r2 s3', 'x edit (on-policy) on y', PURPLE, ':'),
+            ('lift ACT edit_slfull_b3 s3', 'edit, no demos', ORANGE, '-'),
+            ('lift ACT edit_y_head_r2_b1 s3', 'edit, 40 shifted demos', BLUE, '-'),
+            ('lift ACT edit_y_onpolicy_head_r2 s3', 'edit, on-policy labels', GREEN, '-'),
+            ('lift ACT yaug s3', 'retrain, 400 shifted demos', 'k', '--'))))
     fig, axes = plt.subplots(1, 2, figsize=(DOUBLE, 2.5), sharey=True, constrained_layout=True)
     handles = {}
     for (k, title, series), ax in zip(panels, axes):
@@ -318,7 +318,7 @@ def main(argv=None) -> None:
     fig_gain_space(args.data, args.out)
     if any(r['section'] == 'axis' for r in rows):
         fig_fix(rows, args.out)
-    if any(str(r.get('policy', '')).startswith('lift ACT edit') for r in rows):
+    if any(str(r.get('policy', '')).endswith(' s3') for r in rows):
         fig_edit(rows, args.out)
 
 
