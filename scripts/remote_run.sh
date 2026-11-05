@@ -3,9 +3,9 @@
 #
 #   scripts/remote_run.sh <user@host> <ssh-port> outputs/<expt> [data dir ...]
 #
-# Pushes the working tree's code (scripts/, ros2_ws/src/, uncommitted changes included: the box has
-# no .git, so the commit and the diff against it are saved beside the results as code.commit /
-# code.patch), the data dirs, the replayed WiFi traces and <expt>/run.sh; runs
+# Pushes the working tree's code (scripts/, ros2_ws/src/, external DP and robomimic repos,
+# uncommitted changes included: the box has no .git, so the commit and the diff against it are
+# saved beside the results as code.commit / code.patch), the data dirs and <expt>/run.sh; runs
 # scripts/remote_setup.sh; launches run.sh detached (it survives ssh drops), then pulls <expt>/
 # every 10 min until run.sh writes <expt>/DONE. Rerunning reattaches: a box whose <expt>/run.log
 # exists is not relaunched. The box is left running: destroy it once the results are home (Vast
@@ -13,7 +13,8 @@
 set -uo pipefail
 H=$1 P=$2 X=${3%/}
 shift 3
-R=edge-vla-hil
+R=edge-vla-hil-interp     # own dir, venv and env file: the box may also serve the query-planner runs
+E="EVH_VENV=\$HOME/evh-interp-venv EVH_ENV=\$HOME/evh_interp_env.sh"
 SSH="ssh -p $P -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60"
 cd "$(dirname "$0")/.."
 [ -f $X/run.sh ] || { echo "no $X/run.sh"; exit 1; }
@@ -23,13 +24,13 @@ $SSH $H "command -v rsync > /dev/null || (apt-get update -qq && apt-get install 
 if ! $SSH $H "test -f $R/$X/run.log"; then
   git rev-parse HEAD > $X/code.commit
   git diff HEAD -- scripts ros2_ws > $X/code.patch
-  rs --relative --exclude __pycache__ scripts ros2_ws/src pyproject.toml outputs/wifi/*.csv \
-      $X/run.sh $X/code.commit $X/code.patch "$@" $H:$R/ || exit 1
+  rs --relative --copy-links --exclude __pycache__ --exclude .git scripts ros2_ws/src pyproject.toml external/diffusion_policy \
+      external/robomimic $X/run.sh $X/code.commit $X/code.patch "$@" $H:$R/ || exit 1
   echo "$(date +%H:%M) pushed; setting up (log: $X/setup.log)"
-  $SSH $H "cd $R && bash scripts/remote_setup.sh" > $X/setup.log 2>&1 \
+  $SSH $H "cd $R && $E bash scripts/remote_setup.sh" > $X/setup.log 2>&1 \
       || { echo "setup failed, see $X/setup.log"; exit 1; }
   # -n: without it this ssh never returns (seen on Vast); not in $SSH, rsync needs ssh's stdin
-  $SSH -n $H "cd $R && nohup setsid bash $X/run.sh > $X/run.log 2>&1 < /dev/null &"
+  $SSH -n $H "cd $R && $E nohup setsid bash $X/run.sh > $X/run.log 2>&1 < /dev/null &"
   echo "$(date +%H:%M) launched"
 fi
 fails=0
