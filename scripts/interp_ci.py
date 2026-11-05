@@ -88,27 +88,35 @@ def record(section, name, r, label, e, i) -> None:
                          est=float(e[0][k]), lo=float(e[1][k]), hi=float(e[2][k])))
 
 
+def axis_parts(a: dict, r: float):
+    """Lift gain map at radius r -> (J (P, n, n, 2, 2), per-axis in-demo-range mask (P, n, n, 2))."""
+    step = (a['grid'][1] - a['grid'][0]) * 1e3
+    lo, hi = np.array(TASKS['lift']['lo']), np.array(TASKS['lift']['hi'])
+    m = a['radius'] == r
+    J = np.array([jacobians(x, step) for x in a['resp'][m]])
+    g = a['grid'][1:-1]
+    pos = a['nut_xy'][m][:, None, None, :] + np.stack(np.meshgrid(g, g, indexing='ij'), -1)
+    return J, (pos >= lo) & (pos <= hi)
+
+
+def axis_stat(J: np.ndarray, inr: np.ndarray) -> np.ndarray:
+    """[in x, in y, out x, out y, drop x, drop y]: median own-axis gain with both axes in range
+    vs out of range along that axis only (the other in range)."""
+    both, v = inr.all(-1), []
+    for k in (0, 1):
+        out_k = ~inr[..., k] & inr[..., 1 - k]
+        v += [np.median(J[both][:, k, k]), np.median(J[out_k][:, k, k])]
+    return np.array([v[0], v[2], v[1], v[3], v[0] - v[1], v[2] - v[3]])
+
+
 def axis_gains(name: str, action: str) -> None:
     """Lift: each axis's gain in the original demo range vs with the cube out of it along that
     axis only (the other axis in range), and the in - out drop; bootstrap over scenes."""
     a = dict(np.load(f'{OUT}/{action}.npz'))
-    step = (a['grid'][1] - a['grid'][0]) * 1e3
-    lo, hi = np.array(TASKS['lift']['lo']), np.array(TASKS['lift']['hi'])
     for r in sorted(set(a['radius']), reverse=True):
         m = a['radius'] == r
-        J = np.array([jacobians(x, step) for x in a['resp'][m]])
-        g = a['grid'][1:-1]
-        pos = a['nut_xy'][m][:, None, None, :] + np.stack(np.meshgrid(g, g, indexing='ij'), -1)
-        inr = (pos >= lo) & (pos <= hi)                              # per axis
-        both = inr.all(-1)
-
-        def stat(idx):
-            v = []
-            for k in (0, 1):
-                out_k = ~inr[idx][..., k] & inr[idx][..., 1 - k]
-                v += [np.median(J[idx][both[idx]][:, k, k]), np.median(J[idx][out_k][:, k, k])]
-            return np.array([v[0], v[2], v[1], v[3], v[0] - v[1], v[2] - v[3]])
-        e = boot(a['scene'][m], stat)
+        J, inr = axis_parts(a, r)
+        e = boot(a['scene'][m], lambda idx: axis_stat(J[idx], inr[idx]))
         print(f'{name} per-axis gain, radius {r * 100:.0f} cm')
         for label, i in (('in range', 0), ('out along own axis', 2), ('drop', 4)):
             print(f'    {label:20s} x {fmt(*e, i)}   y {fmt(*e, i + 1)}')

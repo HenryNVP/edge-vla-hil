@@ -49,7 +49,7 @@ def block_gains(J: np.ndarray, V: np.ndarray, inside: np.ndarray) -> dict:
         for dn, dm in (('in', inside), ('out', ~inside)):
             g = [np.einsum('aod,bdo->abo', J[p][hm[p]], V[p][dm[p]]).reshape(-1, 2)
                  for p in range(len(J)) if hm[p].any() and dm[p].any()]
-            out[hn, dn] = np.median(np.concatenate(g), 0)
+            out[hn, dn] = np.nanmedian(np.concatenate(g), 0)
     return out
 
 

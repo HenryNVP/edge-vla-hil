@@ -91,7 +91,7 @@ def collect(args) -> dict:
     task = TASKS[args.task]
     weights = args.weights or os.path.join(sil_step._REPO, 'checkpoints', task['ckpt'])
     policy = make_policy(args.backend, weights, denoise_steps=args.denoise_steps)
-    env, obs = make_env(task)
+    env, obs = make_env(task, args.env_seed)
     grid = np.linspace(-args.extent, args.extent, args.grid)
     radii = [float(r) for r in args.radii.split(',')]
     out = {k: [] for k in ('resp', 'scene', 'radius', 'nut_xy', 'eef_xy', 'tick')}
@@ -216,6 +216,7 @@ def main() -> None:
     p.add_argument('--weights', default='', help="default: the task's DP checkpoint")
     p.add_argument('--denoise-steps', type=int, default=16)
     p.add_argument('--scenes', type=int, default=10)
+    p.add_argument('--env-seed', type=int, default=0, help='another seed = other scenes (validation)')
     p.add_argument('--grid', type=int, default=7)
     p.add_argument('--extent', type=float, default=0.06, help='m, each side')
     p.add_argument('--radii', default='0.08,0.03', help='m, eef to grasp point, xy')
