@@ -12,7 +12,8 @@ policy (interp_collect --selflabel cf). Spec: ';'-separated items
   wcam=dx,dy,dz,yaw  the same for the wrist camera, in the hand's frame
   roll=deg / wroll=deg   turn the agentview / wrist camera about its viewing axis
   fov=deg / wfov=deg     set the agentview / wrist camera's vertical field of view
-  cubealpha=a        cube opacity in every camera (0: invisible; physics unchanged)
+  objalpha=a         task object's opacity in every camera (Lift cube, Square nut; 0: invisible;
+                     physics unchanged); cubealpha is the same
 robosuite rebuilds the model on every reset (hard_reset), so call on() again after each reset.
 
     python3 scripts/interp_nuisance.py --spec 'cube=0.2,0.4,1' --out outputs/interp/nuisance/cube.png
@@ -28,6 +29,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 MATERIALS = {'table': 'table_ceramic', 'cube': 'cube_redwood_mat', 'walls': 'walls_mat'}
+OBJECTS = (('cube_redwood_mat', 'cube_g'), ('SquareNut_bmetal', 'SquareNut_g'))   # (material, geom prefix)
 
 
 def parse(spec: str) -> list[tuple[str, np.ndarray]]:
@@ -74,12 +76,18 @@ class Nuisance:
                 i = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_MATERIAL, MATERIALS[key])
                 self.saved.append(('mat_rgba', i, m.mat_rgba[i].copy()))
                 m.mat_rgba[i, :3] = v
-            elif key == 'cubealpha':                    # 0 = the cube vanishes from every camera
-                i = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_MATERIAL, MATERIALS['cube'])
-                g = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, 'cube_g0')
-                self.saved += [('mat_rgba', i, m.mat_rgba[i].copy()), ('geom_rgba', g, m.geom_rgba[g].copy())]
-                m.mat_rgba[i, 3] = v[0]
-                m.geom_rgba[g, 3] = min(m.geom_rgba[g, 3], v[0])
+            elif key in ('cubealpha', 'objalpha'):      # 0 = the object vanishes from every camera
+                for mat, prefix in OBJECTS:
+                    i = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_MATERIAL, mat)
+                    if i < 0:
+                        continue
+                    self.saved.append(('mat_rgba', i, m.mat_rgba[i].copy()))
+                    m.mat_rgba[i, 3] = v[0]
+                    for g in range(m.ngeom):            # its plain-coloured geoms too
+                        name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) or ''
+                        if name.startswith(prefix) and m.geom_matid[g] < 0:
+                            self.saved.append(('geom_rgba', g, m.geom_rgba[g].copy()))
+                            m.geom_rgba[g, 3] = min(m.geom_rgba[g, 3], v[0])
             elif key in ('roll', 'wroll', 'fov', 'wfov'):
                 name = 'agentview' if key in ('roll', 'fov') else 'robot0_eye_in_hand'
                 i = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, name)

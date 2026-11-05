@@ -336,6 +336,9 @@ def main() -> None:
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--closed-form', action='store_true',
                    help='site head only: weighted ridge on the head inputs instead of SGD')
+    p.add_argument('--pres', choices=('lift', 'none'), default='lift',
+                   help="preservation / validation data: the Lift base replays, or none (another "
+                        "task: --onpolicy's unshifted episodes preserve)")
     p.add_argument('--onpolicy', default='',
                    help='comma-separated globs of interp_collect --teacher dirs: head edit towards the '
                         "teacher's chunks on the parent's own rollout states")
@@ -363,10 +366,11 @@ def main() -> None:
         pick = lambda k, s: k < args.n and not s.any()           # noqa: E731
     src = f'{AUG}/lift_{args.axis}.hdf5'
     edit = (None, []) if args.transplant or args.onpolicy or args.relu else frames(load(src, pick), H)
-    val = frames(load(src, lambda k, s: k >= POOL and s.any()), H)
-    pres_eps = load(f'{AUG}/lift_base.hdf5', lambda k, s: True)
-    pres = frames([e for e in pres_eps if e['rank'] < POOL], H)
-    hold = frames([e for e in pres_eps if e['rank'] >= POOL], H)
+    lift = args.pres == 'lift'          # 'none': another task; the unshifted on-policy episodes preserve
+    val = frames(load(src, lambda k, s: k >= POOL and s.any()), H) if lift else None
+    pres_eps = load(f'{AUG}/lift_base.hdf5', lambda k, s: True) if lift else []
+    pres = frames([e for e in pres_eps if e['rank'] < POOL], H) if lift else None
+    hold = frames([e for e in pres_eps if e['rank'] >= POOL], H) if lift else None
 
     def run(data, idx):
         img, state = data[0], data[1]
@@ -384,11 +388,13 @@ def main() -> None:
         with torch.no_grad():
             return torch.cat([run(data, np.arange(i, min(i + 256, len(data[1]))))
                               for i in range(0, len(data[1]), 256)])
-    parent_pres, parent_hold = predict_all(pres), predict_all(hold)
+    parent_pres, parent_hold = (predict_all(pres), predict_all(hold)) if lift else (None, None)
 
     def evaluate():
         """Validation: L1 (normalised) on held-out shifted chunks; drift (normalised L1) from
-        the parent on held-out unshifted states."""
+        the parent on held-out unshifted states (Lift replays only)."""
+        if not lift:
+            return float('nan'), float('nan')
         with torch.no_grad():
             out = predict_all(val)
             m = ~torch.from_numpy(val[3]).to(dev)
@@ -412,9 +418,12 @@ def main() -> None:
                     run(data, np.arange(i, min(i + 256, len(data[1]))))
                 out.append(grab['d'].transpose(0, 1).double().cpu().numpy())
             return np.concatenate(out)
-        keep_idx = np.random.default_rng(args.seed).choice(len(pres[1]), min(2000, len(pres[1])),
-                                                           replace=False)
-        keep = dec(subset(pres, keep_idx)).reshape(-1, W0.shape[1])
+        if lift:
+            keep_idx = np.random.default_rng(args.seed).choice(len(pres[1]), min(2000, len(pres[1])),
+                                                               replace=False)
+            keep = dec(subset(pres, keep_idx)).reshape(-1, W0.shape[1])
+        else:
+            keep = np.zeros((0, W0.shape[1]))
         if args.onpolicy:                               # recorded rollouts: teacher chunks
             import glob
             eps = [np.load(f) for g in args.onpolicy.split(',') for f in sorted(glob.glob(f'{g}/ep*.npz'))]
@@ -429,7 +438,8 @@ def main() -> None:
             rows = list(range(W0.shape[0]))
             Xo, Yo = Xo.reshape(-1, Xo.shape[-1]), Yo.reshape(-1, len(rows))
             X, Y = np.vstack([Xo, keep]), np.vstack([Yo, np.zeros((len(keep), len(rows)))])
-            w = np.r_[np.full(len(Xo), 1.0 / len(Xo)), np.full(len(keep), max(args.beta, 1e-6) / len(keep))]
+            w = np.r_[np.full(len(Xo), 1.0 / len(Xo)),
+                      np.full(len(keep), max(args.beta, 1e-6) / max(len(keep), 1))]
             groups = np.r_[np.repeat(go, H), go.max() + 1 + np.arange(len(keep)) % 5]
             dW, db, lam = ridge_head(X, Y, w, groups)
         elif args.transplant:

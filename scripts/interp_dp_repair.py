@@ -36,6 +36,10 @@ def load(patterns: str):
     for f in sorted(f for g in patterns.split(',') for d in sorted(glob.glob(g))
                     for f in glob.glob(f'{d}/ep*.npz')):
         e = np.load(f)
+        if 'label_tick' in e:                              # labelled every n-th tick only
+            C.append(e['feats'][e['label_tick']])
+            A.append(e['teacher'])
+            continue
         n = min(len(e['feats']), len(e['teacher']))
         C.append(e['feats'][:n])
         A.append(e['teacher'][:n])
