@@ -129,6 +129,21 @@ def self_label(env, policy, obs, batch, task, delta: float = 0.01, full: bool = 
     return label
 
 
+def cf_label(env, policy, nuis) -> np.ndarray:
+    """Exact label for an appearance shift (interp_nuisance): the policy's own chunk (abs10) on
+    the same state rendered without the shift."""
+    import torch
+    from dp_anchor_probe import observe
+    from interp_act_sites import forward
+    if nuis is not None:
+        nuis.off(env)
+    b = policy._obs_to_batch(sil_step.stack([sil_step.frames(observe(env))], True))
+    if nuis is not None:
+        nuis.on(env)
+    with torch.no_grad():
+        return forward(policy._model, b)[0].cpu().numpy()
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--out-dir', required=True)
@@ -148,9 +163,10 @@ def main() -> None:
     p.add_argument('--teacher', default='',
                    help="ACT only: also save the policy's head inputs and this ACT's chunk at every "
                         'prediction (labels for interp_edit --onpolicy)')
-    p.add_argument('--selflabel', nargs='?', const='slope', default='', choices=('slope', 'full'),
+    p.add_argument('--selflabel', nargs='?', const='slope', default='', choices=('slope', 'full', 'cf'),
                    help='ACT only: like --teacher, labels from self_label (no demos, no teacher); '
-                        'full = slopes rescaled to gain 1')
+                        'full = slopes rescaled to gain 1; cf = cf_label (the --nuisance-free render)')
+    p.add_argument('--nuisance', default='', help='interp_nuisance spec: appearance shift at every reset')
     p.add_argument('--oracle', action='store_true',
                    help="correct with the sim's true mistake instead (upper bound)")
     args = p.parse_args()
@@ -179,7 +195,17 @@ def main() -> None:
         from interp_act_sites import Sites, forward
         sites = Sites(policy._model)
         teacher = make_policy('act', args.teacher)._model if args.teacher else None
-    obs = place(env, built.obs, shift, task)
+    from interp_nuisance import Nuisance
+    nuis = Nuisance(args.nuisance) if args.nuisance else None
+
+    def fresh(o):
+        """Reset observation with the nuisance applied (the model is rebuilt each reset)."""
+        if nuis is not None:
+            from dp_anchor_probe import observe
+            nuis.on(env)
+            o = observe(env)
+        return place(env, o, shift, task)
+    obs = fresh(built.obs)
     worker = sil_step.StepWorker(policy, sil_step.fixed_delay(1))
     executor = sil_step.make_strategy('synchronous', worker, policy)
     wins = 0
@@ -200,8 +226,9 @@ def main() -> None:
                         labels.append(teacher.predict_action_chunk(b)[0].cpu().numpy() if teacher
                                       is not None else None)
                     if teacher is None:
-                        labels[-1] = self_label(env, policy, rec.obs, b, task,
-                                                full=args.selflabel == 'full')
+                        labels[-1] = (cf_label(env, policy, nuis) if args.selflabel == 'cf' else
+                                      self_label(env, policy, rec.obs, b, task,
+                                                 full=args.selflabel == 'full'))
                 states.append(state(rec.obs, task))
                 return stacked
 
@@ -219,13 +246,14 @@ def main() -> None:
             np.savez_compressed(os.path.join(args.out_dir, f'ep{scene:04d}.npz'),
                                 feats=np.array(feats), commands=cmds, success=ep.success,
                                 cls=cls['cls'], ticks=ep.ticks, shift=shift, task=args.task,
+                                nuisance=args.nuisance,
                                 **cols, **({'dec': np.array(heads), 'teacher': np.array(labels)}
                                            if args.teacher or args.selflabel else {}))
             wins += ep.success
             print(f'scene {scene}: {cls["cls"]} ticks={ep.ticks} '
                   f'corrected={getattr(policy, "applied", 0)} '
                   f'({wins}/{scene - args.first_scene + 1})', flush=True)
-        obs = place(env, env.reset(), shift, task)
+        obs = fresh(env.reset())
     env.close()
 
 
