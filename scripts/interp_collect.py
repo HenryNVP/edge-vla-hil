@@ -171,6 +171,8 @@ def main() -> None:
                    help='ACT only: like --teacher, labels from self_label (no demos, no teacher); '
                         'full = slopes rescaled to gain 1; cf = cf_label (the --nuisance-free render)')
     p.add_argument('--nuisance', default='', help='interp_nuisance spec: appearance shift at every reset')
+    p.add_argument('--label-every', type=int, default=1,
+                   help='DP --selflabel cf: label every n-th tick (rows say which: label_tick)')
     p.add_argument('--oracle', action='store_true',
                    help="correct with the sim's true mistake instead (upper bound)")
     args = p.parse_args()
@@ -216,14 +218,16 @@ def main() -> None:
     for scene in range(args.episodes):
         if scene >= args.first_scene:
             rec = Recorder(env, obs)
-            feats, states, heads, labels = [], [], [], []
+            feats, states, heads, labels, label_ticks = [], [], [], [], []
 
             def stack_fn(hist, needs_wrist):
                 stacked = sil_step.stack(hist, needs_wrist)
                 if args.backend == 'dp':
                     feats.append(encode(policy, stacked))
                 if args.selflabel == 'cf' and args.backend == 'dp':   # its head input: feats
-                    labels.append(cf_label(env, policy, nuis, 'dp'))
+                    if (len(feats) - 1) % args.label_every == 0:          # DP labels are costly
+                        label_ticks.append(len(feats) - 1)
+                        labels.append(cf_label(env, policy, nuis, 'dp'))
                 elif args.teacher or args.selflabel:
                     b = policy._obs_to_batch(stacked)
                     with torch.no_grad():
@@ -254,7 +258,8 @@ def main() -> None:
                                 cls=cls['cls'], ticks=ep.ticks, shift=shift, task=args.task,
                                 nuisance=args.nuisance,
                                 **cols, **({'dec': np.array(heads)} if heads else {}),
-                                **({'teacher': np.array(labels)} if labels else {}))
+                                **({'teacher': np.array(labels)} if labels else {}),
+                                **({'label_tick': np.array(label_ticks)} if label_ticks else {}))
             wins += ep.success
             print(f'scene {scene}: {cls["cls"]} ticks={ep.ticks} '
                   f'corrected={getattr(policy, "applied", 0)} '
