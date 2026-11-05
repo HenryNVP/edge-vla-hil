@@ -268,7 +268,7 @@ def fig_edit(rows: list, out: str) -> None:
             ('lift ACT edit x_onpolicy_head_r2', 'x edit (on-policy) on y', PURPLE, ':'),
             ('lift ACT edit transplant2', 'edit, no demos', ORANGE, '-'),
             ('lift ACT edit y_head_r2_b1', 'edit, 40 shifted demos', BLUE, '-'),
-            ('lift ACT edit y_onpolicy_head', 'edit, on-policy labels', GREEN, '-'),
+            ('lift ACT edit y_onpolicy_head_r2', 'edit, on-policy labels', GREEN, '-'),
             ('lift ACT y-aug', 'retrain, 400 shifted demos', 'k', '--'))))
     fig, axes = plt.subplots(1, 2, figsize=(DOUBLE, 2.5), sharey=True, constrained_layout=True)
     handles = {}

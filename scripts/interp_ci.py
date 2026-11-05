@@ -41,7 +41,7 @@ SWEEPS = [('square DP', 'perceive_square_dp', 'gainmap', 'swap_square_dp'),
 EDIT_ARMS = ('x_head_r2_b1', 'x_head_r2_b1_unsh', 'y_head_r2_b1', 'x_head_r1_b1', 'x_head_r2_b1_n10',
              'x_head_r2_b1_n160', 'x_head_r2_b1_s1', 'x_cf_head_n160', 'x_dec_ff2_r4_b1',
              'transplant2', 'transplant3', 'relu_m20', 'relu_m20_f5', 'x_onpolicy_head',
-             'x_onpolicy_head_r2', 'y_onpolicy_head')
+             'x_onpolicy_head_r2', 'y_onpolicy_head', 'y_onpolicy_head_r2', 'sl_onpolicy_head', 'slfull_onpolicy_head')
 # Lift ACT retrained on demos replayed with the cube shifted along one axis (interp_augment)
 AXIS_MAPS = [('lift ACT', 'gainmap_lift_act'), ('lift ACT base', 'gainmap_lift_act_base'),
              ('lift ACT x-aug', 'gainmap_lift_act_x'), ('lift ACT y-aug', 'gainmap_lift_act_y')]

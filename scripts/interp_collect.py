@@ -88,6 +88,47 @@ def place(env, obs, shift, task=TASKS['square']):
     return observe(env)
 
 
+def self_label(env, policy, obs, batch, task, delta: float = 0.01, full: bool = False) -> np.ndarray:
+    """Label-free target chunk (abs10) for the current state, from the policy itself: with the
+    object outside the demos' box, the policy's chunk with the object moved to the nearest point
+    of the box (delta inside), its xy extended to the real object by the policy's own local slope
+    there (central differences, ±delta per axis); inside the box, the policy's own chunk. The
+    sim is restored bitwise after each counterfactual (as interp_gainmap.probe). full: rescale
+    each axis's slope so the chunk's last row follows that axis fully (gain 1)."""
+    import torch
+    from dp_anchor_probe import observe, set_object
+    from fuzzy_gate import _data_arrays
+    from interp_act_sites import forward
+    act = policy._model
+    xy = np.asarray(obs[task['pos']][:2], float)
+    lo, hi = np.asarray(task['lo']), np.asarray(task['hi'])
+    if np.all((xy >= lo) & (xy <= hi)):
+        with torch.no_grad():
+            return forward(act, batch)[0].cpu().numpy()
+    c = np.clip(xy, lo + delta, hi - delta)
+    d = env.sim.data
+    saved = _data_arrays(d)
+
+    def chunk_at(p):
+        set_object(env, task['joint'], p)
+        b = policy._obs_to_batch(sil_step.stack([sil_step.frames(observe(env))], True))
+        for k, v in saved.items():
+            cur = getattr(d, k)
+            if cur.shape == v.shape:
+                cur[...] = v
+        with torch.no_grad():
+            return forward(act, b)[0].cpu().numpy()
+    label = chunk_at(c)
+    for k in (0, 1):
+        e = np.eye(2)[k] * delta
+        slope = (chunk_at(c + e)[:, :2] - chunk_at(c - e)[:, :2]) / (2 * delta)   # (16, 2)
+        if full:
+            slope /= np.clip(slope[-1, k], 0.2, 1.0)
+        label[:, :2] += slope * (xy[k] - c[k])
+    observe(env)
+    return label
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--out-dir', required=True)
@@ -107,6 +148,9 @@ def main() -> None:
     p.add_argument('--teacher', default='',
                    help="ACT only: also save the policy's head inputs and this ACT's chunk at every "
                         'prediction (labels for interp_edit --onpolicy)')
+    p.add_argument('--selflabel', nargs='?', const='slope', default='', choices=('slope', 'full'),
+                   help='ACT only: like --teacher, labels from self_label (no demos, no teacher); '
+                        'full = slopes rescaled to gain 1')
     p.add_argument('--oracle', action='store_true',
                    help="correct with the sim's true mistake instead (upper bound)")
     args = p.parse_args()
@@ -130,10 +174,11 @@ def main() -> None:
         fix = ((lambda g: mistake(env, inner, observe(env), 0)[None]) if args.oracle
                else load_fix(args.corrector))
         policy = Corrected(policy, fix)
-    if args.teacher:
+    if args.teacher or args.selflabel:
         import torch
         from interp_act_sites import Sites, forward
-        sites, teacher = Sites(policy._model), make_policy('act', args.teacher)._model
+        sites = Sites(policy._model)
+        teacher = make_policy('act', args.teacher)._model if args.teacher else None
     obs = place(env, built.obs, shift, task)
     worker = sil_step.StepWorker(policy, sil_step.fixed_delay(1))
     executor = sil_step.make_strategy('synchronous', worker, policy)
@@ -147,12 +192,16 @@ def main() -> None:
                 stacked = sil_step.stack(hist, needs_wrist)
                 if args.backend == 'dp':
                     feats.append(encode(policy, stacked))
-                if args.teacher:
+                if args.teacher or args.selflabel:
                     b = policy._obs_to_batch(stacked)
                     with torch.no_grad():
                         forward(policy._model, b)
                         heads.append(sites.out['dec'][:, 0].float().cpu().numpy().astype(np.float16))
-                        labels.append(teacher.predict_action_chunk(b)[0].cpu().numpy())
+                        labels.append(teacher.predict_action_chunk(b)[0].cpu().numpy() if teacher
+                                      is not None else None)
+                    if teacher is None:
+                        labels[-1] = self_label(env, policy, rec.obs, b, task,
+                                                full=args.selflabel == 'full')
                 states.append(state(rec.obs, task))
                 return stacked
 
@@ -171,7 +220,7 @@ def main() -> None:
                                 feats=np.array(feats), commands=cmds, success=ep.success,
                                 cls=cls['cls'], ticks=ep.ticks, shift=shift, task=args.task,
                                 **cols, **({'dec': np.array(heads), 'teacher': np.array(labels)}
-                                           if args.teacher else {}))
+                                           if args.teacher or args.selflabel else {}))
             wins += ep.success
             print(f'scene {scene}: {cls["cls"]} ticks={ep.ticks} '
                   f'corrected={getattr(policy, "applied", 0)} '

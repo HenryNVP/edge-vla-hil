@@ -423,6 +423,9 @@ def main() -> None:
                 to = norm(np.concatenate([e['teacher'] for e in eps]).astype(np.float32))
             Yo = to.double().cpu().numpy() - (Xo @ W0.T + b0)
             go = np.concatenate([np.full(len(e['dec']), i) for i, e in enumerate(eps)])
+            if len(Xo) > 20000:                         # consecutive ticks are near-duplicates
+                sub = np.sort(np.random.default_rng(args.seed).choice(len(Xo), 20000, replace=False))
+                Xo, Yo, go = Xo[sub], Yo[sub], go[sub]
             rows = list(range(W0.shape[0]))
             Xo, Yo = Xo.reshape(-1, Xo.shape[-1]), Yo.reshape(-1, len(rows))
             X, Y = np.vstack([Xo, keep]), np.vstack([Yo, np.zeros((len(keep), len(rows)))])
