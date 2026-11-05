@@ -250,6 +250,57 @@ def fig_fix(rows: list, out: str) -> None:
     save(fig, 'fig_fix', out)
 
 
+def fig_edit(rows: list, out: str) -> None:
+    """Weight edits of the base arm vs the retrain: closed-loop success vs cube shift along x
+    (left) and y (right), Wilson 95% intervals; each panel's edits use labels along that axis
+    (the dotted x edit on y is the dissociation check). Unshifted success is 99-100% for all."""
+    GREY, PURPLE = '0.55', '#CC79A7'
+    panels = (
+        (0, 'cube moved along x', (
+            ('lift ACT base', 'base', GREY, '-'),
+            ('lift ACT edit x_head_r2_b1_unsh', 'edit, unshifted labels', GREY, ':'),
+            ('lift ACT edit transplant2', 'edit, no demos', ORANGE, '-'),
+            ('lift ACT edit x_head_r2_b1', 'edit, 40 shifted demos', BLUE, '-'),
+            ('lift ACT edit x_onpolicy_head_r2', 'edit, on-policy labels', GREEN, '-'),
+            ('lift ACT x-aug', 'retrain, 400 shifted demos', 'k', '--'))),
+        (1, 'cube moved along y', (
+            ('lift ACT base', 'base', GREY, '-'),
+            ('lift ACT edit x_onpolicy_head_r2', 'x edit (on-policy) on y', PURPLE, ':'),
+            ('lift ACT edit transplant2', 'edit, no demos', ORANGE, '-'),
+            ('lift ACT edit y_head_r2_b1', 'edit, 40 shifted demos', BLUE, '-'),
+            ('lift ACT edit y_onpolicy_head', 'edit, on-policy labels', GREEN, '-'),
+            ('lift ACT y-aug', 'retrain, 400 shifted demos', 'k', '--'))))
+    fig, axes = plt.subplots(1, 2, figsize=(DOUBLE, 2.5), sharey=True, constrained_layout=True)
+    handles = {}
+    for (k, title, series), ax in zip(panels, axes):
+        for si, (pol, label, color, ls) in enumerate(series):
+            for side in (-1, 1):                       # out of range only (±5, ±7 cm), per side
+                pts = sorted((r['shift'][k] * 100.0, r) for r in rows
+                             if r['section'] == 'rollouts' and r.get('policy') == pol
+                             and side * r['shift'][k] >= 0.045 and r['shift'][1 - k] == 0)
+                if not pts:
+                    continue
+                slot = {-7: 0, -5: 1, 5: 2, 7: 3}           # out-of-range shifts, evenly spaced
+                xs = [slot[int(round(p[0]))] + 0.05 * (si - len(series) / 2) for p in pts]
+                ys = [p[1]['success'] for p in pts]
+                h = ax.errorbar(xs, ys, yerr=[[max(0.0, y - p[1]['success_lo']) for y, p in zip(ys, pts)],
+                                              [max(0.0, p[1]['success_hi'] - y) for y, p in zip(ys, pts)]],
+                                fmt='o', ls=ls, color=color, ms=3, lw=0.9, capsize=1.5, capthick=0.8,
+                                elinewidth=0.7, zorder=3)
+                handles[label] = h
+        ax.axvline(1.5, ls=':', lw=0.7, color='0.6', zorder=1)
+        ax.set_title(title)
+        ax.set_xlabel('cube shift added to the demo placement (cm)')
+        ax.set_xticks((0, 1, 2, 3), ('−7', '−5', '+5', '+7'))
+        ax.set_xlim(-0.4, 3.4)
+        style(ax)
+    axes[0].set_ylim(0.0, 1.05)
+    axes[0].set_ylabel('success')
+    fig.legend(handles=list(handles.values()), labels=list(handles), loc='outside lower center',
+               ncol=4, frameon=False)
+    save(fig, 'fig_edit', out)
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--data', default='outputs/interp', help='dir with ci.json and the gain maps')
@@ -267,6 +318,8 @@ def main(argv=None) -> None:
     fig_gain_space(args.data, args.out)
     if any(r['section'] == 'axis' for r in rows):
         fig_fix(rows, args.out)
+    if any(str(r.get('policy', '')).startswith('lift ACT edit') for r in rows):
+        fig_edit(rows, args.out)
 
 
 if __name__ == '__main__':

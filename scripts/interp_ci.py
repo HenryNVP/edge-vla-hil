@@ -36,6 +36,12 @@ ROWS = []                                   # every printed number, for --json
 SWEEPS = [('square DP', 'perceive_square_dp', 'gainmap', 'swap_square_dp'),
           ('lift DP', 'perceive_lift_dp', 'gainmap_lift_dp', 'swap_lift_dp'),
           ('lift ACT', 'perceive_lift_act', 'gainmap_lift_act', '')]
+# single-layer weight edits of the base arm (interp_edit, plan §11): rollout dirs
+# lift_act_edit_<name>_shift_*, reported as 'lift ACT edit <name>'
+EDIT_ARMS = ('x_head_r2_b1', 'x_head_r2_b1_unsh', 'y_head_r2_b1', 'x_head_r1_b1', 'x_head_r2_b1_n10',
+             'x_head_r2_b1_n160', 'x_head_r2_b1_s1', 'x_cf_head_n160', 'x_dec_ff2_r4_b1',
+             'transplant2', 'transplant3', 'relu_m20', 'relu_m20_f5', 'x_onpolicy_head',
+             'x_onpolicy_head_r2', 'y_onpolicy_head')
 # Lift ACT retrained on demos replayed with the cube shifted along one axis (interp_augment)
 AXIS_MAPS = [('lift ACT', 'gainmap_lift_act'), ('lift ACT base', 'gainmap_lift_act_base'),
              ('lift ACT x-aug', 'gainmap_lift_act_x'), ('lift ACT y-aug', 'gainmap_lift_act_y')]
@@ -207,6 +213,9 @@ def main() -> None:
         if glob.glob(f'{OUT}/lift_{b}_shift_*/ep*.npz'):
             rollouts(f'{OUT}/lift_{b}_shift_*', 'lift ' + b.upper().replace('_', ' ')
                      .replace('BASE', 'base').replace(' X', ' x-aug').replace(' Y', ' y-aug'))
+    for n in EDIT_ARMS:
+        if glob.glob(f'{OUT}/lift_act_edit_{n}_shift_*/ep*.npz'):
+            rollouts(f'{OUT}/lift_act_edit_{n}_shift_*', f'lift ACT edit {n}')
     with open(args.json, 'w') as f:
         json.dump(ROWS, f, indent=1)
 

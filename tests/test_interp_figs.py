@@ -8,7 +8,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 from interp_figs import main  # noqa: E402
 
-FIGS = ('fig_seen_vs_action', 'fig_swap', 'fig_closepoint', 'fig_gain_space', 'fig_fix')
+FIGS = ('fig_seen_vs_action', 'fig_swap', 'fig_closepoint', 'fig_gain_space', 'fig_fix', 'fig_edit')
 RADII = {'square DP': (0.08, 0.03), 'lift DP': (0.06, 0.02), 'lift ACT': (0.06, 0.02)}
 GAIN_LABELS = ('action inside', 'action outside', 'action drop in-out', 'seen inside',
                'seen outside')
@@ -37,7 +37,7 @@ def write_ci(path) -> None:
                          success_lo=0.1 + 0.1 * j, success_hi=0.65 + 0.1 * j,
                          followed=0.3 + 0.1 * j, followed_lo=0.05 + 0.1 * j,
                          followed_hi=0.6 + 0.1 * j, nearer_ghost=0.2, cross_mm=1.5))
-    for pol in ('lift ACT base', 'lift ACT x-aug', 'lift ACT y-aug'):
+    for pol in ('lift ACT base', 'lift ACT x-aug', 'lift ACT y-aug', 'lift ACT edit x_head_r2_b1'):
         for label in ('in range', 'out along own axis'):
             for axis in ('x', 'y'):
                 rows.append(dict(section='axis', policy=pol, radius=0.02, label=label, axis=axis,

@@ -222,6 +222,81 @@ def transplant_fit(d: dict, W: np.ndarray, b: np.ndarray, keep: np.ndarray | Non
     return ridge_head(X, Y, w, groups)
 
 
+def relu_edit(args, act, pres, run, dev) -> int:
+    """H-E2 as weights, label-free: 4 of the decoder FFN's least-active hidden units become
+    "excess beyond the demo box" units (+x, +y, -x, -y). Input weights: a ridge readout of the
+    absolute cube xy (mm) from the FFN input, fitted on an interp_act_sites sweep (sim placements,
+    no demos), shifted so each unit switches on --margin past the box edge. Output weights (4
+    columns of linear2) by Adam through the rest of the network, which is a per-row function of
+    the FFN input: xy rows towards transplant_rows' labels (the parent's own in-range slope
+    extended), every other output and the parent's training states (keep) unchanged."""
+    import torch
+    from interp_gainmap import TASKS
+    d = dict(np.load(args.relu))
+    L, dn, head = act.model.decoder.layers[0], act.model.decoder.norm, act.model.action_head
+    W0, b0 = (t.detach().cpu().double().numpy() for t in (head.weight, head.bias))
+    _, Ylab, groups, inr = transplant_rows(d, W0, b0)
+    X = d['ffn_in'].astype(np.float32).reshape(-1, d['ffn_in'].shape[-1])
+    g = d['grid'] * 1e3
+    pos = (d['nut_xy'][:, None, None] * 1e3 + np.stack(np.meshgrid(g, g, indexing='ij'), -1))
+    pos = np.repeat(pos.reshape(-1, 2), d['ffn_in'].shape[3], axis=0)
+    Pr, p0, lam = ridge_head(X.astype(np.float64), pos, np.ones(len(X)), groups)
+    grab = {}
+    hook = L.linear1.register_forward_pre_hook(lambda _m, i: grab.__setitem__('x', i[0]))
+    keep_idx = np.random.default_rng(args.seed).choice(len(pres[1]), min(2000, len(pres[1])), replace=False)
+    with torch.no_grad():
+        kp = subset(pres, keep_idx)
+        keep = torch.cat([(run(kp, np.arange(i, min(i + 256, len(kp[1])))), grab['x'])[1]
+                          .transpose(0, 1).reshape(-1, X.shape[1]) for i in range(0, len(kp[1]), 256)])
+    hook.remove()
+    Xt = torch.from_numpy(X).to(dev)
+    with torch.no_grad():
+        act_all = torch.relu(L.linear1(torch.cat([Xt, keep])))
+        units = torch.argsort(act_all.mean(0))[:4]
+        before_act = act_all[:, units].mean(0).cpu().numpy()
+    lo, hi = np.array(TASKS['lift']['lo']) * 1e3, np.array(TASKS['lift']['hi']) * 1e3
+    m = args.margin * 1e3
+    k_scale = 0.02                                     # unit pre-activation per mm
+    w_in = np.stack([Pr[0], Pr[1], -Pr[0], -Pr[1]]) * k_scale
+    b_in = np.array([p0[0] - hi[0] - m, p0[1] - hi[1] - m, -p0[0] + lo[0] - m,
+                     -p0[1] + lo[1] - m]) * k_scale
+    with torch.no_grad():
+        L.linear1.weight[units] = torch.from_numpy(w_in).to(L.linear1.weight)
+        L.linear1.bias[units] = torch.from_numpy(b_in).to(L.linear1.bias)
+        L.linear2.weight[:, units] = 0
+
+        def post(x):
+            return head(dn(L.norm3(x + L.linear2(L.activation(L.linear1(x))))))
+        A, Ak = post(Xt), post(keep)                   # zeroed units: parent minus 4 idle units
+        target = A.clone()
+        target[:, :2] += torch.from_numpy(Ylab).to(A)
+        fire = (L.linear1(keep)[:, units] > 0).float().mean(0).cpu().numpy()
+    w = torch.from_numpy(np.where(inr, 0.5 / inr.sum(), 0.5 / (~inr).sum())).to(A) * len(A)
+    Wc = torch.zeros(X.shape[1], 4, device=dev, requires_grad=True)
+    opt = torch.optim.Adam([Wc], lr=args.lr)
+    rng = np.random.default_rng(args.seed)
+    for step in range(args.steps):
+        i = torch.from_numpy(rng.integers(len(Xt), size=4096)).to(dev)
+        j = torch.from_numpy(rng.integers(len(keep), size=4096)).to(dev)
+
+        def edited(x):
+            h = L.activation(L.linear1(x))
+            return head(dn(L.norm3(x + L.linear2(h) + h[:, units] @ Wc.T)))
+        loss = (w[i, None] * (edited(Xt[i]) - target[i]) ** 2).mean() \
+            + max(args.beta, 0) * ((edited(keep[j]) - Ak[j]) ** 2).mean()
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        if step % 500 == 0 or step == args.steps - 1:
+            print(f'step {step}: loss {loss.item():.5f}', flush=True)
+    with torch.no_grad():
+        L.linear2.weight[:, units] = Wc.detach().to(L.linear2.weight)
+    print(f'relu: readout lambda {lam:g}; units {units.tolist()} (mean activity before '
+          f'{np.round(before_act, 4).tolist()}); fire rate on base states {np.round(fire, 3).tolist()}',
+          flush=True)
+    return int(4 * (2 * X.shape[1] + 1))
+
+
 def report(sweep: str) -> None:
     """Validation per-axis gain (interp_ci.axis_stat) for every gm_<name>.npz in the sweep dir,
     with the edit's held-out replay error and parent drift; sorted by out-of-range x at 2 cm."""
@@ -261,6 +336,12 @@ def main() -> None:
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--closed-form', action='store_true',
                    help='site head only: weighted ridge on the head inputs instead of SGD')
+    p.add_argument('--onpolicy', default='',
+                   help='comma-separated globs of interp_collect --teacher dirs: head edit towards the '
+                        "teacher's chunks on the parent's own rollout states")
+    p.add_argument('--relu', default='',
+                   help='interp_act_sites npz (with ffn_in): label-free excess-ReLU units in the decoder FFN')
+    p.add_argument('--margin', type=float, default=0.02, help='--relu: m past the demo box edge')
     p.add_argument('--transplant', default='',
                    help='interp_act_sites npz of the parent: closed-form label-free head edit')
     args = p.parse_args()
@@ -281,7 +362,7 @@ def main() -> None:
     else:
         pick = lambda k, s: k < args.n and not s.any()           # noqa: E731
     src = f'{AUG}/lift_{args.axis}.hdf5'
-    edit = (None, []) if args.transplant else frames(load(src, pick), H)
+    edit = (None, []) if args.transplant or args.onpolicy or args.relu else frames(load(src, pick), H)
     val = frames(load(src, lambda k, s: k >= POOL and s.any()), H)
     pres_eps = load(f'{AUG}/lift_base.hdf5', lambda k, s: True)
     pres = frames([e for e in pres_eps if e['rank'] < POOL], H)
@@ -316,7 +397,9 @@ def main() -> None:
         return err, drift
 
     before = evaluate()
-    if args.transplant or args.closed_form:
+    if args.relu:
+        n_params = relu_edit(args, act, pres, run, dev)
+    elif args.transplant or args.closed_form or args.onpolicy:
         head = act.model.action_head
         W0, b0 = (t.detach().cpu().double().numpy() for t in (head.weight, head.bias))
         grab = {}
@@ -332,7 +415,21 @@ def main() -> None:
         keep_idx = np.random.default_rng(args.seed).choice(len(pres[1]), min(2000, len(pres[1])),
                                                            replace=False)
         keep = dec(subset(pres, keep_idx)).reshape(-1, W0.shape[1])
-        if args.transplant:
+        if args.onpolicy:                               # recorded rollouts: teacher chunks
+            import glob
+            eps = [np.load(f) for g in args.onpolicy.split(',') for f in sorted(glob.glob(f'{g}/ep*.npz'))]
+            Xo = np.concatenate([e['dec'] for e in eps]).astype(np.float64)       # (N, 16, D)
+            with torch.no_grad():
+                to = norm(np.concatenate([e['teacher'] for e in eps]).astype(np.float32))
+            Yo = to.double().cpu().numpy() - (Xo @ W0.T + b0)
+            go = np.concatenate([np.full(len(e['dec']), i) for i, e in enumerate(eps)])
+            rows = list(range(W0.shape[0]))
+            Xo, Yo = Xo.reshape(-1, Xo.shape[-1]), Yo.reshape(-1, len(rows))
+            X, Y = np.vstack([Xo, keep]), np.vstack([Yo, np.zeros((len(keep), len(rows)))])
+            w = np.r_[np.full(len(Xo), 1.0 / len(Xo)), np.full(len(keep), max(args.beta, 1e-6) / len(keep))]
+            groups = np.r_[np.repeat(go, H), go.max() + 1 + np.arange(len(keep)) % 5]
+            dW, db, lam = ridge_head(X, Y, w, groups)
+        elif args.transplant:
             d = dict(np.load(args.transplant))
             tn = None
             if 'teacher' in d:                          # labels: the teacher's chunks, every row

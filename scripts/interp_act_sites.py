@@ -56,6 +56,10 @@ class Sites:
         for name, mod in (('mem', m.encoder), ('xattn', m.decoder.layers[0].multihead_attn),
                           ('dec', m.decoder)):
             mod.register_forward_hook(self._hook(name))
+        # the decoder FFN's input: everything after it (FFN, +skip, two norms, head) is a
+        # per-row function of it (interp_edit --relu writes units there)
+        m.decoder.layers[0].linear1.register_forward_pre_hook(
+            lambda _m, i: self.out.__setitem__('ffn_in', i[0]))
 
     def _hook(self, name):
         def h(_m, _i, out):
@@ -105,7 +109,7 @@ def collect(args) -> dict:
     nb = ((c * G + c - G + 1, c * G + c + G + 1), (c * G + c - 1 + 1, c * G + c + 1 + 1))
     push = np.array([float(a) for a in args.push.split(',')])
     f16 = lambda t: t.detach().float()[:, 0].cpu().numpy().astype(np.float16)  # noqa: E731
-    out = {k: [] for k in ('mem', 'xattn', 'dec', 'attn', 'J_mem', 'J_xattn', 'J_dec', 'idx',
+    out = {k: [] for k in ('ffn_in', 'mem', 'xattn', 'dec', 'attn', 'J_mem', 'J_xattn', 'J_dec', 'idx',
                            'replica', 'resp', 'scene', 'radius', 'nut_xy', 'extrap')
            + (('teacher',) if args.teacher else ())}
     for scene in range(args.scenes):
@@ -129,7 +133,7 @@ def collect(args) -> dict:
                         rows_t = teacher.predict_action_chunk(stash['b'])[0].cpu().numpy()
                 rows.append(dict(
                     **({'teacher': rows_t} if teacher is not None else {}),
-                    mem=f16(outs[0]), xattn=f16(outs[1]), dec=f16(outs[2]),
+                    ffn_in=f16(sites.out['ffn_in']), mem=f16(outs[0]), xattn=f16(outs[1]), dec=f16(outs[2]),
                     attn=sites.attn.detach()[0].float().cpu().numpy().astype(np.float16),
                     J_mem=np.stack([f16(j[0]) for j in J]),
                     J_xattn=np.stack([f16(j[1])[i] for j in J]),
