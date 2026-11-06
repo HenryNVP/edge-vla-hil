@@ -213,6 +213,8 @@ def main() -> None:
     nuis = Nuisance(args.nuisance) if args.nuisance else None
     labeller = (make_policy(args.backend, args.label_weights, denoise_steps=args.denoise_steps)
                 if args.label_weights else policy)
+    # SmolVLA with --teacher: an ACT expert labels the VLA's own states (same abs10 action space)
+    teacher_pol = make_policy('act', args.teacher) if args.teacher and args.backend == 'smolvla' else None
 
     def fresh(o):
         """Reset observation with the nuisance applied (the model is rebuilt each reset)."""
@@ -242,6 +244,17 @@ def main() -> None:
                             seen.append((stacked['agentview'][-1], stacked['wrist'][-1],
                                          stacked['proprio'][-1]))
                         labels.append(cf_label(env, labeller, nuis, 'smolvla'))
+                elif teacher_pol is not None:
+                    t = len(states)
+                    if t % args.label_every == 0:
+                        import torch
+                        label_ticks.append(t)
+                        if args.save_images:
+                            seen.append((stacked['agentview'][-1], stacked['wrist'][-1],
+                                         stacked['proprio'][-1]))
+                        with torch.no_grad():
+                            labels.append(teacher_pol._model.predict_action_chunk(
+                                teacher_pol._obs_to_batch(stacked))[0].cpu().numpy())
                 elif args.selflabel == 'cf' and args.backend == 'dp':   # its head input: feats
                     if (len(feats) - 1) % args.label_every == 0:          # DP labels are costly
                         label_ticks.append(len(feats) - 1)
