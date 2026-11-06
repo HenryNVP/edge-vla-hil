@@ -144,6 +144,8 @@ def cf_label(env, policy, nuis, backend: str = 'act') -> np.ndarray:
         if backend == 'dp':
             out = policy._policy.predict_action(policy._to_policy_obs(stacked))
             return out['action_pred'][0].cpu().numpy()
+        if backend == 'smolvla':                            # abs10, unnormalised
+            return policy._model.predict_action_chunk(policy._obs_to_batch(stacked))[0].cpu().numpy()
         from interp_act_sites import forward
         return forward(policy._model, policy._obs_to_batch(stacked))[0].cpu().numpy()
 
@@ -232,7 +234,15 @@ def main() -> None:
                 stacked = sil_step.stack(hist, needs_wrist)
                 if args.backend == 'dp':
                     feats.append(encode(policy, stacked))
-                if args.selflabel == 'cf' and args.backend == 'dp':   # its head input: feats
+                if args.selflabel == 'cf' and args.backend == 'smolvla':
+                    t = len(states)                                   # this tick
+                    if t % args.label_every == 0:                    # VLA labels are costly
+                        label_ticks.append(t)
+                        if args.save_images:
+                            seen.append((stacked['agentview'][-1], stacked['wrist'][-1],
+                                         stacked['proprio'][-1]))
+                        labels.append(cf_label(env, labeller, nuis, 'smolvla'))
+                elif args.selflabel == 'cf' and args.backend == 'dp':   # its head input: feats
                     if (len(feats) - 1) % args.label_every == 0:          # DP labels are costly
                         label_ticks.append(len(feats) - 1)
                         labels.append(cf_label(env, labeller, nuis, 'dp'))
