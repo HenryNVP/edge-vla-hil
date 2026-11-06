@@ -265,7 +265,10 @@ only the approach. Further rounds, where the repaired policy drives and the uned
 the shift-free render, move the failures along the task (round 2: 35\% grasp the nut, 1\% succeed;
 round 3: 18\%; round 4: 43\%). A fifth round plateaus (40\%) and, as shifted data outgrow the fixed
 unshifted episodes, forgets in-range behaviour (unshifted success 84 $\rightarrow$ 73\% after round 4,
-48\% after round 5); mixing in the original demonstrations is the standard remedy. The protocol thus separates two regimes: a
+48\% after round 5). A refit of the last layer alone on the same four rounds of labels stays at
+0/100 (95 episodes never grasp), so it is the depth of the refit, not the amount of labels, that
+Square needs. Mixing 100 original demonstrations into the round-4 refit did not remove the cost
+(68\% unshifted, 24\% shifted). The protocol thus separates two regimes: a
 readout gap, fixed by refitting one layer with one round of free labels (Lift, ACT and Diffusion
 Policy), and a representation gap, which needs deeper refits and on-policy rounds (Square).
 
