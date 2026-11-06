@@ -82,6 +82,53 @@ def figure(rows: list, out: str) -> None:
     save(fig, 'fig_grid', out)
 
 
+def fig_depth(out: str, root: str = 'outputs/interp/nuis/') -> None:
+    """Square, both cameras shifted: success under the shift and unshifted over DAgger rounds of
+    the full refit (left), and the refit depth on the same four rounds of labels (right)."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from interp_figs import BLUE, SINGLE, save, style, legend_handle
+    plt.rcParams.update({'font.size': 8, 'axes.labelsize': 8, 'axes.titlesize': 8,
+                         'xtick.labelsize': 7, 'ytick.labelsize': 7})
+    rounds = [('0', 'sq_eval3_base_bothcam', 'sq_eval3_base_none')] + [
+        (str(k), f'sq_depth_full{"" if k == 1 else f"_r{k}"}_eval3_bothcam',
+         f'sq_depth_full{"" if k == 1 else f"_r{k}"}_eval3_none') for k in range(1, 6)]
+    depth = [('last layer\n5K', 'sq_depth_head_r4'), ('rank 8, all\n457K', 'sq_depth_all8_r4'),
+             ('full\n51.6M', 'sq_depth_full_r4')]
+    fig, (a, b) = plt.subplots(1, 2, figsize=(SINGLE * 2, 2.1), sharey=True,
+                               constrained_layout=True)
+    for j, (name, color, fill) in enumerate((('under the shift', BLUE, True), ('unshifted', '0.45', False))):
+        pts = [(k, rate(root + (sh if j == 0 else un))) for k, sh, un in rounds]
+        pts = [(int(k), v) for k, v in pts if v]
+        for x, v in pts:
+            p_ = v[0] / v[1]
+            lo, hi = wilson(*v)
+            a.errorbar(x, p_, yerr=[[max(0, p_ - lo)], [max(0, hi - p_)]], fmt='o', color=color, ms=3.5,
+                       lw=0.8, capsize=1.5, markerfacecolor=color if fill else 'none', zorder=3)
+        a.plot([x for x, _ in pts], [v[0] / v[1] for _, v in pts], color=color, lw=0.8, zorder=2)
+        for i, (lab, n) in enumerate(depth):
+            v = rate(root + n + ('_eval3_bothcam' if j == 0 else '_eval3_none'))
+            if v:
+                p_ = v[0] / v[1]
+                lo, hi = wilson(*v)
+                b.errorbar(i + (0.1 if j else -0.1), p_, yerr=[[max(0, p_ - lo)], [max(0, hi - p_)]],
+                           fmt='o', color=color, ms=3.5, lw=0.8, capsize=1.5,
+                           markerfacecolor=color if fill else 'none', zorder=3)
+    a.set_xlabel('DAgger round (full refit)')
+    a.set_ylabel('success')
+    a.set_ylim(-0.03, 1.03)
+    a.set_title('rounds of on-policy labels')
+    b.set_xticks(range(len(depth)), [d for d, _ in depth])
+    b.set_xlim(-0.5, len(depth) - 0.5)
+    b.set_title('refit depth, same 4 rounds')
+    for ax in (a, b):
+        style(ax)
+    fig.legend(handles=[legend_handle(BLUE, 'under the shift'), legend_handle('0.45', 'unshifted', inside=False)],
+               loc='outside lower center', ncol=2, frameon=False, fontsize=7)
+    save(fig, 'fig_depth', out)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--json', default='outputs/interp/grid.json')
@@ -96,6 +143,8 @@ def main() -> None:
         json.dump(rows, f, indent=1)
     if rows:
         figure(rows, args.figs)
+    if glob.glob('outputs/interp/nuis/sq_depth_full_r4_eval3_bothcam/ep*.npz'):
+        fig_depth(args.figs)
 
 
 if __name__ == '__main__':
