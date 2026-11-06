@@ -10,7 +10,7 @@ interp_collect --backend dp ('feats') and the label trajectory ('teacher': the f
 action_pred of the unedited DP on the shift-free render, interp_collect --selflabel cf).
 Unshifted episodes labelled the same way keep in-range behaviour. Because the encoder is frozen,
 the cached global_cond is exactly what the edited policy computes. Saved as a normal workspace
-.ckpt (both 'model' and 'ema_model' replaced), so every interp script loads it with --weights.
+.ckpt holding only the edited weights (as 'ema_model'), so every interp script loads it with --weights.
 
     python3 scripts/interp_dp_repair.py --parent checkpoints/dp_lift_ph_image_cnn.ckpt \
         --data 'outputs/interp/nuis/dp_cf1_bothcam,outputs/interp/nuis/dp_cf1_none' \
@@ -96,9 +96,9 @@ def main() -> None:
     dp.model.eval()
     payload = torch.load(open(args.parent, 'rb'), pickle_module=dill, map_location='cpu')
     state = {k: v.detach().cpu() for k, v in dp.state_dict().items()}
-    for key in ('model', 'ema_model'):
-        if key in payload['state_dicts']:
-            payload['state_dicts'][key] = state
+    # the edited weights only (load_dp_checkpoint reads ema_model): the workspace payload's
+    # optimizer and second model copy would make each file 3.2 GB
+    payload['state_dicts'] = {'ema_model': state}
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     torch.save(payload, open(args.out, 'wb'), pickle_module=dill)
     stats = dict(vars(args), decisions=len(cond), params=sum(q.numel() for q in params),
