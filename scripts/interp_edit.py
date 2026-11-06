@@ -85,6 +85,26 @@ def frames(eps: list[dict], H: int):
     return [np.stack(i) for i in img], np.stack(state), np.stack(chunk), np.stack(pad), np.array(epi)
 
 
+def recorded_frames(patterns: str, H: int, stride: int = 1):
+    """frames()'s tuple from recorded rollouts: what the policy saw and the label chunk (abs10)
+    at every stride-th tick; no padding (each label is a whole chunk)."""
+    import glob
+    img, state, chunk, epi = [[], []], [], [], []
+    files = sorted(f for g in patterns.split(',') for d in sorted(glob.glob(g))
+                   for f in glob.glob(f'{d}/ep*.npz'))
+    for e_i, f in enumerate(files):
+        e = np.load(f)
+        idx = np.arange(0, len(e['teacher']), stride)
+        img[0].append(e['img_agent'][idx])
+        img[1].append(e['img_wrist'][idx])
+        state.append(e['proprio'][idx])
+        chunk.append(e['teacher'][idx][:, :H].astype(np.float32))
+        epi.append(np.full(len(idx), e_i))
+    chunk = np.concatenate(chunk)
+    return ([np.concatenate(i) for i in img], np.concatenate(state), chunk,
+            np.zeros(chunk.shape[:2], bool), np.concatenate(epi))
+
+
 def subset(data, idx):
     return [i[idx] for i in data[0]], *(x[idx] for x in data[1:])
 
@@ -140,7 +160,7 @@ def train(args, act, edit, pres, parent_pres, run, norm, dev) -> int:
         i = rng.integers(len(edit[1]), size=args.batch)
         m = ~torch.from_numpy(edit[3][i]).to(dev)
         loss = (run(edit, i) - norm(edit[2][i])).abs().mean(-1)[m].mean()
-        if args.beta:
+        if args.beta and pres is not None:
             j = rng.integers(len(pres[1]), size=args.batch)
             loss = loss + args.beta * (run(pres, j) - parent_pres[j]).abs().mean()
         opt.zero_grad()
@@ -336,6 +356,10 @@ def main() -> None:
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--closed-form', action='store_true',
                    help='site head only: weighted ridge on the head inputs instead of SGD')
+    p.add_argument('--images', default='',
+                   help='comma-separated globs of interp_collect --save-images dirs: SGD edit set '
+                        '(any --site, incl. full) from what the policy saw + its labels')
+    p.add_argument('--stride', type=int, default=2, help='--images: every n-th tick')
     p.add_argument('--pres', choices=('lift', 'none'), default='lift',
                    help="preservation / validation data: the Lift base replays, or none (another "
                         "task: --onpolicy's unshifted episodes preserve)")
@@ -365,7 +389,10 @@ def main() -> None:
     else:
         pick = lambda k, s: k < args.n and not s.any()           # noqa: E731
     src = f'{AUG}/lift_{args.axis}.hdf5'
-    edit = (None, []) if args.transplant or args.onpolicy or args.relu else frames(load(src, pick), H)
+    if args.images:                     # recorded on-policy frames + labels (interp_collect --save-images)
+        edit = recorded_frames(args.images, H, args.stride)
+    else:
+        edit = (None, []) if args.transplant or args.onpolicy or args.relu else frames(load(src, pick), H)
     lift = args.pres == 'lift'          # 'none': another task; the unshifted on-policy episodes preserve
     val = frames(load(src, lambda k, s: k >= POOL and s.any()), H) if lift else None
     pres_eps = load(f'{AUG}/lift_base.hdf5', lambda k, s: True) if lift else []
