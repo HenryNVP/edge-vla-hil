@@ -171,6 +171,9 @@ def main() -> None:
                    help='ACT only: like --teacher, labels from self_label (no demos, no teacher); '
                         'full = slopes rescaled to gain 1; cf = cf_label (the --nuisance-free render)')
     p.add_argument('--nuisance', default='', help='interp_nuisance spec: appearance shift at every reset')
+    p.add_argument('--label-weights', default='',
+                   help='--selflabel cf: label with this checkpoint (the unedited expert) instead '
+                        'of the acting policy (DAgger rounds after a repair)')
     p.add_argument('--save-images', action='store_true',
                    help='with --teacher / --selflabel: also save what the policy saw each tick '
                         '(agentview, wrist, proprio) for deeper repairs (interp_edit --images)')
@@ -206,6 +209,8 @@ def main() -> None:
         teacher = make_policy('act', args.teacher)._model if args.teacher else None
     from interp_nuisance import Nuisance
     nuis = Nuisance(args.nuisance) if args.nuisance else None
+    labeller = (make_policy(args.backend, args.label_weights, denoise_steps=args.denoise_steps)
+                if args.label_weights else policy)
 
     def fresh(o):
         """Reset observation with the nuisance applied (the model is rebuilt each reset)."""
@@ -230,7 +235,7 @@ def main() -> None:
                 if args.selflabel == 'cf' and args.backend == 'dp':   # its head input: feats
                     if (len(feats) - 1) % args.label_every == 0:          # DP labels are costly
                         label_ticks.append(len(feats) - 1)
-                        labels.append(cf_label(env, policy, nuis, 'dp'))
+                        labels.append(cf_label(env, labeller, nuis, 'dp'))
                 elif args.teacher or args.selflabel:
                     if args.save_images:
                         seen.append((stacked['agentview'][-1], stacked['wrist'][-1], stacked['proprio'][-1]))
@@ -241,7 +246,7 @@ def main() -> None:
                         labels.append(teacher.predict_action_chunk(b)[0].cpu().numpy() if teacher
                                       is not None else None)
                     if teacher is None:
-                        labels[-1] = (cf_label(env, policy, nuis) if args.selflabel == 'cf' else
+                        labels[-1] = (cf_label(env, labeller, nuis) if args.selflabel == 'cf' else
                                       self_label(env, policy, rec.obs, b, task,
                                                  full=args.selflabel == 'full'))
                 states.append(state(rec.obs, task))
