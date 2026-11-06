@@ -213,13 +213,63 @@ with the cube faint it reaches 100\% wherever the cube is. Readability separates
 does not rank the repairs in between.
 
 \subsection{Across policies and tasks}
-\todo{Diffusion Policy (Lift, Square), ACT Square, SmolVLA Lift: same protocol and tables.}
+Table~\ref{tab:grid} applies the protocol to Diffusion Policy on Lift and to ACT on two harder
+tasks, Square (place a nut on a peg; the demonstrations vary its $x$ position by 5\,mm) and
+ToolHang (insert a frame into a stand, then hang a tool on it; demonstrations up to 37\,s). Shifts
+are chosen per policy by a 10--20 episode sweep on separate scenes; every policy in this section
+is robust to any single-camera change and breaks only when both cameras are shifted.
+
+\begin{table}[t]
+\centering
+\caption{Readout repair with counterfactual labels across policies and tasks: success under the
+shift before and after refitting only the readout (ACT: action head; Diffusion Policy: FiLM
+conditioning layers), and the repaired policy's success without the shift. Fresh scenes; out of 100
+(ToolHang: 50). Readability is the before-contact linear R$^2$ of the grasp point (the cube, the
+nut's handle, the tool) at the readout's input under the shift.}
+\label{tab:grid}
+\begin{tabular}{llcccc}
+\toprule
+Policy, task & Shift & readable & base & repaired & repaired, unshifted\\
+\midrule
+DP, Lift & both cameras upside down & 0.20 & 54 & 99 & 99\\
+DP, Lift & red table + dim + wrist rolled & 0.41 & 66 & 98 & 100\\
+DP, Lift & cube faint & 0.36 & 62 & 94 & 100\\
+DP, Lift & cube invisible & 0.09 & 58 & 78 & 100\\
+\midrule
+ACT, Square & agentview turned + wrist rolled & $-0.22$ & 0 & 0 & 85\\
+ACT, Square & red table + dim + wrist rolled & $-0.23$ & 2 & 0 & 83\\
+ACT, Square & nut faint & -- & 2 & 1 & 90\\
+\midrule
+ACT, ToolHang & both cameras upside down & $-0.70$ & 0/50 & 0/50 & 20/50\\
+ACT, ToolHang & tool invisible & $-0.49$ & 0/50 & 0/50 & 13/50\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Diffusion Policy behaves like ACT on Lift: every shift that leaves the cube visible is repaired to
+94--99\% by refitting only its conditioning layers, the invisible cube only partly. On Square and
+ToolHang the readout refit recovers nothing (base and unshifted performance aside, success stays at
+0--2\%), and there the grasp point is not linearly readable at the readout's input under the shift.
+Base success without shifts is 84/100 on Square and 23/50 on ToolHang.
+
+\paragraph{When the readout is not enough.} On Square the protocol's next step is to refit deeper
+with the same labels. A full fine-tune with one round of labels still scores 0/100, but it brings
+the gripper from a median closest approach of 210\,mm (base, and 196\,mm after the readout refit)
+to 53\,mm of the handle: the labels came from rollouts that never reached the nut, so they cover
+only the approach. Further rounds, where the repaired policy drives and the unedited policy labels
+the shift-free render, move the failures along the task (round 2: 35\% grasp the nut, 1\% succeed;
+round 3: 18\% succeed\todo{round 4}), at a cost to unshifted success (84 $\rightarrow$ 62\%) that
+mixing in the original demonstrations should remove. The protocol thus separates two regimes: a
+readout gap, fixed by refitting one layer with one round of free labels (Lift, ACT and Diffusion
+Policy), and a representation gap, which needs deeper refits and on-policy rounds (Square).
 
 \section{Limitations}
 Counterfactual labels need a simulator, or an image-editing substitute on a real robot. The
-readout is a design choice per architecture, and for Diffusion Policy it is large. Readability is
-a necessary condition in our data, not a predictor of the size of a repair.
-\todo{finalize after the grid.}
+readout is a design choice per architecture, and for Diffusion Policy it is large (11.5M weights
+against ACT's 5{,}130). Linear readability of the grasp point separates the regimes we observe, but
+it does not rank repairs within a regime, and on the harder tasks it is low even without a shift.
+All policies were trained by us at 84$\times$84 pixels on robomimic proficient-human data; whether a
+pretrained vision-language-action model shows the same split is open \todo{SmolVLA}.
 
 \begin{figure}[t]
 \centering
