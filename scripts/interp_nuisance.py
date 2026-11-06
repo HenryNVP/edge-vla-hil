@@ -12,7 +12,7 @@ policy (interp_collect --selflabel cf). Spec: ';'-separated items
   wcam=dx,dy,dz,yaw  the same for the wrist camera, in the hand's frame
   roll=deg / wroll=deg   turn the agentview / wrist camera about its viewing axis
   fov=deg / wfov=deg     set the agentview / wrist camera's vertical field of view
-  objalpha=a         task object's opacity in every camera (Lift cube, Square nut; 0: invisible;
+  objalpha=a         task object's opacity in every camera (Lift cube, Square nut, ToolHang tool; 0: invisible;
                      physics unchanged); cubealpha is the same
 robosuite rebuilds the model on every reset (hard_reset), so call on() again after each reset.
 
@@ -29,7 +29,9 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 MATERIALS = {'table': 'table_ceramic', 'cube': 'cube_redwood_mat', 'walls': 'walls_mat'}
-OBJECTS = (('cube_redwood_mat', 'cube_g'), ('SquareNut_bmetal', 'SquareNut_g'))   # (material, geom prefix)
+OBJECTS = (('cube_redwood_mat', 'cube_g'), ('SquareNut_bmetal', 'SquareNut_g'),   # (material, geom prefix)
+           ('tool_hole1_steel_mat', 'tool_'), ('tool_hole2_steel_mat', 'tool_'),
+           ('tool_handle_steel_mat', 'tool_'))                                    # ToolHang: the tool
 
 
 def parse(spec: str) -> list[tuple[str, np.ndarray]]:
