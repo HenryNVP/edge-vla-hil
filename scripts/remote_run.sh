@@ -42,7 +42,7 @@ while sleep 600; do
       || { fails=$((fails + 1)); [ $fails -lt 6 ] && continue; echo "lost $H for 1 h"; exit 1; }
   fails=0
   # pull results only: run.sh and code.* are pushed from here and must not overwrite local edits
-  rs --exclude "*.resume*" --exclude run.sh --exclude "code.*" $H:$R/$X/ $X/
+  rs --exclude "*.resume*" --exclude run.sh --exclude "code.*" --exclude checkpoints $H:$R/$X/ $X/
   case $s in
     done) echo "$(date +%H:%M) done; results in $X/"; exit 0 ;;
     dead) echo "$(date +%H:%M) run.sh died without DONE, see $X/run.log"; exit 1 ;;
