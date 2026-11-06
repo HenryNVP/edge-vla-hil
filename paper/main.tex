@@ -258,8 +258,9 @@ the gripper from a median closest approach of 210\,mm (base, and 196\,mm after t
 to 53\,mm of the handle: the labels came from rollouts that never reached the nut, so they cover
 only the approach. Further rounds, where the repaired policy drives and the unedited policy labels
 the shift-free render, move the failures along the task (round 2: 35\% grasp the nut, 1\% succeed;
-round 3: 18\%; round 4: 43\%), at a cost to unshifted success (84 $\rightarrow$ 62--73\%) that
-mixing in the original demonstrations should remove. The protocol thus separates two regimes: a
+round 3: 18\%; round 4: 43\%). A fifth round plateaus (40\%) and, as shifted data outgrow the fixed
+unshifted episodes, forgets in-range behaviour (unshifted success 84 $\rightarrow$ 73\% after round 4,
+48\% after round 5); mixing in the original demonstrations is the standard remedy. The protocol thus separates two regimes: a
 readout gap, fixed by refitting one layer with one round of free labels (Lift, ACT and Diffusion
 Policy), and a representation gap, which needs deeper refits and on-policy rounds (Square).
 
