@@ -31,10 +31,14 @@ without the shift. On ACT in robomimic Lift, the cube's offset stays readable up
 action head while the action ignores it; demo coverage along one axis restores that axis only; and
 a refit of the last layer (at most 5{,}130 of 52M weights) recovers the out-of-range success of a
 400-demonstration retrain (159 vs.\ 160 of 160 episodes on fresh scenes) when its labels come from
-the policy's own rollouts, and 56\% of the gap with no demonstrations at all. The same repair fixes
-camera, lighting and zoom shifts of both cameras (e.g.\ 4\% $\rightarrow$ 63\%), but not a shift
-that removes the object from the images, where it only reaches a blind ceiling.
-\todo{Diffusion Policy, Square, SmolVLA results.}
+the policy's own rollouts, and 56\% of the gap with no demonstrations at all. Across ACT and
+Diffusion Policy and three tasks of increasing precision, the protocol separates two regimes. On
+Lift, camera, lighting and zoom shifts of both cameras are readout gaps for both architectures:
+refitting only the readout with free counterfactual labels restores 63--100\% success, and only an
+object made invisible resists. On Square and ToolHang the grasp point is no longer linearly
+readable at the readout under the shift, the readout refit recovers nothing, and only deeper refits
+with repeated on-policy labels do (Square: 0\% $\rightarrow$ 43\% over four rounds).
+\todo{SmolVLA.}
 \end{abstract}
 
 \section{Introduction}
@@ -52,7 +56,7 @@ Recent probing work shows that a VLA's hidden states can locate an object while 
 it~\citep{zhang2026probeact}. That observation is correlational and stops short of two questions
 this paper answers with interventions: \emph{where} along the network the information stops being
 used, and \emph{whether} acting on it is a matter of the readout alone. We package the answers as a
-protocol with three steps and apply it to\todo{N} policies, \todo{M} tasks and several shift types.
+protocol with three steps and apply it to two policy classes (ACT, Diffusion Policy) \todo{and SmolVLA}, three robomimic tasks of increasing precision, and object-position, camera, lighting and visibility shifts.
 
 \paragraph{Contributions.}
 \begin{itemize}
@@ -62,10 +66,11 @@ protocol with three steps and apply it to\todo{N} policies, \todo{M} tasks and s
 \item A repairability test that refits only the policy's readout with exact counterfactual labels
   (the same state rendered without the shift), plus a negative control that removes the
   information; it separates ``unread'' from ``unseen'' failures (Section~\ref{sec:repair}).
-\item Findings on ACT, Diffusion Policy and SmolVLA \todo{update}: for ACT, out-of-range position
-  and two-camera appearance shifts are readout gaps; a last-layer refit recovers the retrain's
-  success on the states the policy visits, and an object made invisible is the one shift it cannot
-  repair.
+\item Findings on ACT and Diffusion Policy across Lift, Square and ToolHang \todo{SmolVLA}: on Lift,
+  out-of-range position and two-camera appearance shifts are readout gaps for both architectures,
+  repaired by refitting one layer with one round of free labels; on the precision tasks the same
+  shifts are representation gaps, flagged in advance by the readability test, that need deeper
+  refits and on-policy rounds; an object made invisible is the negative control throughout.
 \end{itemize}
 
 \section{Related work}
