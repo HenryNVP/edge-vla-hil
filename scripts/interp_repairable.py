@@ -4,8 +4,9 @@
 The prediction under test: a last-layer repair (interp_edit --onpolicy) can only fix a shift if
 the head input still carries what the action needs in a form one linear map can use. From
 recorded on-policy episodes (interp_collect --teacher / --selflabel: per tick 'dec' = the head
-inputs, 16 rows x 512, plus the cube and gripper poses) the cube's xy relative to the gripper
-(mm), or with --absolute the cube's table position before it is touched, is ridge-decoded from
+inputs, 16 rows x 512, plus the object and gripper poses) the grasp point's xy relative to the
+gripper (mm; the cube or tool, the Square nut's handle), or with --absolute the grasp point's table
+position before the object is touched, is ridge-decoded from
 the 16 rows concatenated, every --stride-th tick:
   joint     one readout fit on unshifted + shifted episodes (5-fold CV by episode); R² on the
             shifted rows: is the information there for a single linear map?
@@ -29,6 +30,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import interp_probe as ip  # noqa: E402
 
 
+def grasp_xy(e, idx) -> np.ndarray:
+    """Where the gripper must go: the cube / tool position, or on Square the nut's handle (it
+    swings with the nut's yaw)."""
+    if str(e['task']) == 'square':
+        from oracle_square import handle_pos
+        return np.stack([handle_pos(e['nut_pos'][i], e['nut_quat'][i])[:2] for i in idx])
+    return e['nut_pos'][idx, :2]
+
+
 def load(pattern: str, stride: int, first_group: int = 0, absolute: bool = False):
     """(X rows, Y xy mm, episode groups) from every ep*.npz under pattern. Y is the cube minus
     the gripper, or with `absolute` the cube's own table position on ticks before it is touched
@@ -47,8 +57,8 @@ def load(pattern: str, stride: int, first_group: int = 0, absolute: bool = False
             if not len(idx):
                 continue
         X.append((e['dec'] if 'dec' in e else e['feats'])[idx].reshape(len(idx), -1).astype(np.float32))
-        Y.append((e['nut_pos'][idx, :2] if absolute else
-                  e['nut_pos'][idx, :2] - e['eef_pos'][idx, :2]) * 1e3)
+        xy = grasp_xy(e, idx)
+        Y.append((xy if absolute else xy - e['eef_pos'][idx, :2]) * 1e3)
         G.append(np.full(len(idx), first_group + g))
     return np.concatenate(X), np.concatenate(Y), np.concatenate(G)
 
