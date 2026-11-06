@@ -30,7 +30,8 @@ if ! $SSH $H "test -f $R/$X/run.log"; then
   $SSH $H "cd $R && $E bash scripts/remote_setup.sh" > $X/setup.log 2>&1 \
       || { echo "setup failed, see $X/setup.log"; exit 1; }
   # -n: without it this ssh never returns (seen on Vast); not in $SSH, rsync needs ssh's stdin
-  $SSH -n $H "cd $R && $E nohup setsid bash $X/run.sh > $X/run.log 2>&1 < /dev/null &"
+  # timeout: on Vast this ssh can stay open after the job is detached, which would block the poll
+  timeout 60 $SSH -n $H "cd $R && $E nohup setsid bash $X/run.sh > $X/run.log 2>&1 < /dev/null &"
   echo "$(date +%H:%M) launched"
 fi
 fails=0
