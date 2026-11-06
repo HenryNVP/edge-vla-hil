@@ -171,6 +171,9 @@ def main() -> None:
                    help='ACT only: like --teacher, labels from self_label (no demos, no teacher); '
                         'full = slopes rescaled to gain 1; cf = cf_label (the --nuisance-free render)')
     p.add_argument('--nuisance', default='', help='interp_nuisance spec: appearance shift at every reset')
+    p.add_argument('--save-images', action='store_true',
+                   help='with --teacher / --selflabel: also save what the policy saw each tick '
+                        '(agentview, wrist, proprio) for deeper repairs (interp_edit --images)')
     p.add_argument('--label-every', type=int, default=1,
                    help='DP --selflabel cf: label every n-th tick (rows say which: label_tick)')
     p.add_argument('--oracle', action='store_true',
@@ -218,7 +221,7 @@ def main() -> None:
     for scene in range(args.episodes):
         if scene >= args.first_scene:
             rec = Recorder(env, obs)
-            feats, states, heads, labels, label_ticks = [], [], [], [], []
+            feats, states, heads, labels, label_ticks, seen = [], [], [], [], [], []
 
             def stack_fn(hist, needs_wrist):
                 stacked = sil_step.stack(hist, needs_wrist)
@@ -229,6 +232,8 @@ def main() -> None:
                         label_ticks.append(len(feats) - 1)
                         labels.append(cf_label(env, policy, nuis, 'dp'))
                 elif args.teacher or args.selflabel:
+                    if args.save_images:
+                        seen.append((stacked['agentview'][-1], stacked['wrist'][-1], stacked['proprio'][-1]))
                     b = policy._obs_to_batch(stacked)
                     with torch.no_grad():
                         forward(policy._model, b)
@@ -259,7 +264,11 @@ def main() -> None:
                                 nuisance=args.nuisance,
                                 **cols, **({'dec': np.array(heads)} if heads else {}),
                                 **({'teacher': np.array(labels)} if labels else {}),
-                                **({'label_tick': np.array(label_ticks)} if label_ticks else {}))
+                                **({'label_tick': np.array(label_ticks)} if label_ticks else {}),
+                                **({'img_agent': np.array([x[0] for x in seen]),
+                                    'img_wrist': np.array([x[1] for x in seen]),
+                                    'proprio': np.array([x[2] for x in seen], np.float32)}
+                                   if seen else {}))
             wins += ep.success
             print(f'scene {scene}: {cls["cls"]} ticks={ep.ticks} '
                   f'corrected={getattr(policy, "applied", 0)} '
