@@ -153,61 +153,54 @@ simulator renders a state $s$ and leaves the physics untouched: $o_\xi = R(s,\xi
 distribution. The task variable $z(s)\in\mathbb R^2$ is the table position of what the gripper must
 grasp (the cube, the nut's handle, the tool).
 
-\paragraph{Step 1: probe.} A ridge probe
-$\hat P = \arg\min_{P,c} \sum_i \| z(s_i) - P g_i - c \|^2 + \lambda\|P\|^2$ on features before the
-gripper touches the object, scored by $R^2$ cross-validated across episodes, tests whether $z$ is
-linearly decodable at the head's input. We compare three fits: in distribution only (the baseline),
-on in-distribution and perturbed features jointly (is $z$ still there?), and fit in distribution then
-applied to perturbed features (did it stay where the head reads it?). For object position, with
-$V=\partial g/\partial z$, the chain rule separates encoding from acting:
-\begin{equation}
-S_\text{probe} = \hat P\, V, \qquad S_\text{act} = \frac{\partial a^\star}{\partial z} = J_h(g)\, V,
-\label{eq:gains}
-\end{equation}
-where $a^\star$ is the chunk's grasp target and $J_h$ the head's Jacobian (both $2\times2$, by
-finite differences; 1 means following the object). $S_\text{probe}\approx 1$ with $S_\text{act}\ll1$
-means the head ignores information that reaches it. Evaluating $J_h(g)V$ with $g$ and $V$ from
-different states, a first-order interchange intervention~\citep{geiger2021causal}, tells a
-saturated head from feature directions it was never trained on.
+\paragraph{Step 1: probe.} A ridge probe from $g$ to $z$, fit on features before the gripper touches
+the object and scored by $R^2$ cross-validated across episodes, tests whether $z$ is linearly
+decodable at the head's input. We fit it in distribution only (the baseline), on in-distribution and
+perturbed features jointly (is $z$ still there?), and in distribution then applied to perturbed
+features (did it stay where the head reads it?). For object position we also compare two gains per
+unit of object offset, by finite differences: the probe's, $S_\text{probe}$, and the action's,
+$S_\text{act}$ (1 means following the object). $S_\text{probe}\approx 1$ with $S_\text{act}\ll1$ means
+the head ignores information that reaches it; evaluating the head's response with features and
+offset directions taken from different states, a first-order interchange
+intervention~\citep{geiger2021causal}, tells a saturated head from feature directions it was never
+trained on.
 
-\paragraph{Step 2: retrain the head.} For a render-only perturbation the target is the policy's
-own action without it,
+\paragraph{Step 2: retrain the head.} For a render-only perturbation the label is the policy's own
+action without it,
 \begin{equation}
 \yl(s) = \pi_0\big(R(s,0)\big),
 \label{eq:cf}
 \end{equation}
-collected along rollouts of $\pi_0$ under $\xi$, with no person and no demonstration. For object
-position, where no unperturbed render exists, labels come from an expert retrained on shifted
-demonstrations, queried on the learner's states, or, with no demonstrations, from pseudo-labels
-$\yl = \pi_0(s_{z\leftarrow c}) + \partial_z\pi_0|_c\,(z-c)$ that extend the policy's response from the
-nearest in-range position $c$. With perturbed labelled states $\mathcal D_\xi$ and in-distribution
-states $\mathcal D_0$ labelled by $\pi_0$ (to preserve its behaviour),
+collected along rollouts of $\pi_0$ under $\xi$, with no person and no demonstration. For
+object position, where no unperturbed render exists, labels come from an expert retrained on shifted
+demonstrations, queried on the learner's states, or, with no demonstrations, from pseudo-labels that
+extend the policy's response linearly from the nearest in-range position. With perturbed labelled
+states $\mathcal D_\xi$ and in-distribution states $\mathcal D_0$ labelled by $\pi_0$ (to preserve its
+behaviour), only the head is trained,
 \begin{equation}
 \theta^\star = \arg\min_\theta\ \mathbb E_{\mathcal D_\xi}\, \mathcal L_\pi(\theta; g, \yl)
  + \beta\, \mathbb E_{\mathcal D_0}\, \mathcal L_\pi(\theta; g, \yl),
 \label{eq:refit}
 \end{equation}
-where $\mathcal L_\pi$ is the policy's training loss (denoising, flow matching); for ACT's linear head a
-squared loss makes it a weighted ridge regression on $(\Delta W,\Delta b)$, solved in closed form.
-Since $\varphi$ is frozen, features are cached once. One round of 30--60 perturbed and 20--60
-in-distribution rollouts is the whole budget.
+where $\mathcal L_\pi$ is the policy's training loss (denoising, flow matching; for ACT's linear head a
+squared loss, solved in closed form). Since $\varphi$ is frozen, features are cached once. One round
+of 30--60 perturbed and 20--60 in-distribution rollouts is the whole budget.
 
-\emph{Negative control.} With the object rendered invisible (opacity 0), the same retrain can at best
-learn a reach toward where the object usually is. Its success sets the bar a real fix must clear.
-\emph{Decision rule}, on Wilson 95\% intervals: a perturbation causes a \emph{failure} if the base
-policy's upper bound under it lies below its in-distribution lower bound; the failure is
-\emph{head-limited} if the retrained policy's lower bound clears the upper bounds of both the base
-policy and the retrained control, and \emph{representation-limited} otherwise.
+\emph{Negative control and decision rule.} With the object rendered invisible (opacity 0), the same
+retrain can at best learn a reach toward where the object usually is. With $[\ell, u]$ the Wilson 95\%
+interval of a success rate, for the base policy in distribution (in), under $\xi$ (base), the retrained
+policy under $\xi$ (ret) and the retrained control (ctl),
+\begin{equation}
+\text{failure:}\ u_\text{base} < \ell_\text{in}, \qquad
+\text{head-limited:}\ \ell_\text{ret} > \max(u_\text{base},\, u_\text{ctl}),
+\label{eq:rule}
+\end{equation}
+and a failure that is not head-limited is representation-limited.
 
 \paragraph{Step 3: fine-tune deeper.} If the head retrain fails, we fine-tune LoRA~\citep{hu2022lora}
-on every linear layer, then the full network, with labels collected in DAgger
-iterations~\citep{ross2011dagger}:
-\begin{equation}
-\mathcal D^{(k)} = \mathcal D^{(k-1)} \cup \big\{\big(R(s,\xi),\, \pi_0(R(s,0))\big) : s \sim \pi_{k-1} \text{ under } \xi\big\}.
-\label{eq:dagger}
-\end{equation}
-The depth and the number of iterations needed measure how far below the head the failure sits
-(Figure~\ref{fig:protocol}).
+on every linear layer, then the full network, on the same labels~\eqref{eq:cf} collected over DAgger
+iterations~\citep{ross2011dagger}, each on the states of the latest fine-tuned policy. The depth and the number of iterations needed measure how far below the head the
+failure sits (Figure~\ref{fig:protocol}).
 
 \begin{figure}[t]
 \centering
