@@ -24,13 +24,17 @@ PANELS = (('ACT, Lift', 'outputs/interp/nuis/', ''), ('Diffusion Policy, Lift', 
           ('SmolVLA, Lift', 'outputs/interp/remote2/', ''), ('ACT, Square', 'outputs/interp/nuis/', 'sq_'),
           ('Diffusion Policy, Square', 'outputs/interp/nuis/', 'dpsq_'),
           ('ACT, ToolHang', 'outputs/interp/nuis/', 'th_'))
+# in-distribution base success (k, n), for the failure rule: lift_act_base_s3_shift_0,0, DP Lift and ToolHang
+# dev runs (docs), remote2/pos_0,0, <prefix>eval3_base_none
+INDIST = {'ACT, Lift': (100, 100), 'Diffusion Policy, Lift': (100, 100), 'SmolVLA, Lift': (50, 50),
+          'ACT, Square': (84, 100), 'Diffusion Policy, Square': (95, 100), 'ACT, ToolHang': (23, 50)}
 SHIFTS = (('bothcam', 'turn + roll'), ('darkredwroll', 'red, dim + roll'), ('bothflip', 'upside down'),
           ('bothzoom', 'zoomed'), ('faint', 'faint object'), ('invisible', 'invisible object'))
 
 
 def rate(d: str):
-    """(successes, episodes) of an eval dir, or None if it has no episodes."""
-    fs = sorted(glob.glob(f'{d}/ep*.npz'))
+    """(successes, episodes) of an eval dir pooled with its extra-seed twin (eval3_ -> eval4_), or None."""
+    fs = sorted(glob.glob(f'{d}/ep*.npz')) + sorted(glob.glob(f"{d.replace('eval3_', 'eval4_')}/ep*.npz"))
     if not fs:
         return None
     return int(sum(bool(np.load(f)['success']) for f in fs)), len(fs)
@@ -50,7 +54,19 @@ def collect(panels=PANELS, shifts=SHIFTS) -> list:
                     lo, hi = wilson(*v)
                     row[k] = dict(k=v[0], n=v[1], p=v[0] / v[1], lo=lo, hi=hi)
             rows.append(row)
+    ctl = {r['panel']: r['rep'] for r in rows if r['shift'] == 'invisible'}
+    for r in rows:
+        if r['shift'] != 'invisible':
+            r.update(verdict(r['base'], r['rep'], ctl.get(r['panel']), INDIST.get(r['panel'])))
     return rows
+
+
+def verdict(base: dict, rep: dict, ctl: dict | None, indist: tuple | None) -> dict:
+    """The paper's rule on Wilson 95% bounds: a failure if base's upper bound is below the in-distribution
+    lower bound; head-limited if the retrained lower bound clears base's and the control's upper bounds."""
+    failure = indist is not None and base['hi'] < wilson(*indist)[0]
+    head = rep['lo'] > base['hi'] and (ctl is None or rep['lo'] > ctl['hi'])
+    return dict(failure=bool(failure), head_limited=bool(head))
 
 
 def figure(rows: list, out: str) -> None:
@@ -138,7 +154,9 @@ def main() -> None:
     for r in rows:
         print(f"{r['panel']:26s} {r['shift']:13s} base {r['base']['k']:3d}/{r['base']['n']:<3d} "
               f"repaired {r['rep']['k']:3d}/{r['rep']['n']:<3d}"
-              + (f" unshifted {r['rep_none']['k']}/{r['rep_none']['n']}" if 'rep_none' in r else ''))
+              + (f" unshifted {r['rep_none']['k']}/{r['rep_none']['n']}" if 'rep_none' in r else '')
+              + ('' if 'failure' not in r else ' ' + ('head-limited' if r['head_limited'] else 'not head-limited')
+                 + ('' if r['failure'] else ' (no failure)')))
     with open(args.json, 'w') as f:
         json.dump(rows, f, indent=1)
     if rows:
