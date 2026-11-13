@@ -12,12 +12,12 @@
 \usepackage[hidelinks]{hyperref}
 \usepackage{microtype}
 
-\definecolor{ro}{HTML}{0072B2}   % readout gap / the refit layer
-\definecolor{rg}{HTML}{E69F00}   % representation gap
+\definecolor{ro}{HTML}{0072B2}   % head-limited / the retrained head
+\definecolor{rg}{HTML}{E69F00}   % representation-limited
 \newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
 \newcommand{\yl}{\tilde y}
 
-\title{Readout or Representation?\\A Repair Test for Distribution-Shift Failures\\of Visuomotor Policies}
+\title{Head or Representation? Diagnosing Distribution-Shift Failures\\of Visuomotor Policies with Last-Layer Retraining}
 \author{\todo{author}}
 \date{}
 
@@ -25,61 +25,62 @@
 \maketitle
 
 \begin{abstract}
-Imitation-learned visuomotor policies fail when a camera, the scene or the object moves outside
-what their demonstrations covered. Whether such a failure lies in what the policy perceives or in
-how it acts on what it perceives decides what it costs to fix, yet success rates alone cannot
-tell the two apart. We propose a \emph{repair test}. Freeze the policy up to its readout, the layer
-that maps features to actions, and refit only that layer on labels that simulation provides for
-free: the frozen policy's own action on the same state rendered without the shift. If the refit
-restores success, the features already carried what the policy needed and the failure is a
-\emph{readout gap}; if it does not, it is a \emph{representation gap}. An invisible-object control
-calibrates the test. Applied unchanged to ACT, Diffusion Policy and the vision-language-action model
-SmolVLA on three robomimic tasks, the test finds two regimes. On Lift, every camera and lighting
-shift that leaves the object visible is a readout gap for all three policies: one round of free
-labels and a one-layer refit raise success from 4--91\% to 63--100\%, and for an out-of-range
-object a refit of ACT's 5{,}130-weight readout matches a retrain on 400 extra demonstrations. On
-the precision tasks Square (ACT, Diffusion Policy) and ToolHang (ACT) the same shifts are
-representation gaps: the readout refit recovers nothing, and on Square only refitting the whole network
-over four rounds of on-policy labels does (0\% to 43\%).
+Imitation-learned visuomotor policies fail under distribution shift: a camera moves, the lighting
+changes, or the object lies outside the demonstrated range. Whether such a failure lies in the
+policy's learned representation or in the action head that reads it decides what it costs to fix,
+yet success rates alone cannot tell the two apart. We use last-layer retraining as a diagnostic.
+Freeze the policy's backbone and retrain only its action head on labels that simulation provides
+for free: the frozen policy's own action on the same state rendered without the perturbation. If
+retraining the head restores success, the representation already carried what the policy needed
+and the failure is \emph{head-limited}; if it does not, the failure is
+\emph{representation-limited}. Removing the object from the images serves as a negative control.
+Applied unchanged to ACT, Diffusion Policy and the vision-language-action model SmolVLA on three
+robomimic tasks, the diagnostic finds two regimes. On Lift, every camera and lighting perturbation
+that leaves the object visible is head-limited for all three policies: one round of free labels and
+a head-only retrain raise success from 4--91\% to 63--100\%, and for an out-of-range object
+retraining ACT's 5{,}130-weight head matches a retrain on 400 extra demonstrations. On the
+precision tasks Square (ACT, Diffusion Policy) and ToolHang (ACT) the same perturbations are
+representation-limited: retraining the head recovers nothing, and on Square only fine-tuning the
+whole network over four DAgger iterations does (0\% to 43\%).
 \end{abstract}
 
 \section{Introduction}
 \label{sec:intro}
 Behaviour-cloned visuomotor policies such as ACT~\citep{zhao2023act} and Diffusion
 Policy~\citep{chi2023diffusion}, and vision-language-action (VLA) models fine-tuned on a task,
-succeed inside the conditions their demonstrations cover and fail just outside them: a cube a few
-centimetres beyond the demonstrated region, a camera turned, a table
+succeed in distribution and fail just outside it: a cube a few centimetres beyond the demonstrated
+region, a camera turned, a table
 repainted~\citep{xie2024decomposing,xue2025demogen,he2025demystifying,zhou2025liberopro}. To fix
-such a failure one first needs to know where it is. If the policy still perceives what it needs
-and only acts on it wrongly, a small change at its output may be enough. If its perception breaks,
-the fix needs new data, a new encoder or retraining.
+such a failure one first needs to know where it is. If the policy's representation still encodes
+what the task needs and only the action head fails to use it, a small change at the output may be
+enough. If the representation itself breaks, the fix needs new data, a new encoder or retraining.
 
-Probes of hidden states can show that information is present~\citep{lu2025probing,zhang2026probeact},
-but presence does not show that the policy could use it, and a probe's verdict depends on the
-probe. We test usability directly, by repairing (Figure~\ref{fig:overview}). We split the policy
-into an encoder and a \emph{readout}, the last layer between features and actions, freeze the
-encoder and refit only the readout. Simulation makes the labels exact and free: the same physical
-state can be rendered with and without the shift, and the frozen policy's action on the shift-free
-render is what it should have done. If this refit restores success, the features were sufficient
-and the failure is a \emph{readout gap}. If no readout refit helps, the features themselves must
-change: a \emph{representation gap}. Rendering the object invisible removes the information
-entirely and shows what a refit can reach without it.
+Linear probes can show that information is present in a representation~\citep{alain2016probes,lu2025probing,zhang2026probeact},
+but presence does not show that the policy could act on it, and a probe's verdict depends on the
+probe. We test this directly with last-layer retraining~\citep{kirichenko2023last}
+(Figure~\ref{fig:overview}). We split the policy into a backbone and an action head, freeze the
+backbone and retrain only the head. Simulation makes the labels exact and free: the same physical
+state can be rendered with and without the perturbation, and the frozen policy's action on the
+unperturbed render is the target, much as a privileged teacher relabels a student's
+states~\citep{chen2019lbc}. If retraining the head restores success, the representation was
+sufficient and the failure is \emph{head-limited}. If it does not, the representation itself must
+change: the failure is \emph{representation-limited}. Rendering the object invisible removes the
+information entirely, a negative control that shows what retraining can reach without it.
 
 \begin{figure}[t]
 \centering
 \begin{tikzpicture}[
-  >={Latex[length=1.8mm]}, font=\small, node distance=4mm and 6mm,
+  >={Latex[length=1.8mm]}, font=\small, node distance=4mm and 4.5mm,
   blk/.style={draw, rounded corners=2pt, align=center, minimum height=9mm, inner sep=3pt},
   frz/.style={blk, fill=black!5, draw=black!45},
   ed/.style={blk, fill=ro!12, draw=ro, very thick},
   txt/.style={align=center, inner sep=1pt},
   lbl/.style={font=\footnotesize, above, midway},
-  sub/.style={font=\footnotesize, text=black!60},
 ]
 \node[txt] (s) {sim state\\$s$};
-\node[blk, right=of s] (rx) {render\\with shift $\xi$};
-\node[frz, right=7mm of rx] (enc) {encoder $\varphi$\\[-1pt]{\footnotesize\color{black!60} frozen}};
-\node[ed, right=11mm of enc] (h) {readout $h_\theta$\\[-1pt]{\footnotesize\color{ro} refit}};
+\node[blk, right=of s] (rx) {render with\\perturbation $\xi$};
+\node[frz, right=6mm of rx] (enc) {backbone $\varphi$\\[-1pt]{\footnotesize\color{black!60} frozen}};
+\node[ed, right=11mm of enc] (h) {head $h_\theta$\\[-1pt]{\footnotesize\color{ro} retrained}};
 \node[txt, right=of h] (a) {action chunk\\$h_\theta(g)$};
 \node[blk, right=of a] (L) {loss\\$\ell\big(h_\theta(g),\,\yl\big)$};
 \draw[->] (s) -- (rx);
@@ -87,7 +88,7 @@ entirely and shows what a refit can reach without it.
 \draw[->] (enc) -- node[lbl, below]{$g$} (h);
 \draw[->] (h) -- (a);
 \draw[->] (a) -- (L);
-\node[blk, below=7mm of rx] (r0) {render\\without shift};
+\node[blk, below=7mm of rx] (r0) {render\\unperturbed};
 \node[frz, anchor=west, minimum width=0pt] (pi0) at ($(enc.west |- r0)$)
   {base policy $\pi_0 = h_{\theta_0}\circ\varphi$\\[-1pt]{\footnotesize\color{black!60} frozen}};
 \node[txt] (y) at (a |- r0) {label\\$\yl = \pi_0(o_0)$};
@@ -97,34 +98,35 @@ entirely and shows what a refit can reach without it.
 \draw[->] (y) -| (L);
 \draw[->, dashed, ro, thick] (L.north) -- ++(0,5mm) -| node[pos=0.25, above, font=\footnotesize]{update $\theta$ only} ([xshift=4mm]h.north);
 \coordinate (gm) at ($(enc.east)!0.5!(h.west)$);
-\node[txt, font=\footnotesize, anchor=south east] (P) at ($(gm)+(3mm,7mm)$) {probe: is the grasp point $z$ readable from $g$?};
+\node[txt, font=\footnotesize, anchor=south east] (P) at ($(gm)+(3mm,7mm)$) {linear probe: is the grasp point $z$ decodable from $g$?};
 \draw[->, densely dotted] (gm) -- (gm |- P.south);
 \end{tikzpicture}
-\caption{The repair test. Under a shift $\xi$ the frozen encoder $\varphi$ maps the shifted image to
-features $g$, and the readout $h_\theta$ maps $g$ to an action chunk. The same simulator state rendered
-without the shift and passed through the frozen base policy gives an exact label $\yl$. Only the
-readout's weights $\theta$ are refit. A linear probe on $g$ asks whether the task variable is still
-readable where the readout reads.}
+\caption{Last-layer retraining as a diagnostic. Under a perturbation $\xi$ the frozen backbone
+$\varphi$ maps the perturbed image to features $g$, and the action head $h_\theta$ maps $g$ to an
+action chunk. The same simulator state rendered without the perturbation and passed through the
+frozen base policy gives an exact counterfactual label $\yl$. Only the head's weights $\theta$ are
+retrained. A linear probe on $g$ asks whether the task variable is still decodable at the head's
+input.}
 \label{fig:overview}
 \end{figure}
 
-We apply the same test to three policy classes and three tasks of increasing precision. The regime
-follows the task, not the architecture: on Lift, camera, lighting and object-position shifts are
-readout gaps for ACT, Diffusion Policy and SmolVLA~\citep{shukor2025smolvla}; on Square (ACT, Diffusion
-Policy) and ToolHang (ACT) the same shifts are representation gaps.
+We apply the same diagnostic to three policy classes and three tasks of increasing precision. The
+regime follows the task, not the architecture: on Lift, camera, lighting and object-position shifts
+are head-limited for ACT, Diffusion Policy and SmolVLA~\citep{shukor2025smolvla}; on Square (ACT,
+Diffusion Policy) and ToolHang (ACT) the same perturbations are representation-limited.
 
 \paragraph{Contributions.}
 \begin{itemize}
-\item \textbf{The repair test} (Section~\ref{sec:repair}): refitting only the readout on exact
-  counterfactual labels, calibrated by an invisible-object control, classifies a failure as a
-  readout gap or a representation gap.
+\item \textbf{A diagnostic} (Section~\ref{sec:repair}): head-only retraining on exact counterfactual
+  labels, with an invisible-object negative control, classifies a distribution-shift failure as
+  head-limited or representation-limited.
 \item \textbf{A protocol around it} that applies unchanged across architectures
-  (Section~\ref{sec:method}): a probe locates whether the task variable reaches the readout; the
-  repair test decides whether the readout suffices; an escalation ladder of deeper refits and
-  on-policy rounds measures how much of the network must change.
+  (Section~\ref{sec:method}): a linear probe checks whether the task variable reaches the head; the
+  diagnostic decides whether the head suffices; fine-tuning at increasing depth with DAgger
+  iterations measures how much of the network must change.
 \item \textbf{Evidence} on ACT, Diffusion Policy and SmolVLA across Lift, Square and ToolHang
-  (Section~\ref{sec:results}): two regimes, a one-layer refit that matches a 400-demonstration
-  retrain on Lift, and a precision task that needs the whole network and four rounds of labels.
+  (Section~\ref{sec:results}): two regimes, a head-only retrain that matches a 400-demonstration
+  retrain on Lift, and a precision task that needs the whole network and four DAgger iterations.
 \end{itemize}
 
 \section{Related work}
@@ -137,99 +139,107 @@ and equivariant architectures~\citep{wang2024equivariant}. Diffusion policies tr
 datasets behave like action lookup tables~\citep{he2025demystifying}, and fine-tuned VLAs largely
 replay memorized trajectories when objects move~\citep{zhou2025liberopro}. We ask which of these
 failures a cheap change can fix.
-\paragraph{Probing and steering robot policies.} Linear probes find object and action states in
-OpenVLA's layers~\citep{lu2025probing}; ProbeAct reads object positions from a VLA whose action misses
-them and corrects the action at run time~\citep{zhang2026probeact}; activation steering changes a
-VLA's speed and direction~\citep{haon2025mechanistic}; selected attention heads can be fine-tuned from
-few demonstrations~\citep{mitra2025robotic}. Our test is interventional: it changes weights and
+\paragraph{Probing and intervening on robot policies.} Linear probes~\citep{alain2016probes} find
+object and action states in OpenVLA's layers~\citep{lu2025probing}; ProbeAct decodes object
+positions from a VLA whose action misses them and corrects the action at run
+time~\citep{zhang2026probeact}; activation steering changes a VLA's speed and
+direction~\citep{haon2025mechanistic}; selected attention heads can be fine-tuned from few
+demonstrations~\citep{mitra2025robotic}. Our diagnostic is interventional: it changes weights and
 measures closed-loop success.
-\paragraph{Last-layer retraining and interactive imitation.} Retraining only the last layer
-removes spurious correlations in image classifiers~\citep{kirichenko2023last}, and
-DAgger~\citep{ross2011dagger} labels the learner's own states. We use both as instruments: a
-last-layer refit that works is evidence that the features already suffice.
+\paragraph{Partial fine-tuning and interactive imitation.} Retraining only the last layer removes
+spurious correlations in image classifiers~\citep{kirichenko2023last}, and which layers are best to
+fine-tune depends on the kind of distribution shift~\citep{lee2023surgical}. DAgger~\citep{ross2011dagger}
+labels the learner's own states, and a privileged teacher can provide those labels~\citep{chen2019lbc}.
+We use these tools as instruments: a head-only retrain that works is evidence that the
+representation already suffices, and we find that the answer for the same visual perturbation
+depends on the task.
 
 \section{Method}
 \label{sec:method}
-\subsection{Policies, shifts and readouts}
-A policy maps an observation $o$ to a chunk of future actions. We write it as an encoder followed
-by a readout,
+\subsection{Policies, perturbations and heads}
+A policy maps an observation $o$ to a chunk of future actions. We write it as a backbone followed by
+an action head,
 \begin{equation}
 \pi_\theta(o) = h_\theta\big(g\big), \qquad g = \varphi(o),
 \label{eq:split}
 \end{equation}
-where the readout $h_\theta$ is the last module through which observation features reach the action
-and $\varphi$ is everything before it (Table~\ref{tab:readouts}). $\pi_0 = h_{\theta_0}\circ\varphi$
-is the trained policy before any repair. A \emph{shift} $\xi$ changes how the simulator renders a
-state $s$ (camera pose, lighting, table colour, the object's opacity) and leaves the physics
-untouched, so the observation is $o_\xi = R(s,\xi)$ and $o_0 = R(s,0)$ is the training condition. An
-object-position shift instead moves the state itself outside the demonstrated range. The task
-variable $z(s)\in\mathbb{R}^2$ is the planar position of what the gripper must grasp: the cube in
-Lift, the nut's handle in Square, the tool in ToolHang.
+where the head $h_\theta$ is the last module through which observation features reach the action
+and the backbone $\varphi$ is everything before it (Table~\ref{tab:heads}). $\pi_0 = h_{\theta_0}\circ\varphi$
+is the trained policy before any retraining. A visual perturbation $\xi$ (a nuisance parameter)
+changes how the simulator renders a state $s$ (camera pose, lighting, table colour, the object's
+opacity) and leaves the physics untouched, so the observation is $o_\xi = R(s,\xi)$, and
+$o_0 = R(s,0)$ is in distribution. An object-position shift instead moves the state itself outside
+the demonstrated range. The task variable $z(s)\in\mathbb{R}^2$ is the planar position of what the
+gripper must grasp: the cube in Lift, the nut's handle in Square, the tool in ToolHang.
 
 \begin{table}[t]
 \centering
-\caption{The readout of each policy: the last module through which observation features reach the
-action. Everything before it is frozen during the repair test.}
-\label{tab:readouts}
+\caption{The action head of each policy: the last module through which observation features reach
+the action. For Diffusion Policy this is the FiLM layers that condition the denoiser on the
+observation. Everything before the head is frozen.}
+\label{tab:heads}
 \small
 \begin{tabular}{lrlrl}
 \toprule
-Policy & parameters & readout $h_\theta$ & weights refit & refit loss \\
+Policy & params & head $h_\theta$ & weights retrained & loss \\
 \midrule
-ACT~\citep{zhao2023act} & 52M & linear action head & 5{,}130 & weighted ridge, closed form \\
+ACT~\citep{zhao2023act} & 52M & linear action head & 5{,}130 & ridge, closed form \\
 Diffusion Policy~\citep{chi2023diffusion} & 300M & FiLM conditioning layers & 11.6M & denoising \\
 SmolVLA~\citep{shukor2025smolvla} & 450M & action-expert output projection & 23{,}072 & flow matching \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Step 1: locate}
+\subsection{Step 1: probe}
 \label{sec:locate}
-The first question is whether $z$ still reaches the readout's input. A ridge probe
+The first question is whether $z$ still reaches the head's input. A linear (ridge) probe
 \begin{equation}
 \hat P = \arg\min_{P,c}\ \sum_i \big\| z(s_i) - P g_i - c \big\|^2 + \lambda \|P\|^2
 \label{eq:probe}
 \end{equation}
 is fit on features $g_i$ from the approach, before the gripper touches the object, and scored by
-$R^2$ on held-out scenes. We fit it twice: on
-unshifted features only, which tests whether the old code survives the shift, and jointly on shifted
-and unshifted features, which tests whether $z$ is still linearly readable at all. A shift that
-fails the first and passes the second has moved the code to a new direction without erasing it.
+$R^2$ on held-out episodes. We fit it twice: on in-distribution features only, which tests whether
+a probe transfers across the perturbation, and jointly on perturbed and in-distribution features,
+which tests whether $z$ is still linearly decodable at all. A perturbation that fails the first and
+passes the second has shifted the representation without erasing the information.
 
-For object position, the probe also separates seeing from acting. With $V = \partial g/\partial z$ the
-change in features when the object moves, the chain rule gives
+For object position, the probe also separates encoding from acting. With $V = \partial g/\partial z$
+the change in features when the object moves, the chain rule gives the two sensitivities
 \begin{equation}
-G_\text{seen} = \hat P\, V, \qquad G_\text{act} = \frac{\partial a^\star}{\partial z} = J_h(g)\, V,
+S_\text{probe} = \hat P\, V, \qquad S_\text{act} = \frac{\partial a^\star}{\partial z} = J_h(g)\, V,
 \label{eq:gains}
 \end{equation}
-where $a^\star$ is the chunk's grasp target (its last open-gripper waypoint) and $J_h$ the readout's
-Jacobian. Both are $2\times2$ gains measured by moving the object on a grid with the robot frozen;
-a gain of 1 means the quantity follows the object. $G_\text{seen}\approx 1$ with
-$G_\text{act}\ll 1$ means the information arrives and the readout does not use it. A \emph{swap test}
-evaluates $J_h(g)\,V$ with $g$ and $V$ taken from different states (in range and out of range) to
-tell a readout that goes flat from feature directions it was never trained on.
+where $a^\star$ is the chunk's grasp target (its last open-gripper waypoint) and $J_h$ the head's
+Jacobian. Both are $2\times2$ matrices estimated by finite differences, moving the object on a grid
+with the robot frozen; a sensitivity of 1 means the quantity follows the object.
+$S_\text{probe}\approx 1$ with $S_\text{act}\ll 1$ means the information reaches the head and the head
+does not use it. An interchange intervention~\citep{geiger2021causal}, evaluated to first order,
+computes $J_h(g)\,V$ with $g$ and $V$ taken from different states (in range and out of range) and
+tells a head that saturates from feature directions it was never trained on.
 
-\subsection{Step 2: repair the readout}
+\subsection{Step 2: retrain the head}
 \label{sec:repair}
-\paragraph{Counterfactual labels.} For a render-only shift, the action the policy should take is the one it takes without the shift:
+\paragraph{Counterfactual labels.} For a render-only perturbation, the action the policy should take
+is the one it takes without the perturbation:
 \begin{equation}
 \yl(s) = \pi_0\big(R(s,0)\big),
 \label{eq:cf}
 \end{equation}
-the base policy's chunk on the same state rendered without the shift. We roll out $\pi_0$ under the
-shift and label every decision this way (every fourth for the slower Diffusion Policy and
-SmolVLA). No person and no demonstration is involved, and the label is as good as the policy is
-without the shift. For object position no shift-free render of the same state exists. There the
-labels come from an expert, a policy retrained on shifted demonstrations, queried on the learner's
-own states; or, with no demonstration at all, from the policy itself, extended from the nearest
-in-range position $c$ by its own local slope:
+the base policy's chunk on the same state rendered unperturbed. We roll out $\pi_0$ under the
+perturbation and label every decision this way (every fourth for the slower Diffusion Policy and
+SmolVLA). No person and no demonstration is involved, and the label is as good as the policy is in
+distribution. For object position no unperturbed render of the same state exists. There the labels
+come from an expert, a policy retrained on shifted demonstrations, queried on the learner's own
+states; or, with no demonstration at all, from pseudo-labels that extend the policy's own response
+from the nearest in-range position $c$ by its local first-order (Taylor) expansion:
 \begin{equation}
 \yl(s) = \pi_0\big(s_{z\leftarrow c}\big) + \frac{\partial \pi_0}{\partial z}\Big|_{c}\,(z - c).
 \label{eq:self}
 \end{equation}
 
-\paragraph{Refit.} With $\mathcal D_\xi$ the labelled shifted states and $\mathcal D_0$ unshifted
-states labelled by $\pi_0$ itself (which keeps in-range behaviour), the repair is
+\paragraph{Training.} With $\mathcal D_\xi$ the labelled perturbed states and $\mathcal D_0$
+in-distribution states labelled by $\pi_0$ itself (which preserves in-distribution behaviour), the
+head is retrained as
 \begin{equation}
 \theta^\star = \arg\min_\theta\ \frac{1}{|\mathcal D_\xi|}\sum_{\mathcal D_\xi} \mathcal L_\pi\big(\theta; g, \yl\big)
  + \frac{\beta}{|\mathcal D_0|}\sum_{\mathcal D_0} \mathcal L_\pi\big(\theta; g, \yl\big),
@@ -237,35 +247,36 @@ states labelled by $\pi_0$ itself (which keeps in-range behaviour), the repair i
 \end{equation}
 where $\mathcal L_\pi$ is the policy's own training loss with $\yl$ as the target chunk: denoising for
 Diffusion Policy, flow matching for SmolVLA. Because $\varphi$ is frozen, the features $g$ recorded
-during the labelled rollouts are exactly those the repaired policy computes, so they are cached once.
-ACT's readout is linear, $h_\theta(g) = W g + b$, and with a squared loss
+during the labelled rollouts are exactly those the retrained policy computes, so they are cached
+once. ACT's head is linear, $h_\theta(g) = W g + b$, and with a squared loss
 Eq.~\eqref{eq:refit} becomes a weighted ridge regression on the change of weights,
 \begin{equation}
 (\Delta W, \Delta b) = \arg\min\ \sum_i w_i \big\| \Delta W g_i + \Delta b - \big(\yl_i - h_{\theta_0}(g_i)\big) \big\|^2
  + \lambda \|\Delta W\|^2,
 \label{eq:ridge}
 \end{equation}
-solved in closed form, with $\lambda$ chosen by cross-validation over scenes. One round of 30--60
-labelled rollouts under the shift, plus 20--60 unshifted ones, is the whole budget.
+solved in closed form, with $\lambda$ chosen by grouped cross-validation over episodes. One round of
+30--60 labelled rollouts under the perturbation, plus 20--60 in-distribution ones, is the whole
+budget.
 
-\paragraph{Control.} Setting the object's opacity to zero (physics unchanged) removes it from every
-image. No refit can then do better than a blind reach toward where the object usually is, so the
-control marks the success a refit can reach without the information and sets the bar a real
-repair must clear.
+\paragraph{Negative control.} Setting the object's opacity to zero (physics unchanged) removes it
+from every image. No retrained head can then beat a policy that reaches for where the object
+usually is, so the control marks what retraining reaches without the information and sets the bar
+a real fix must clear.
 
-\subsection{Step 3: escalate}
+\subsection{Step 3: fine-tune deeper}
 \label{sec:escalate}
-If the readout refit fails, we make more of the network trainable: a rank-$r$ update to every linear
-layer, then the full network, trained on recorded images with the same labels. A deeper refit
-changes the policy's behaviour, so its rollouts reach states the first round never labelled. We
-therefore collect labels in DAgger rounds~\citep{ross2011dagger}:
+If retraining the head fails, we fine-tune more of the network: LoRA~\citep{hu2022lora} on every
+linear layer, then the full network, trained on recorded images with the same labels. A deeper
+fine-tune changes the policy's behaviour, so its rollouts reach states the first round never
+labelled. We therefore collect labels in DAgger iterations~\citep{ross2011dagger}:
 \begin{equation}
 \mathcal D^{(k)} = \mathcal D^{(k-1)} \cup \big\{\big(R(s,\xi),\ \pi_0(R(s,0))\big) : s \sim \pi_{k-1} \text{ under } \xi\big\},
-\qquad \pi_k = \text{refit on } \mathcal D^{(k)},
+\qquad \pi_k = \text{fine-tuned on } \mathcal D^{(k)},
 \label{eq:dagger}
 \end{equation}
-where the repaired policy drives and the frozen base policy labels. The depth of refit and the
-number of rounds needed measure how far below the readout the failure sits.
+where the fine-tuned policy drives and the frozen base policy labels. The depth of fine-tuning and
+the number of iterations needed measure how far below the head the failure sits.
 
 \begin{figure}[t]
 \centering
@@ -275,14 +286,14 @@ number of rounds needed measure how far below the readout the failure sits.
   q/.style={draw, diamond, aspect=1.6, align=center, inner sep=1.5pt, font=\footnotesize},
   lbl/.style={font=\footnotesize},
 ]
-\node[blk, text width=17mm] (fail) {policy fails\\under shift $\xi$};
-\node[blk, right=of fail] (loc) {\textbf{1 Locate}\\probe $z$ at $g$;\\seen vs.\ action};
-\node[blk, right=of loc] (rep) {\textbf{2 Repair}\\refit $h_\theta$ on $\yl$,\\one round};
+\node[blk, text width=17mm] (fail) {policy fails\\under $\xi$};
+\node[blk, right=of fail] (loc) {\textbf{1 Probe}\\decode $z$ from $g$;\\$S_\text{probe}$ vs.\ $S_\text{act}$};
+\node[blk, right=of loc] (rep) {\textbf{2 Retrain head}\\on labels $\yl$,\\one round};
 \node[q, right=of rep] (q1) {beats\\control?};
-\node[blk, draw=ro, fill=ro!10, very thick, right=of q1, text width=31mm] (rgap) {\textbf{readout gap}\\features suffice;\\one layer fixes it};
-\node[blk, below=6mm of q1] (esc) {\textbf{3 Escalate}\\deeper refit,\\on-policy rounds};
-\node[blk, draw=rg, fill=rg!12, very thick, text width=31mm] (pgap) at (rgap |- esc) {\textbf{representation gap}\\features must change};
-\node[blk, draw=black!45, dashed, text width=27mm] (ctl) at (rep |- esc) {\textbf{control}\\object invisible:\\blind-reach level};
+\node[blk, draw=ro, fill=ro!10, very thick, right=of q1, text width=31mm] (rgap) {\textbf{head-limited}\\representation suffices;\\the retrain is the fix};
+\node[blk, below=6mm of q1] (esc) {\textbf{3 Fine-tune deeper}\\LoRA, full;\\DAgger iterations};
+\node[blk, draw=rg, fill=rg!12, very thick, text width=31mm] (pgap) at (rgap |- esc) {\textbf{representation-limited}\\features must change};
+\node[blk, draw=black!45, dashed, text width=27mm] (ctl) at (rep |- esc) {\textbf{negative control}\\object invisible};
 \draw[->] (fail) -- (loc);
 \draw[->] (loc) -- (rep);
 \draw[->] (rep) -- (q1);
@@ -291,10 +302,10 @@ number of rounds needed measure how far below the readout the failure sits.
 \draw[->] (esc) -- (pgap);
 \draw[->, dashed, black!60] (ctl.north east) -- (q1.south west);
 \end{tikzpicture}
-\caption{Reading the protocol. The readout refit is compared with the base policy and with the
-invisible-object control. A refit that clears the control in one round is a readout gap; one that
-does not sends the failure to deeper refits and on-policy rounds, whose depth measures the
-representation gap.}
+\caption{The protocol. The head-only retrain is compared with the base policy and with the
+invisible-object negative control. A retrain that clears the control in one round means the
+failure is head-limited; one that does not sends the failure to deeper fine-tuning with DAgger
+iterations, whose depth measures how representation-limited it is.}
 \label{fig:protocol}
 \end{figure}
 
@@ -309,95 +320,96 @@ $84\times84$ cameras (agentview and wrist) and proprioception; actions are absol
 poses with 6-D rotations, in chunks of 16.
 \paragraph{Policies.} ACT (100k steps) on all three tasks; Diffusion Policy (CNN, DDIM with 16 steps)
 on Lift and Square; SmolVLA fine-tuned from its base checkpoint on Lift (30k steps, batch 16).
-Unshifted success is 100\% for all three on Lift, 84\% (ACT) and 95\% (Diffusion Policy) on Square,
-and 46\% (ACT) on ToolHang.
-\paragraph{Shifts.} Figure~\ref{fig:shifts}. Every shift changes both cameras: these two-camera
-policies shrug off single-camera changes (14--20 of 20 episodes for ACT on Lift), because the other
-camera covers. Object position: the cube offset by $\pm5$ or $\pm7$\,cm along $x$ or $y$ on top of
-the demonstrated range.
-\paragraph{Evaluation.} Shifts were chosen by 10--20-episode sweeps on development scenes; labels
-were collected on separate training scenes; every reported number is closed-loop success on fresh
-scenes, 100 episodes per cell (50 for SmolVLA and ToolHang). Wilson 95\% intervals are at most
-$\pm10$ points at 100 episodes.
+In-distribution success is 100\% for all three on Lift, 84\% (ACT) and 95\% (Diffusion Policy) on
+Square, and 46\% (ACT) on ToolHang.
+\paragraph{Perturbations.} Figure~\ref{fig:shifts}. Every perturbation changes both cameras: these
+two-camera policies are robust to single-camera changes (14--20 of 20 episodes for ACT on Lift),
+because the other camera compensates. Object position: the cube offset by $\pm5$ or $\pm7$\,cm along
+$x$ or $y$ on top of the demonstrated range.
+\paragraph{Evaluation.} Perturbation strengths were chosen by 10--20-episode sweeps on validation
+seeds; labels were collected on separate training seeds; every reported number is closed-loop
+success on held-out test seeds (initial states never used for any choice), 100 episodes per cell
+(50 for SmolVLA and ToolHang). Wilson 95\% intervals are at most $\pm10$ points at 100 episodes.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figs/fig_shifts.pdf}
-\caption{The appearance shifts (Lift shown), each applied to both cameras: agentview turned
+\caption{The visual perturbations (Lift shown), each applied to both cameras: agentview turned
 30$^\circ$ and wrist rolled 90$^\circ$; red table, light dimmed to 30\% and wrist rolled; both cameras
-upside down; both zoomed; object at opacity 0.1; object invisible (the control). Physics is
-unchanged, so each shifted image has an exact unshifted twin.}
+upside down; both zoomed; object at opacity 0.1; object invisible (the negative control). Physics is
+unchanged, so each perturbed image has an exact unperturbed counterpart.}
 \label{fig:shifts}
 \end{figure}
 
 \section{Results}
 \label{sec:results}
-\subsection{A readout gap in detail: ACT on Lift}
+\subsection{A head-limited failure in detail: ACT on Lift}
 \label{sec:act}
-\paragraph{Locate.} With the cube outside the demonstrated range and the gripper 2\,cm away, the
-cube's offset stays readable at the readout's input ($G_\text{seen} = 0.85$ in $x$, $0.78$ in $y$)
-while the action barely follows it ($G_\text{act} = 0.28$ and $0.09$). The swap test places the
-collapse in the feature direction, not the readout: readouts from either state give 0.28/0.09 on
-out-of-range directions $V$ and 0.65/0.58 on in-range ones. Retraining on demonstrations replayed
+\paragraph{Probe.} With the cube outside the demonstrated range and the gripper 2\,cm away, the
+cube's offset stays decodable at the head's input ($S_\text{probe} = 0.85$ in $x$, $0.78$ in $y$)
+while the action barely follows it ($S_\text{act} = 0.28$ and $0.09$). The interchange intervention
+places the collapse in the feature direction, not the head: heads from either state give 0.28/0.09
+on out-of-range directions $V$ and 0.65/0.58 on in-range ones. Retraining on demonstrations replayed
 with the cube shifted along one axis restores that axis only (success at $\pm7$\,cm: 13--14 of 40
-before, 40/40 along the covered axis, 14--20/40 along the other). The encoder represents the
-out-of-range cube; the readout was never trained to act on those directions.
+before, 40/40 along the covered axis, 14--20/40 along the other). The backbone encodes the
+out-of-range cube; the head was never trained on those feature directions.
 
-\paragraph{Repair.} Table~\ref{tab:position} confirms it: refitting the 5{,}130-weight readout with
-on-policy expert labels matches the 400-demonstration retrain on $x$ (99\% vs.\ 100\%), and the
-self-labels of Eq.~\eqref{eq:self}, with no demonstration at all, recover most of the gap. The same
-refit with unshifted labels does nothing, so the gain comes from the labels, not the procedure.
-SmolVLA collapses outside the range just as ACT does, and refitting its 23K-weight readout on its
-own rollouts, labelled by the retrained ACT, repairs it the same way. The repair is local to the
-states the policy visits: no single-layer edit restores the one-chunk response at off-path states
-(best $G_\text{act}$ 0.31 against the retrain's 0.67), but closed-loop the repaired policy stays on
-the states its labels covered.
+\paragraph{Retraining the head.} Table~\ref{tab:position} confirms it: retraining the 5{,}130-weight
+head on DAgger labels from a retrained expert matches the 400-demonstration retrain on $x$ (99\% vs.\
+100\%), and the pseudo-labels of Eq.~\eqref{eq:self}, with no demonstration at all, recover most of
+the gap. The same retrain with in-distribution labels does nothing, so the gain comes from the
+labels, not the procedure. SmolVLA fails outside the range just as ACT does, and retraining its
+23K-weight head on its own rollouts, labelled by the retrained ACT, fixes it the same way. The fix
+is local to the states the policy visits: no single-layer edit restores the one-chunk response at
+off-trajectory states (best $S_\text{act}$ 0.31 against the retrain's 0.67), but in closed loop the
+retrained policy stays on the states its labels covered.
 
 \begin{table}[t]
 \centering
 \caption{Object position on Lift: success (\%) with the cube $\pm5$ or $\pm7$\,cm along each axis
-(ACT: 160 episodes per axis; SmolVLA: 120), and unshifted. ``Per axis'' rows are one refit or
-retrain per axis, scored on that axis.}
+(ACT: 160 episodes per axis; SmolVLA: 120), and in distribution. ``Per axis'' rows are one retrain
+per axis, scored on that axis.}
 \label{tab:position}
 \small
 \begin{tabular}{llrrrr}
 \toprule
-Policy & Model & $x$ & $y$ & unshifted & weights changed\\
+Policy & Model & $x$ & $y$ & in-dist. & weights changed\\
 \midrule
 ACT & base & 55 & 47 & 100 & --\\
- & retrain, 400 shifted demos (per axis) & 100 & 100 & 100 & 52M\\
- & refit readout, on-policy expert labels (per axis) & 99 & 91 & 100 & 5{,}130\\
- & refit readout, self-labels, no demos & 85 & 72 & 99 & 5{,}130\\
- & refit readout, unshifted labels (control) & 55 & 49 & 100 & 1{,}044\\
+ & full retrain, 400 shifted demos (per axis) & 100 & 100 & 100 & 52M\\
+ & head retrain, DAgger expert labels (per axis) & 99 & 91 & 100 & 5{,}130\\
+ & head retrain, pseudo-labels, no demos & 85 & 72 & 99 & 5{,}130\\
+ & head retrain, in-distribution labels (control) & 55 & 49 & 100 & 1{,}044\\
 \midrule
 SmolVLA & base & 67 & 46 & 100 & --\\
- & refit readout, on-policy expert labels (per axis) & 91 & 86 & 100 & 23{,}072\\
+ & head retrain, DAgger expert labels (per axis) & 91 & 86 & 100 & 23{,}072\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\paragraph{Appearance.} The camera and lighting shifts move the code rather than erase it. A probe
-fit on unshifted features fails under the four camera and lighting shifts ($R^2$ from $-1.77$ to
-$-0.11$), while a probe fit jointly on shifted and unshifted features still reads the cube's position
-($R^2$ 0.39--0.85): the old readout points the wrong way, and a new one can read the new direction. The refit takes success from 4--49\%
-to 63--85\% (Table~\ref{tab:grid}, first column) and keeps 100\% unshifted.
+\paragraph{Visual perturbations.} The camera and lighting perturbations shift the representation
+rather than erase it. A probe fit in distribution does not transfer to the four camera and lighting
+perturbations ($R^2$ from $-1.77$ to $-0.11$), while a probe fit jointly on perturbed and
+in-distribution features still decodes the cube's position ($R^2$ 0.39--0.85): the old head reads
+the wrong direction, and a new one can read the new direction. Retraining the head takes success
+from 4--49\% to 63--85\% (Table~\ref{tab:grid}, first column) and keeps 100\% in distribution.
 
 \subsection{Two regimes across policies and tasks}
 \label{sec:grid}
 \begin{table}[t]
 \centering
-\caption{The repair test across policies and tasks: success (\%) under each shift before
-$\to$ after refitting only the readout with one round of counterfactual labels (fresh scenes; 100
-episodes, 50 for SmolVLA and ToolHang). Bottom rows: unshifted success of the base policy and range
-after each refit. Dashes: shift not run.}
+\caption{The diagnostic across policies and tasks: success (\%) under each perturbation before
+$\to$ after retraining only the head with one round of counterfactual labels (held-out test seeds;
+100 episodes, 50 for SmolVLA and ToolHang). Bottom rows: in-distribution success of the base policy,
+and its range after each retrain. Dashes: not run.}
 \label{tab:grid}
 \small
-\setlength{\tabcolsep}{4.5pt}
+\setlength{\tabcolsep}{4pt}
 \begin{tabular}{lcccccc}
 \toprule
- & \multicolumn{3}{c}{\color{ro}\textbf{Lift: readout gap}} & \multicolumn{3}{c}{\color{rg!80!black}\textbf{Square, ToolHang: representation gap}}\\
+ & \multicolumn{3}{c}{\color{ro}\textbf{Lift: head-limited}} & \multicolumn{3}{c}{\color{rg!80!black}\textbf{Square, ToolHang: representation-limited}}\\
 \cmidrule(lr){2-4}\cmidrule(lr){5-7}
-Shift & ACT & Diffusion & SmolVLA & ACT Square & Diffusion Square & ACT ToolHang\\
+Perturbation & ACT & Diffusion & SmolVLA & ACT Square & Diffusion Square & ACT ToolHang\\
 \midrule
 turn + roll      & 4 $\to$ 63  & 91 $\to$ 100 & 64 $\to$ 88  & 0 $\to$ 0 & 1 $\to$ 2 & --\\
 red, dim + roll  & 49 $\to$ 78 & 66 $\to$ 98  & 90 $\to$ 100 & 2 $\to$ 0 & 0 $\to$ 1 & --\\
@@ -407,68 +419,71 @@ faint            & 82 $\to$ 100& 62 $\to$ 94  & 90 $\to$ 98  & 2 $\to$ 1 & 0 $\t
 \midrule
 invisible (control) & 28 $\to$ 50 & 58 $\to$ 78 & 26 $\to$ 60 & 0 $\to$ 0 & 0 $\to$ 0 & 0 $\to$ 0\\
 \midrule
-unshifted, base         & 100 & 100 & 100 & 84 & 95 & 46\\
-unshifted, after refit  & 100 & 99--100 & 98--100 & 70--90 & 77--87 & 26--40\\
+in-distribution, base          & 100 & 100 & 100 & 84 & 95 & 46\\
+in-distribution, after retrain & 100 & 99--100 & 98--100 & 70--90 & 77--87 & 26--40\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Table~\ref{tab:grid} applies the same test to every policy and task. On Lift, every shift that
-leaves the cube visible is a readout gap for all three policies: Diffusion Policy reaches 94--100\%
-and SmolVLA 72--100\%, with unshifted success intact. The invisible cube is repaired only partly,
-and how far depends on where the cube happens to sit (ACT: 66\% near the centre of the range, 34\%
-far from it), the signature of a blind reach; the faint cube is repaired everywhere. SmolVLA starts
-much higher under the appearance shifts (56--90\% against ACT's 4--82\%), plausibly thanks to its
-pretrained vision encoder, yet it collapses under object position just as the others do
-(Table~\ref{tab:position}).
+Table~\ref{tab:grid} applies the same diagnostic to every policy and task. On Lift, every
+perturbation that leaves the cube visible is head-limited for all three policies: Diffusion Policy
+reaches 94--100\% and SmolVLA 72--100\%, with in-distribution success intact. The invisible cube is
+fixed only partly, and how far depends on where the cube happens to sit (ACT: 66\% near the centre
+of the range, 34\% far from it), the signature of a reach that ignores the cube; the faint cube is
+fixed everywhere. SmolVLA starts much higher under the visual perturbations (56--90\% against ACT's
+4--82\%), plausibly thanks to its pretrained vision encoder, yet it fails under object position just
+as the others do (Table~\ref{tab:position}).
 
-On Square and ToolHang the readout refit recovers nothing for either ACT or Diffusion Policy:
-success stays at 0--2\%, at the level of the invisible-object control, and the refit costs
-Diffusion Policy 8--18 points of unshifted success. The regime follows the task, not the architecture. For ACT the probe agrees: the
-grasp point is readable at the readout's input under every Lift shift that leaves the cube visible
-($R^2$ 0.39--0.90) and not with the cube invisible ($-0.23$) or under the Square and ToolHang shifts
-($-0.70$ to $-0.22$). The probe does not rank repairs within a regime, though (upside down reads at
-0.39 and repairs to 85\%; turn + roll reads at 0.85 and repairs least, to 63\%), and for Diffusion
-Policy, whose FiLM layers feed a nonlinear denoiser, readability at the readout's input is low even
-where the repair works (0.20 upside down, repaired to 99\%). The repair test, not the probe, is the
-decisive measurement.
+On Square and ToolHang retraining the head recovers nothing for either ACT or Diffusion Policy:
+success stays at 0--2\%, the level of the negative control, and the retrain costs Diffusion Policy
+8--18 points of in-distribution success. The regime follows the task, not the architecture. For ACT
+the probe agrees: the grasp point is decodable at the head's input under every Lift perturbation that
+leaves the cube visible ($R^2$ 0.39--0.90) and not with the cube invisible ($-0.23$) or under the
+Square and ToolHang perturbations ($-0.70$ to $-0.22$). The probe does not rank the fixes within a
+regime, though (upside down decodes at 0.39 and is fixed to 85\%; turn + roll decodes at 0.85 and is
+fixed least, to 63\%), and for Diffusion Policy, whose FiLM layers feed a nonlinear denoiser,
+decodability at the head's input is low even where retraining works (0.20 upside down, fixed to
+99\%). Head-only retraining, not the probe, is the decisive measurement.
 
-\subsection{How deep a representation gap goes: Square}
+\subsection{How deep a representation-limited failure goes: Square}
 \label{sec:depth}
 For ACT on Square with both cameras turned and rolled, we follow Step~3
-(Figure~\ref{fig:depth}). A full fine-tune on one round of labels still scores 0\%, but it brings the
+(Figure~\ref{fig:depth}). Full fine-tuning on one round of labels still scores 0\%, but it brings the
 gripper from a median closest approach of 210\,mm to 53\,mm of the handle: the first round's
-rollouts never reached the nut, so its labels covered only the approach. Each further round labels
-states the previous repair reaches, and success climbs over rounds 1--5 to 0, 1, 18, 43 and 40\%.
-On the same four rounds of labels, success grows with depth: the readout alone (5K weights) stays at
-0\%, a rank-8 update to every linear layer (457K) reaches 25\% and keeps the most unshifted success
-(79\%), and the full network (51.6M) reaches 43\%. Depth, not the amount of labels, is what Square
-needs. The price is forgetting: unshifted success falls from 84\% to 73\% after four rounds and 48\%
-after five, and mixing 100 original demonstrations into the refit does not prevent it (68\%
-unshifted, 24\% shifted). ToolHang, the longest task, stays out of reach at this budget: two rounds
-of full refits score 0 of 30 and break the unshifted policy as well.
+rollouts never reached the nut, so its labels covered only the approach. Each further DAgger
+iteration labels states the previous policy reaches, and success over iterations 1--5 is 0, 1, 18,
+43 and 40\%. On the same four iterations of labels, success grows with depth: the head alone (5K
+weights) stays at 0\%, rank-8 LoRA on every linear layer (457K) reaches 25\% and forgets least (79\%
+in distribution), and full fine-tuning (51.6M) reaches 43\%. Depth, not the amount of labels, is
+what Square needs. The price is catastrophic forgetting: in-distribution success falls from 84\% to
+73\% after four iterations and 48\% after five, and replaying 100 original demonstrations during
+fine-tuning does not prevent it (68\% in distribution, 24\% perturbed). ToolHang, the longest task,
+stays out of reach at this budget: two iterations of full fine-tuning score 0 of 30 and break the
+in-distribution policy as well.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figs/fig_depth.pdf}
-\caption{Escalating a representation gap (ACT, Square, both cameras shifted; Wilson 95\% intervals).
-Left: success under the shift and without it over DAgger rounds of a full refit. Right: refit depth
-on the same four rounds of labels.}
+\caption{Fine-tuning deeper on a representation-limited failure (ACT, Square, both cameras
+perturbed; Wilson 95\% intervals). Left: success under the perturbation and in distribution over
+DAgger iterations of full fine-tuning. Right: fine-tuning depth on the same four iterations of
+labels.}
 \label{fig:depth}
 \end{figure}
 
 \section{Limitations and conclusion}
 \label{sec:conclusion}
 Counterfactual labels need a simulator; on a real robot an image-editing model or a person would
-take its place, and our position expert itself needed 400 shifted demonstrations. Where the readout
+take its place, and our position expert itself needed 400 shifted demonstrations. Where the head
 ends is a choice per architecture, and for Diffusion Policy it is large (11.6M weights). The probe
-separates the regimes for ACT but is a weak proxy for Diffusion Policy, and it does not rank repairs
+separates the regimes for ACT but is a weak proxy for Diffusion Policy, and it does not rank fixes
 within a regime. All policies were trained or fine-tuned by us at $84\times84$ pixels on robomimic
 proficient-human data, SmolVLA on Lift only, with 50--160 episodes per cell.
 
-A distribution-shift failure is either a readout gap or a representation gap, and the two call for
-fixes of very different cost. Refitting only the readout on free counterfactual labels tells them
-apart with one round of rollouts, and when the answer is ``readout'', that refit is already the fix.
+A distribution-shift failure is either head-limited or representation-limited, and the two call
+for fixes of very different cost. Retraining only the head on free counterfactual labels tells
+them apart with one round of rollouts, and when the failure is head-limited, that retrain is
+already the fix.
 
 \bibliographystyle{plainnat}
 \bibliography{refs}
