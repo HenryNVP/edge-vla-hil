@@ -40,7 +40,8 @@ negative control, and \emph{representation-limited} otherwise. Across ACT, Diffu
 SmolVLA on three robomimic tasks, 9 of 11 camera, lighting and object-appearance failures on Lift
 are head-limited, and for an out-of-range object a retrain of ACT's 5{,}130-weight head recovers
 most of the gap with no demonstrations. On Square and ToolHang none of 10 is, and on Square
-only full fine-tuning over four DAgger iterations recovers success (0\% $\to$ 43\%).
+only fine-tuning below the head over four DAgger iterations recovers success (0\% $\to$ 25\% with LoRA,
+43\% fully).
 Weakening the perturbations until Square fails only partly does not change this: from 24--36\%
 the head retrain adds at most 15 points, where Lift from the same 36\% gains 49.
 \end{abstract}
@@ -181,7 +182,7 @@ behaviour), only the head is trained,
 \end{equation}
 where $\mathcal L_\pi$ is the policy's training loss (denoising, flow matching; for ACT's linear head a
 squared loss, solved in closed form). Since $\varphi$ is frozen, features are cached once. One round
-of 30--60 perturbed and 20--60 in-distribution rollouts is the whole budget.
+of 30--60 perturbed and 20--30 in-distribution rollouts is the whole budget.
 
 \emph{Negative control and decision rule.} With the object rendered invisible (opacity 0), the same
 retrain can at best learn a reach toward where the object usually is. With $[\ell, u]$ the Wilson 95\%
@@ -246,7 +247,7 @@ $\pm5$ or $\pm7$\,cm beyond the demonstrated $\pm3$\,cm.
 
 \emph{Protocol.} Strengths were chosen on development seeds and labels collected on training seeds;
 reported numbers are closed-loop success on held-out test seeds, 100 episodes per cell (50 for
-SmolVLA and ToolHang), 300 for the cell closest to the bar.
+SmolVLA and ToolHang), 300 for ACT's turn + roll retrain and its control.
 
 \begin{figure}[t]
 \centering
@@ -262,7 +263,8 @@ perturbed image has an exact unperturbed counterpart; the invisible object is th
 \paragraph{Object position: ACT on Lift is head-limited.} With the cube out of range, its offset
 stays decodable at the head's input ($S_\text{probe}=0.85$, $0.78$ in $x$, $y$) while the action
 barely follows ($S_\text{act}=0.28$, $0.09$), and the interchange intervention puts the collapse in the
-out-of-range feature directions rather than the head (0.65/0.58 on in-range directions). Retraining
+out-of-range feature directions rather than the head (gains 0.66/0.65 with in-range directions at
+out-of-range states). Retraining
 the 5{,}130-weight head on pseudo-labels, with no demonstrations, recovers most of the gap
 (Table~\ref{tab:position}); with labels from the 400-demonstration retrain it nearly matches that
 retrain, partly by distillation. In-distribution labels at the same rank do nothing, so the gain
@@ -322,10 +324,11 @@ head-limited / failures & 4/5 & 4/4 & 1/2 & 0/5 & 0/4 & 0/1\\
 cause a failure are head-limited, for all three policies, with in-distribution success intact
 (Table~\ref{tab:grid}). The two exceptions recover no further than the blind control: ACT under
 turn + roll (4\% $\to$ 63\%, control 55\%), its most severe Lift failure, and SmolVLA upside down
-(56\% $\to$ 72\%, control 60\%). The control's successes depend on where the cube sits (ACT: 66\% near
-the centre, 34\% far), the signature of a reach that ignores it. SmolVLA starts higher than ACT
+(56\% $\to$ 72\%, control 60\%). The control's successes depend on where the cube sits (ACT: 69\% for
+the half of placements nearer the centre, 40\% for the farther half), the signature of a reach that ignores it. SmolVLA starts higher than ACT
 (56--90\% vs.\ 4--82\%), plausibly from its pretrained vision encoder. On Square and ToolHang none of
-the 10 failures is head-limited: the retrain leaves both policies at 0--2\%.
+the 10 failures is head-limited: the retrain leaves both policies at 0--2\%. Two
+Lift verdicts clear the bar by under 1.5 points (Diffusion Policy and SmolVLA under turn + roll).
 
 \begin{figure}[t]
 \centering
@@ -343,7 +346,7 @@ still drive ACT to 0\% even at a $10^\circ$ turn with a $30^\circ$ wrist roll, b
 for Diffusion Policy, a wrist roll alone leave partial success. None of these partial failures is
 head-limited (100 test episodes each): at object opacity 0.3 ACT goes from 36\% to 51\% and Diffusion
 Policy from 24\% to 26\%, and with the wrist camera rolled Diffusion Policy goes from 28\% to 41\%, each
-within the base policy's interval (at opacity 0.5 ACT no longer fails: 77\% vs.\ 84\%). From the same
+retrained interval overlapping the base policy's (at opacity 0.5 ACT no longer fails: 77\% vs.\ 84\%). From the same
 36\% start Lift goes to 85\% (ACT, upside down). Even partial Square
 failures are representation-limited, so the split follows the task, not just the severity; within
 Lift, severity still matters, as ACT's turn + roll exception shows.
@@ -353,7 +356,7 @@ Lift, severity still matters, as ACT's turn + roll exception shows.
 \paragraph{The probe is consistent with the regimes but does not decide them.} In distribution the
 grasp point is decodable at the head on Lift and Square ($R^2$ 0.78--0.93; ToolHang 0.25, where the
 tool varies by only 11\,mm). Under the perturbations ACT keeps it on Lift (0.39--0.90) and loses it on
-Square ($-0.23$) and under the invisible cube ($-0.23$). But Diffusion Policy upside down on Lift
+Square ($-0.22$, $-0.23$) and under the invisible cube ($-0.23$). But Diffusion Policy upside down on Lift
 ($R^2$ 0.20) is fixed to 99\%, while the partial Square failures (0.18--0.49) are not, and ACT's
 turn + roll exception keeps 0.85. The retrain, not the probe, is the decisive measurement.
 
@@ -363,7 +366,7 @@ Figure~\ref{fig:depth}), one round of full fine-tuning still scores 0\% but brin
 four iterations of labels the head alone stays at 0\%, LoRA (rank 8, 457K weights) reaches 25\%, and
 full fine-tuning 43\% (the iterations followed the fully fine-tuned policy, which favours it). The
 cost is forgetting: in-distribution 84\% $\to$ 73\% after four iterations, 48\% after five. ToolHang
-stays out of reach (0 of 30 after two iterations).
+stays out of reach (0 of 30 after two iterations, and 0 of 30 in distribution).
 
 
 

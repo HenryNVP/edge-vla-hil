@@ -34,7 +34,9 @@ SHIFTS = (('bothcam', 'turn + roll'), ('darkredwroll', 'red, dim + roll'), ('bot
 
 def rate(d: str):
     """(successes, episodes) of an eval dir pooled with its extra-seed twin (eval3_ -> eval4_), or None."""
-    fs = sorted(glob.glob(f'{d}/ep*.npz')) + sorted(glob.glob(f"{d.replace('eval3_', 'eval4_')}/ep*.npz"))
+    fs = sorted(glob.glob(f'{d}/ep*.npz'))
+    if 'eval3_' in d:  # without it the replace is a no-op and the dir would count twice
+        fs += sorted(glob.glob(f"{d.replace('eval3_', 'eval4_')}/ep*.npz"))
     if not fs:
         return None
     return int(sum(bool(np.load(f)['success']) for f in fs)), len(fs)
