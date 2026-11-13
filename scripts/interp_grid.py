@@ -77,7 +77,7 @@ def figure(rows: list, out: str) -> None:
     np.atleast_1d(axes)[0].set_ylabel('success')
     np.atleast_1d(axes)[0].set_ylim(-0.03, 1.03)
     from interp_figs import legend_handle
-    fig.legend(handles=[legend_handle('0.45', 'base', inside=False), legend_handle(BLUE, 'readout refit')],
+    fig.legend(handles=[legend_handle('0.45', 'base', inside=False), legend_handle(BLUE, 'head retrained')],
                loc='outside lower center', ncol=2, frameon=False, fontsize=7)
     save(fig, 'fig_grid', out)
 
@@ -94,11 +94,11 @@ def fig_depth(out: str, root: str = 'outputs/interp/nuis/') -> None:
     rounds = [('0', 'sq_eval3_base_bothcam', 'sq_eval3_base_none')] + [
         (str(k), f'sq_depth_full{"" if k == 1 else f"_r{k}"}_eval3_bothcam',
          f'sq_depth_full{"" if k == 1 else f"_r{k}"}_eval3_none') for k in range(1, 6)]
-    depth = [('last layer\n5K', 'sq_depth_head_r4'), ('rank 8, all\n457K', 'sq_depth_all8_r4'),
+    depth = [('head only\n5K', 'sq_depth_head_r4'), ('LoRA r=8, all\n457K', 'sq_depth_all8_r4'),
              ('full\n51.6M', 'sq_depth_full_r4')]
     fig, (a, b) = plt.subplots(1, 2, figsize=(SINGLE * 2, 2.1), sharey=True,
                                constrained_layout=True)
-    for j, (name, color, fill) in enumerate((('under the shift', BLUE, True), ('unshifted', '0.45', False))):
+    for j, (name, color, fill) in enumerate((('perturbed', BLUE, True), ('in distribution', '0.45', False))):
         pts = [(k, rate(root + (sh if j == 0 else un))) for k, sh, un in rounds]
         pts = [(int(k), v) for k, v in pts if v]
         for x, v in pts:
@@ -115,16 +115,16 @@ def fig_depth(out: str, root: str = 'outputs/interp/nuis/') -> None:
                 b.errorbar(i + (0.1 if j else -0.1), p_, yerr=[[max(0, p_ - lo)], [max(0, hi - p_)]],
                            fmt='o', color=color, ms=3.5, lw=0.8, capsize=1.5,
                            markerfacecolor=color if fill else 'none', zorder=3)
-    a.set_xlabel('DAgger round (full refit)')
+    a.set_xlabel('DAgger iteration (full fine-tuning)')
     a.set_ylabel('success')
     a.set_ylim(-0.03, 1.03)
-    a.set_title('rounds of on-policy labels')
+    a.set_title('DAgger iterations')
     b.set_xticks(range(len(depth)), [d for d, _ in depth])
     b.set_xlim(-0.5, len(depth) - 0.5)
-    b.set_title('refit depth, same 4 rounds')
+    b.set_title('fine-tuning depth, same 4 iterations')
     for ax in (a, b):
         style(ax)
-    fig.legend(handles=[legend_handle(BLUE, 'under the shift'), legend_handle('0.45', 'unshifted', inside=False)],
+    fig.legend(handles=[legend_handle(BLUE, 'perturbed'), legend_handle('0.45', 'in distribution', inside=False)],
                loc='outside lower center', ncol=2, frameon=False, fontsize=7)
     save(fig, 'fig_depth', out)
 
