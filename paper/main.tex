@@ -238,21 +238,19 @@ end-effector actions in chunks of 16. ACT is trained on all three tasks, Diffusi
 Square, and SmolVLA fine-tuned on Lift; in-distribution success is 100\% on Lift, 84\% (ACT) and 95\%
 (Diffusion Policy) on Square, and 46\% on ToolHang.
 
-\emph{Perturbations} (Figure~\ref{fig:shifts}): the agentview camera turned $30^\circ$ with the wrist
-camera rolled $90^\circ$; a red table under dim light with the rolled wrist camera; both cameras upside
-down; both zoomed in; the object faint (opacity 0.1); and the invisible-object control. Each changes
-both cameras, since these policies are robust to single-camera changes on Lift. Object position
-offsets the Lift cube by $\pm5$ or $\pm7$\,cm beyond the demonstrated $\pm3$\,cm. For
-Section~\ref{sec:severity} we weaken the perturbations on Square until it fails only partly.
+\emph{Perturbations} (Figure~\ref{fig:shifts}), all on both cameras since these policies are robust to
+single-camera changes: the agentview camera turned $30^\circ$ with the wrist camera rolled $90^\circ$; a
+red table under dim light with the rolled wrist camera; both cameras upside down; both zoomed in; the
+object faint (opacity 0.1); and the invisible-object control. Object position offsets the Lift cube by
+$\pm5$ or $\pm7$\,cm beyond the demonstrated $\pm3$\,cm.
 
 \emph{Protocol.} Strengths were chosen on development seeds and labels collected on training seeds;
-all reported numbers are closed-loop success on held-out test seeds, 100 episodes per cell (50 for
-SmolVLA and ToolHang; Wilson 95\% intervals at most $\pm10$ points), with 200 more for the cells
-the decision rule left closest to the bar.
+reported numbers are closed-loop success on held-out test seeds, 100 episodes per cell (50 for
+SmolVLA and ToolHang), 300 for the cell closest to the bar.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.85\linewidth]{figs/fig_shifts.pdf}
+\includegraphics[width=0.8\linewidth]{figs/fig_shifts.pdf}
 \caption{Visual perturbations (Lift), applied to both cameras. Physics is unchanged, so each
 perturbed image has an exact unperturbed counterpart; the invisible object is the negative control.}
 \label{fig:shifts}
@@ -263,14 +261,12 @@ perturbed image has an exact unperturbed counterpart; the invisible object is th
 
 \paragraph{Object position: ACT on Lift is head-limited.} With the cube out of range, its offset
 stays decodable at the head's input ($S_\text{probe}=0.85$, $0.78$ in $x$, $y$) while the action
-barely follows ($S_\text{act}=0.28$, $0.09$); the interchange intervention puts the collapse in the
-out-of-range feature directions (0.28/0.09) rather than the head (0.65/0.58 on in-range directions),
-and demonstrations covering one axis restore that axis only. Retraining the 5{,}130-weight head on
-pseudo-labels, with no demonstrations, recovers most of the gap (Table~\ref{tab:position}). With
-labels from the 400-demonstration retrain on its own states, it nearly matches that retrain
-(99/91\% vs.\ 100\%), which bounds what the head can do but is partly distillation. In-distribution labels do
-nothing at the same rank, so the gain comes from the labels. SmolVLA fails out of range just as ACT
-does and is fixed the same way.
+barely follows ($S_\text{act}=0.28$, $0.09$), and the interchange intervention puts the collapse in the
+out-of-range feature directions rather than the head (0.65/0.58 on in-range directions). Retraining
+the 5{,}130-weight head on pseudo-labels, with no demonstrations, recovers most of the gap
+(Table~\ref{tab:position}); with labels from the 400-demonstration retrain it nearly matches that
+retrain, partly by distillation. In-distribution labels at the same rank do nothing, so the gain
+comes from the labels. SmolVLA fails out of range like ACT and is fixed the same way.
 
 \begin{table}[t]
 \centering
@@ -298,8 +294,8 @@ SmolVLA & base & 67 & 46 & 100 & --\\
 \centering
 \caption{Success (\%) under each perturbation, base $\to$ head retrained on one round of counterfactual
 labels (100 test episodes; 50 for SmolVLA and ToolHang; $^\dagger$300). \hl{Bold}: head-limited
-under the decision rule; $^\circ$: not a failure (base within its in-distribution interval). Bottom:
-in-distribution success of the base policy and its range after each retrain.}
+under the decision rule; $^\circ$: not a failure. In distribution after the retrain: 98--100 on Lift,
+70--90 (ACT) and 77--87 (Diffusion) on Square, 26--40 on ToolHang (base 46).}
 \label{tab:grid}
 \small
 \setlength{\tabcolsep}{4pt}
@@ -318,108 +314,78 @@ faint            & \hl{82 $\to$ 100}& \hl{62 $\to$ 94}  & $90 \to 98^\circ$ & 2 
 invisible (control) & 28 $\to$ 55$^\dagger$ & 58 $\to$ 78 & 26 $\to$ 60 & 0 $\to$ 0 & 0 $\to$ 0 & 0 $\to$ 0\\
 \midrule
 head-limited / failures & 4/5 & 4/4 & 1/2 & 0/5 & 0/4 & 0/1\\
-\midrule
-in-distribution, base          & 100 & 100 & 100 & 84 & 95 & 46\\
-in-distribution, after retrain & 100 & 99--100 & 98--100 & 70--90 & 77--87 & 26--40\\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \paragraph{Visual perturbations across policies and tasks.} On Lift, 9 of the 11 perturbations that
-cause a failure are head-limited, for all three policies (Table~\ref{tab:grid}), with in-distribution
-success intact. The two exceptions recover partly but no further than the blind control: ACT under
-turn + roll (4\% $\to$ 63\% over 300 episodes, control 55\%), its most severe Lift failure, and
-SmolVLA upside down (56\% $\to$ 72\%, control 60\%). The control itself recovers partly, and its
-successes depend on where the cube happens to sit (ACT: 66\% near the centre, 34\% far), the
-signature of a reach that ignores it. SmolVLA starts much higher under visual perturbations than
-ACT (56--90\% vs.\ 4--82\%), plausibly from its pretrained vision encoder, yet fails under object
-position like the others. On Square and ToolHang none of the 10 failures is head-limited: the
-retrain leaves ACT and Diffusion Policy at 0--2\%, the control's level.
-
-\paragraph{Task or severity?}
-\label{sec:severity}
-Table~\ref{tab:grid} confounds two things: the perturbations that leave 36--91\% success on Lift drop
-Square to 0--2\%, and the one Lift failure that severe (ACT, turn + roll) is also not head-limited.
-To separate the task from the severity of the failure we weakened the perturbations on Square until
-it fails only partly (Table~\ref{tab:severity}). Camera changes still drive ACT to 0\% even at a
-$10^\circ$ turn with a $30^\circ$ wrist roll, while a fainter object and, for Diffusion Policy, a
-wrist roll alone leave 20--75\% success on development seeds, the range where Lift's failures were
-head-limited.
-On test seeds none of these partial failures is head-limited: the retrain adds 15 points for ACT
-at opacity 0.3 (36\% $\to$ 51\%), 13 for Diffusion Policy with the wrist camera rolled (28\% $\to$
-41\%) and 2 for Diffusion Policy at opacity 0.3 (24\% $\to$ 26\%), each within the base policy's
-interval, and at opacity 0.5 ACT no longer fails (77\% vs.\ 84\%). From the same starting point Lift is
-fixed: ACT with both cameras upside down goes from 36\% to 85\%. Even partial Square failures are
-representation-limited, so the split in Table~\ref{tab:grid} follows the task, not just the
-severity; within Lift, severity still matters, as ACT's turn + roll exception shows.
-
-\begin{table}[t]
-\centering
-\caption{Square under weaker perturbations. Dev: base success on 20 development episodes. Test: base
-$\to$ head retrained (100 test episodes), with the decision rule's verdict. Lift reference, object
-opacity 0.1: ACT 82 $\to$ 100, Diffusion Policy 62 $\to$ 94 (both head-limited). In distribution after
-the retrain: ACT 87--88, Diffusion Policy 77--82.}
-\label{tab:severity}
-\small
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{lcccccc}
-\toprule
- & \multicolumn{3}{c}{ACT} & \multicolumn{3}{c}{Diffusion Policy}\\
-\cmidrule(lr){2-4}\cmidrule(lr){5-7}
-Perturbation (Square) & dev & test & verdict & dev & test & verdict\\
-\midrule
-none                               & 75 & 84 & -- & 85 & 95 & --\\
-object opacity 0.1 (Table~\ref{tab:grid}) & 5 & 2 $\to$ 1 & repr. & 0 & 0 $\to$ 0 & repr.\\
-object opacity 0.3                 & 40 & 36 $\to$ 51 & repr. & 20 & 24 $\to$ 26 & repr.\\
-object opacity 0.5                 & 65 & 77 $\to$ 76 & no failure & 75 & -- & --\\
-wrist roll $90^\circ$ only         & 0  & -- & -- & 25 & 28 $\to$ 41 & repr.\\
-turn $10^\circ$ + roll $30^\circ$  & 0  & -- & -- & 0  & -- & --\\
-light $\times0.5$                  & 100 & -- & -- & 70 & -- & --\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\paragraph{The probe is consistent with the regimes but does not decide them.} In distribution the
-grasp point is decodable at the head for both policies on Lift and Square ($R^2$ 0.78--0.93; on
-ToolHang 0.25, where the tool's position varies by only 11\,mm, so the probe is uninformative there).
-Under the perturbations ACT keeps it on Lift (0.39--0.90) and loses it on Square ($-0.22$, $-0.23$)
-and under the invisible cube ($-0.23$). Diffusion Policy loses it on Square ($-0.25$ to $0.26$), but
-also partly on Lift (0.20--0.67), where the retrain still works (upside down: $R^2$ 0.20, success
-99\%), and the invisible cube (0.09) does not stand apart. Nor does decodability predict ACT's
-turn + roll exception (0.85). On the partial Square failures the grasp point stays partly decodable
-(ACT 0.18; Diffusion Policy 0.46, 0.49) and the retrain still fails, while Diffusion Policy upside
-down on Lift (0.20) is fixed. The retrain, not the probe, is the decisive measurement.
-
-\paragraph{Square needs depth.} Following Step~3 for ACT on Square (turn + roll;
-Figure~\ref{fig:depth}), one round of full fine-tuning still scores 0\% but brings the gripper from
-210\,mm to 53\,mm of the handle: the first round's rollouts never reached the nut. Over DAgger
-iterations 1--5 success is 0, 1, 18, 43, 40\%. On the same four iterations of labels, the head alone
-stays at 0\%, LoRA (rank 8, 457K weights) reaches 25\%, and full fine-tuning 43\%: depth, not label
-count, is what Square needs. The iterations collected states with the fully fine-tuned policy, which
-favours it over the head and LoRA retrains trained on the same states. The cost is forgetting
-(in-distribution 84\% $\to$ 73\% after four iterations, 48\% after five), which replaying 100
-demonstrations does not prevent. ToolHang stays out of reach at this budget (0 of 30 after two
-iterations).
+cause a failure are head-limited, for all three policies, with in-distribution success intact
+(Table~\ref{tab:grid}). The two exceptions recover no further than the blind control: ACT under
+turn + roll (4\% $\to$ 63\%, control 55\%), its most severe Lift failure, and SmolVLA upside down
+(56\% $\to$ 72\%, control 60\%). The control's successes depend on where the cube sits (ACT: 66\% near
+the centre, 34\% far), the signature of a reach that ignores it. SmolVLA starts higher than ACT
+(56--90\% vs.\ 4--82\%), plausibly from its pretrained vision encoder. On Square and ToolHang none of
+the 10 failures is head-limited: the retrain leaves both policies at 0--2\%.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.85\linewidth]{figs/fig_depth.pdf}
+\includegraphics[width=0.75\linewidth]{figs/fig_depth.pdf}
 \caption{Fine-tuning deeper on a representation-limited failure (ACT, Square; Wilson 95\% intervals).
 Left: DAgger iterations of full fine-tuning. Right: depth on the same four iterations of labels.}
 \label{fig:depth}
 \end{figure}
 
+\paragraph{Task or severity?}
+\label{sec:severity}
+Table~\ref{tab:grid} confounds the task with the severity of the failure: the same perturbations
+drop Square to 0--2\%. We therefore weakened them on Square until it fails only partly. Camera changes
+still drive ACT to 0\% even at a $10^\circ$ turn with a $30^\circ$ wrist roll, but a fainter object and,
+for Diffusion Policy, a wrist roll alone leave partial success. None of these partial failures is
+head-limited (100 test episodes each): at object opacity 0.3 ACT goes from 36\% to 51\% and Diffusion
+Policy from 24\% to 26\%, and with the wrist camera rolled Diffusion Policy goes from 28\% to 41\%, each
+within the base policy's interval (at opacity 0.5 ACT no longer fails: 77\% vs.\ 84\%). From the same
+36\% start Lift goes to 85\% (ACT, upside down). Even partial Square
+failures are representation-limited, so the split follows the task, not just the severity; within
+Lift, severity still matters, as ACT's turn + roll exception shows.
+
+
+
+\paragraph{The probe is consistent with the regimes but does not decide them.} In distribution the
+grasp point is decodable at the head on Lift and Square ($R^2$ 0.78--0.93; ToolHang 0.25, where the
+tool varies by only 11\,mm). Under the perturbations ACT keeps it on Lift (0.39--0.90) and loses it on
+Square ($-0.23$) and under the invisible cube ($-0.23$). But Diffusion Policy upside down on Lift
+($R^2$ 0.20) is fixed to 99\%, while the partial Square failures (0.18--0.49) are not, and ACT's
+turn + roll exception keeps 0.85. The retrain, not the probe, is the decisive measurement.
+
+\paragraph{Square needs depth.} Following Step~3 for ACT on Square (turn + roll;
+Figure~\ref{fig:depth}), one round of full fine-tuning still scores 0\% but brings the gripper from
+210\,mm to 53\,mm of the handle. Over DAgger iterations 1--5 success is 0, 1, 18, 43, 40\%. On the same
+four iterations of labels the head alone stays at 0\%, LoRA (rank 8, 457K weights) reaches 25\%, and
+full fine-tuning 43\% (the iterations followed the fully fine-tuned policy, which favours it). The
+cost is forgetting: in-distribution 84\% $\to$ 73\% after four iterations, 48\% after five. ToolHang
+stays out of reach (0 of 30 after two iterations).
+
+
+
 \section{Limitations and conclusion}
 \label{sec:conclusion}
-Counterfactual labels need a simulator (on a robot, image editing or a person), and our position
-expert needed 400 shifted demonstrations. Where the head ends is a choice per architecture, and for
-Diffusion Policy it is large. All policies were trained at $84\times84$ on robomimic data, SmolVLA on
-Lift only; ToolHang was tested under one perturbation, and Step~3 on ACT only. Within these limits,
-retraining only the head on free counterfactual labels, judged against an invisible-object control,
+Retraining only the head on free counterfactual labels, judged against an invisible-object control,
 sorts distribution-shift failures into head-limited and representation-limited in one round of
-rollouts; when the failure is head-limited, that retrain is already the fix.
-Which regime a failure falls in follows the task more than its severity: from the same 36\% start,
-the retrain fixes Lift and barely moves Square.
+rollouts; when the failure is head-limited, that retrain is already the fix. Which regime a failure
+falls in follows the task more than its severity: from the same 36\% start, the retrain fixes Lift and
+barely moves Square.
+
+\emph{Use beyond simulation.} The simulator makes the test exact; what transfers is the diagnosis. Run
+in simulation or a digital twin under the changes a deployment expects, it says before deployment
+whether a failure costs a head retrain from tens of rollouts or new data and deeper training, and so
+where lightweight adaptation can work. On a robot the label needs only an unperturbed view of the
+same state: a reference camera kept fixed while the moved one records gives it exactly, and image
+editing or human corrections approximate it.
+
+\emph{Limitations.} We have no real-robot results, and our position expert needed 400 shifted
+demonstrations. Where the head ends is a choice per architecture, and for Diffusion Policy it is
+large. All policies were trained at $84\times84$ on robomimic data, SmolVLA on Lift only; ToolHang was
+tested under one perturbation, and Step~3 on ACT only.
 
 \bibliographystyle{unsrtnat}
 \bibliography{refs}
