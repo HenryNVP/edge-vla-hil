@@ -31,14 +31,15 @@
 \begin{abstract}
 Imitation-learned visuomotor policies fail under distribution shift, but success rates alone do
 not say whether the failure lies in the learned representation or in the action head that reads
-it, and the two differ greatly in what they cost to fix. We use last-layer retraining as a
-diagnostic: freeze the backbone and retrain only the action head on labels that simulation gives
-for free, the frozen policy's own action on the same state rendered without the perturbation. A
+it, and the two differ greatly in what they cost to fix. We carry last-layer retraining, a test of
+feature quality in image classifiers, over to closed-loop policies: freeze the backbone and retrain
+only the action head, on states the policy visits, with labels that simulation gives for free, the
+frozen policy's own action on the same state rendered without the perturbation. A
 failure is \emph{head-limited} if the retrain beats both the base policy and an invisible-object
 negative control, and \emph{representation-limited} otherwise. Across ACT, Diffusion Policy and
 SmolVLA on three robomimic tasks, 9 of 11 camera, lighting and object-appearance failures on Lift
-are head-limited, and for an out-of-range object a retrain of ACT's 5{,}130-weight head nearly
-matches a retrain on 400 extra demonstrations. On Square and ToolHang none of 10 is, and on Square
+are head-limited, and for an out-of-range object a retrain of ACT's 5{,}130-weight head recovers
+most of the gap with no demonstrations. On Square and ToolHang none of 10 is, and on Square
 only full fine-tuning over four DAgger iterations recovers success (0\% $\to$ 43\%).
 \pend{one sentence on partial-strength Square (Sec.~\ref{sec:severity}): whether the regime follows the
 task or the severity of the failure.}
@@ -57,18 +58,23 @@ or retraining. Linear probes can show that information is
 present~\citep{alain2016probes,lu2025probing,zhang2026probeact}, but not that the policy could act on
 it.
 
-We test this directly with last-layer retraining~\citep{kirichenko2023last} (Figure~\ref{fig:overview}).
-We freeze the policy's backbone and retrain only its head. Simulation makes the labels exact and
-free: the same state can be rendered with and without the perturbation, and the frozen policy's
-action on the unperturbed render is the target, as a privileged teacher relabels a
-student~\citep{chen2019lbc}. If the retrain restores success beyond what a blind policy achieves,
+We test this directly by freezing the backbone and retraining only the head
+(Figure~\ref{fig:overview}), the test image classification uses to separate the quality of the
+features from how the last layer weights them~\citep{izmailov2022feature,rosenfeld2022dare,kirichenko2023last}.
+A policy differs from a classifier in two ways we exploit. Its errors compound in closed loop, so we
+retrain on the states it visits, collected with DAgger~\citep{ross2011dagger}. And simulation gives
+exact labels for free: the same state can be rendered with and without the
+perturbation~\citep{james2019rcan}, and the frozen policy's action on the unperturbed render is the
+target, as a privileged teacher relabels a student~\citep{chen2019lbc}, with no demonstrations and no
+data from the perturbed domain. If the retrain restores success beyond what a blind policy achieves,
 the representation sufficed and the failure is \emph{head-limited}; if not, it is
-\emph{representation-limited}. Our contributions are (i) this diagnostic with an explicit negative
-control and decision rule; (ii) a protocol around it (probe, retrain the head, fine-tune deeper with
-DAgger) whose decisive step runs unchanged on three architectures; and (iii) evidence on ACT,
-Diffusion Policy and SmolVLA~\citep{shukor2025smolvla} across Lift, Square and ToolHang that
-head-limited failures are common on the simple task and absent on the precise ones, with
-partial-strength perturbations separating the task from the severity of the failure.
+\emph{representation-limited}. Our contributions are (i) this diagnostic for closed-loop visuomotor
+policies, with counterfactual self-labels, an invisible-object negative control and an explicit
+decision rule, run unchanged on three architectures; and (ii) evidence on ACT, Diffusion Policy and
+SmolVLA~\citep{shukor2025smolvla} across Lift, Square and ToolHang that both regimes occur:
+head-limited failures are common on the simple task and absent on the precise ones, partial-strength
+perturbations separate the task from the severity of the failure, and where the head is not enough,
+LoRA and full fine-tuning measure how much deeper the fix must go.
 
 \begin{figure}[t]
 \centering
@@ -120,10 +126,17 @@ tables~\citep{he2025demystifying} and fine-tuned VLAs replay memorized
 trajectories~\citep{zhou2025liberopro}. Probes find object states in VLA
 layers~\citep{lu2025probing}, ProbeAct corrects a VLA's action from a probe at run
 time~\citep{zhang2026probeact}, and steering~\citep{haon2025mechanistic} or fine-tuning selected
-heads~\citep{mitra2025robotic} changes VLA behaviour. Last-layer retraining removes spurious
-correlations in classifiers~\citep{kirichenko2023last}, and the best layers to fine-tune depend on
+heads~\citep{mitra2025robotic} changes VLA behaviour. Closest to us, \citet{li2025vlagen} trace VLA
+failures under visual perturbations to drift in the visual embedding and recover them from one
+demonstration by adapting the vision side; we retrain the output side, on three architectures,
+against a negative control, and find failures it cannot fix. CFNBC~\citep{durso2026cfnbc} uses how
+far paired counterfactual images move a policy's action to choose repair data, and encoders trained
+end to end carry decision information~\citep{wang2024feature}, so a frozen backbone need not suffice.
+In classifiers, last-layer retraining removes spurious correlations~\citep{kirichenko2023last} and
+shows that features learned by plain training are often already
+sufficient~\citep{izmailov2022feature,rosenfeld2022dare}, and the best layers to fine-tune depend on
 the kind of shift~\citep{lee2023surgical}; we ask which failures of one policy a head retrain can
-fix, and why.
+fix.
 
 \section{Method}
 \label{sec:method}
@@ -263,8 +276,9 @@ stays decodable at the head's input ($S_\text{probe}=0.85$, $0.78$ in $x$, $y$) 
 barely follows ($S_\text{act}=0.28$, $0.09$); the interchange intervention puts the collapse in the
 out-of-range feature directions (0.28/0.09) rather than the head (0.65/0.58 on in-range directions),
 and demonstrations covering one axis restore that axis only. Retraining the 5{,}130-weight head on
-DAgger labels nearly matches a 400-demonstration retrain (99/91\% vs.\ 100\%), and pseudo-labels with
-no demonstrations recover most of the gap (Table~\ref{tab:position}). In-distribution labels do
+pseudo-labels, with no demonstrations, recovers most of the gap (Table~\ref{tab:position}). With
+labels from the 400-demonstration retrain on its own states, it nearly matches that retrain
+(99/91\% vs.\ 100\%), which bounds what the head can do but is partly distillation. In-distribution labels do
 nothing at the same rank, so the gain comes from the labels. SmolVLA fails out of range just as ACT
 does and is fixed the same way.
 
