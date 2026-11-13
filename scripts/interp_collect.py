@@ -246,8 +246,7 @@ def main() -> None:
                         labels.append(cf_label(env, labeller, nuis, 'smolvla'))
                 elif teacher_pol is not None:
                     t = len(states)
-                    if t % args.label_every == 0:
-                        import torch
+                    if t % args.label_every == 0:   # torch: imported in main (a local import here would shadow it)
                         label_ticks.append(t)
                         if args.save_images:
                             seen.append((stacked['agentview'][-1], stacked['wrist'][-1],
