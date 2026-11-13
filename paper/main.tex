@@ -353,7 +353,8 @@ does not, even partial Square failures are representation-limited and the regime
 \centering
 \caption{Square under weaker perturbations. Dev: base success on 20 development episodes. Test: base
 $\to$ head retrained (100 test episodes), with the decision rule's verdict. Lift reference, object
-opacity 0.1: ACT 82 $\to$ 100, Diffusion Policy 62 $\to$ 94 (both head-limited).}
+opacity 0.1: ACT 82 $\to$ 100, Diffusion Policy 62 $\to$ 94 (both head-limited). $^\ast$A gain whose
+interval overlaps the base's (lower bound 32 vs.\ 37); in distribution 82 after the retrain.}
 \label{tab:severity}
 \small
 \setlength{\tabcolsep}{4pt}
@@ -367,7 +368,7 @@ none                               & 75 & 84 & -- & 85 & 95 & --\\
 object opacity 0.1 (Table~\ref{tab:grid}) & 5 & 2 $\to$ 1 & repr. & 0 & 0 $\to$ 0 & repr.\\
 object opacity 0.3                 & 40 & \tbd & \tbd & 20 & \tbd & \tbd\\
 object opacity 0.5                 & 65 & \tbd & \tbd & 75 & -- & --\\
-wrist roll $90^\circ$ only         & 0  & -- & -- & 25 & \tbd & \tbd\\
+wrist roll $90^\circ$ only         & 0  & -- & -- & 25 & 28 $\to$ 41 & repr.$^\ast$\\
 turn $10^\circ$ + roll $30^\circ$  & 0  & -- & -- & 0  & -- & --\\
 light $\times0.5$                  & 100 & -- & -- & 70 & -- & --\\
 \bottomrule
