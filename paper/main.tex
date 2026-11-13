@@ -265,10 +265,8 @@ out-of-range feature directions (0.28/0.09) rather than the head (0.65/0.58 on i
 and demonstrations covering one axis restore that axis only. Retraining the 5{,}130-weight head on
 DAgger labels nearly matches a 400-demonstration retrain (99/91\% vs.\ 100\%), and pseudo-labels with
 no demonstrations recover most of the gap (Table~\ref{tab:position}). In-distribution labels do
-nothing, so the gain comes from the labels. SmolVLA fails out of range just as ACT does and is fixed
-the same way.
-\pend{matched-rank control (in-distribution labels at the same 5{,}130 weights), running; expected at
-base level.}
+nothing at the same rank, so the gain comes from the labels. SmolVLA fails out of range just as ACT
+does and is fixed the same way.
 
 \begin{table}[t]
 \centering
@@ -284,8 +282,7 @@ ACT & base & 55 & 47 & 100 & --\\
  & full retrain, 400 shifted demos (per axis) & 100 & 100 & 100 & 52M\\
  & head retrain, DAgger expert labels (per axis) & 99 & 91 & 100 & 5{,}130\\
  & head retrain, pseudo-labels, no demos & 85 & 72 & 99 & 5{,}130\\
- & head retrain, in-distribution labels (control) & 55 & 49 & 100 & 1{,}044\\
- & \quad same, full rank (control) & \tbd & \tbd & \tbd & 5{,}130\\
+ & head retrain, in-distribution labels (control) & 54 & 49 & 100 & 5{,}220\\
 \midrule
 SmolVLA & base & 67 & 46 & 100 & --\\
  & head retrain, DAgger expert labels (per axis) & 91 & 86 & 100 & 23{,}072\\
