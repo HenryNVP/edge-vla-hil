@@ -51,11 +51,11 @@ Behaviour-cloned visuomotor policies such as ACT~\citep{zhao2023act}, Diffusion
 Policy~\citep{chi2023diffusion} and fine-tuned vision-language-action (VLA) models succeed in
 distribution and fail just outside it: an object a few centimetres beyond the demonstrated region,
 a turned camera, a repainted
-table~\citep{xie2024decomposing,xue2025demogen,he2025demystifying,zhou2025liberopro}. If the
+table~\citep{xie2024decomposing,xue2025demogen,zhou2025liberopro}. If the
 policy's representation still encodes what the task needs and only the action head fails to use
 it, a small change at the output may fix it; if the representation breaks, the fix needs new data
 or retraining. Linear probes can show that information is
-present~\citep{alain2016probes,lu2025probing,zhang2026probeact}, but not that the policy could act on
+present~\citep{lu2025probing,zhang2026probeact}, but not that the policy could act on
 it.
 
 We test this directly by freezing the backbone and retraining only the head
@@ -119,14 +119,10 @@ task variable is decodable at the head's input.}
 
 \paragraph{Related work.} Factor-wise studies rank how camera, lighting, texture and placement
 hurt visual imitation~\citep{xie2024decomposing}; spatial generalization reaches only the
-neighbourhood of demonstrated configurations~\citep{xue2025demogen}, motivating synthetic
-demonstrations~\citep{mandlekar2023mimicgen,xue2025demogen} and equivariant
-policies~\citep{wang2024equivariant}; small-data diffusion policies behave like lookup
-tables~\citep{he2025demystifying} and fine-tuned VLAs replay memorized
-trajectories~\citep{zhou2025liberopro}. Probes find object states in VLA
-layers~\citep{lu2025probing}, ProbeAct corrects a VLA's action from a probe at run
-time~\citep{zhang2026probeact}, and steering~\citep{haon2025mechanistic} or fine-tuning selected
-heads~\citep{mitra2025robotic} changes VLA behaviour. Closest to us, \citet{li2025vlagen} trace VLA
+neighbourhood of demonstrated configurations~\citep{xue2025demogen}, and fine-tuned VLAs replay
+memorized trajectories~\citep{zhou2025liberopro}. Probes find object states in VLA
+layers~\citep{lu2025probing}, and ProbeAct corrects a VLA's action from a probe at run
+time~\citep{zhang2026probeact}. Closest to us, \citet{li2025vlagen} trace VLA
 failures under visual perturbations to drift in the visual embedding and recover them from one
 demonstration by adapting the vision side; we retrain the output side, on three architectures,
 against a negative control, and find failures it cannot fix. CFNBC~\citep{durso2026cfnbc} uses how
@@ -418,6 +414,6 @@ sorts distribution-shift failures into head-limited and representation-limited i
 rollouts; when the failure is head-limited, that retrain is already the fix.
 \pend{closing sentence on task vs.\ severity, from Section~\ref{sec:severity}.}
 
-\bibliographystyle{plainnat}
+\bibliographystyle{unsrtnat}
 \bibliography{refs}
 \end{document}
