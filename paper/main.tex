@@ -41,8 +41,8 @@ SmolVLA on three robomimic tasks, 9 of 11 camera, lighting and object-appearance
 are head-limited, and for an out-of-range object a retrain of ACT's 5{,}130-weight head recovers
 most of the gap with no demonstrations. On Square and ToolHang none of 10 is, and on Square
 only full fine-tuning over four DAgger iterations recovers success (0\% $\to$ 43\%).
-\pend{one sentence on partial-strength Square (Sec.~\ref{sec:severity}): whether the regime follows the
-task or the severity of the failure.}
+Weakening the perturbations until Square fails only partly does not change this: from 24--36\%
+the head retrain adds at most 15 points, where Lift from the same 36\% gains 49.
 \end{abstract}
 
 \section{Introduction}
@@ -72,8 +72,9 @@ the representation sufficed and the failure is \emph{head-limited}; if not, it i
 policies, with counterfactual self-labels, an invisible-object negative control and an explicit
 decision rule, run unchanged on three architectures; and (ii) evidence on ACT, Diffusion Policy and
 SmolVLA~\citep{shukor2025smolvla} across Lift, Square and ToolHang that both regimes occur:
-head-limited failures are common on the simple task and absent on the precise ones, partial-strength
-perturbations separate the task from the severity of the failure, and where the head is not enough,
+head-limited failures are common on the simple task and absent on the precise ones, even where the
+precise task fails only partly, so the regime follows the task rather than the severity of the
+failure; and where the head is not enough,
 LoRA and full fine-tuning measure how much deeper the fix must go.
 
 \begin{figure}[t]
@@ -344,17 +345,20 @@ it fails only partly (Table~\ref{tab:severity}). Camera changes still drive ACT 
 $10^\circ$ turn with a $30^\circ$ wrist roll, while a fainter object and, for Diffusion Policy, a
 wrist roll alone leave 20--75\% success on development seeds, the range where Lift's failures were
 head-limited.
-\pend{Test-seed results (Table~\ref{tab:severity}) and their reading. If the head retrain clears
-the control on these partial Square failures, the regime follows the severity of the failure rather
-than the task, and Square differs from Lift in how quickly a perturbation pushes it there. If it
-does not, even partial Square failures are representation-limited and the regime follows the task.}
+On test seeds none of these partial failures is head-limited: the retrain adds 15 points for ACT
+at opacity 0.3 (36\% $\to$ 51\%), 13 for Diffusion Policy with the wrist camera rolled (28\% $\to$
+41\%) and 2 for Diffusion Policy at opacity 0.3 (24\% $\to$ 26\%), each within the base policy's
+interval, and at opacity 0.5 ACT no longer fails (77\% vs.\ 84\%). From the same starting point Lift is
+fixed: ACT with both cameras upside down goes from 36\% to 85\%. Even partial Square failures are
+representation-limited, so the split in Table~\ref{tab:grid} follows the task, not just the
+severity; within Lift, severity still matters, as ACT's turn + roll exception shows.
 
 \begin{table}[t]
 \centering
 \caption{Square under weaker perturbations. Dev: base success on 20 development episodes. Test: base
 $\to$ head retrained (100 test episodes), with the decision rule's verdict. Lift reference, object
-opacity 0.1: ACT 82 $\to$ 100, Diffusion Policy 62 $\to$ 94 (both head-limited). $^\ast$A gain whose
-interval overlaps the base's (lower bound 32 vs.\ 37); in distribution 82 after the retrain.}
+opacity 0.1: ACT 82 $\to$ 100, Diffusion Policy 62 $\to$ 94 (both head-limited). In distribution after
+the retrain: ACT 87--88, Diffusion Policy 77--82.}
 \label{tab:severity}
 \small
 \setlength{\tabcolsep}{4pt}
@@ -366,9 +370,9 @@ Perturbation (Square) & dev & test & verdict & dev & test & verdict\\
 \midrule
 none                               & 75 & 84 & -- & 85 & 95 & --\\
 object opacity 0.1 (Table~\ref{tab:grid}) & 5 & 2 $\to$ 1 & repr. & 0 & 0 $\to$ 0 & repr.\\
-object opacity 0.3                 & 40 & \tbd & \tbd & 20 & \tbd & \tbd\\
-object opacity 0.5                 & 65 & \tbd & \tbd & 75 & -- & --\\
-wrist roll $90^\circ$ only         & 0  & -- & -- & 25 & 28 $\to$ 41 & repr.$^\ast$\\
+object opacity 0.3                 & 40 & 36 $\to$ 51 & repr. & 20 & 24 $\to$ 26 & repr.\\
+object opacity 0.5                 & 65 & 77 $\to$ 76 & no failure & 75 & -- & --\\
+wrist roll $90^\circ$ only         & 0  & -- & -- & 25 & 28 $\to$ 41 & repr.\\
 turn $10^\circ$ + roll $30^\circ$  & 0  & -- & -- & 0  & -- & --\\
 light $\times0.5$                  & 100 & -- & -- & 70 & -- & --\\
 \bottomrule
@@ -382,8 +386,9 @@ Under the perturbations ACT keeps it on Lift (0.39--0.90) and loses it on Square
 and under the invisible cube ($-0.23$). Diffusion Policy loses it on Square ($-0.25$ to $0.26$), but
 also partly on Lift (0.20--0.67), where the retrain still works (upside down: $R^2$ 0.20, success
 99\%), and the invisible cube (0.09) does not stand apart. Nor does decodability predict ACT's
-turn + roll exception (0.85). The retrain, not the probe, is the decisive measurement.
-\pend{probe $R^2$ on the partial-strength Square perturbations (features recorded with their labels).}
+turn + roll exception (0.85). On the partial Square failures the grasp point stays partly decodable
+(ACT 0.18; Diffusion Policy 0.46, 0.49) and the retrain still fails, while Diffusion Policy upside
+down on Lift (0.20) is fixed. The retrain, not the probe, is the decisive measurement.
 
 \paragraph{Square needs depth.} Following Step~3 for ACT on Square (turn + roll;
 Figure~\ref{fig:depth}), one round of full fine-tuning still scores 0\% but brings the gripper from
@@ -413,7 +418,8 @@ Lift only; ToolHang was tested under one perturbation, and Step~3 on ACT only. W
 retraining only the head on free counterfactual labels, judged against an invisible-object control,
 sorts distribution-shift failures into head-limited and representation-limited in one round of
 rollouts; when the failure is head-limited, that retrain is already the fix.
-\pend{closing sentence on task vs.\ severity, from Section~\ref{sec:severity}.}
+Which regime a failure falls in follows the task more than its severity: from the same 36\% start,
+the retrain fixes Lift and barely moves Square.
 
 \bibliographystyle{unsrtnat}
 \bibliography{refs}
