@@ -43,7 +43,8 @@ most of the gap with no demonstrations. On Square and ToolHang none of 10 is, an
 only fine-tuning below the head over four DAgger iterations recovers success (0\% $\to$ 25\% with LoRA,
 43\% fully).
 Weakening the perturbations until Square fails only partly does not change this: from 24--36\%
-the head retrain adds at most 15 points, where Lift from the same 36\% gains 49.
+the head retrain adds at most 15 points, where Lift from the same 36\% gains 49. Whether a linear
+probe decodes the grasp point at the head's input does not predict which failures the retrain fixes.
 \end{abstract}
 
 \section{Introduction}
@@ -75,7 +76,7 @@ decision rule, run unchanged on three architectures; and (ii) evidence on ACT, D
 SmolVLA~\citep{shukor2025smolvla} across Lift, Square and ToolHang that both regimes occur:
 head-limited failures are common on the simple task and absent on the precise ones, even where the
 precise task fails only partly, so the regime follows the task rather than the severity of the
-failure; and where the head is not enough,
+failure, and a linear probe does not predict it; and where the head is not enough,
 LoRA and full fine-tuning measure how much deeper the fix must go.
 
 \begin{figure}[t]
@@ -114,7 +115,7 @@ LoRA and full fine-tuning measure how much deeper the fix must go.
 \end{tikzpicture}
 \caption{Last-layer retraining as a diagnostic. The same simulator state is rendered with and
 without the perturbation; the frozen base policy's action on the unperturbed render is an exact
-counterfactual label $\yl$ for the head, the only part retrained. A linear probe asks whether the
+counterfactual label $\yl$ for the head, the only part retrained. For comparison, a linear probe asks whether the
 task variable is decodable at the head's input.}
 \label{fig:overview}
 \end{figure}
@@ -139,31 +140,14 @@ fix.
 \section{Method}
 \label{sec:method}
 A policy maps an observation $o$ to an action chunk through a backbone and an action head,
-\begin{equation}
-\pi_\theta(o) = h_\theta(g), \qquad g = \varphi(o),
-\label{eq:split}
-\end{equation}
-where $h_\theta$ is the last module through which observation features reach the action: ACT's
-linear action head (5{,}130 of 52M weights), Diffusion Policy's FiLM layers that condition the
-denoiser on the observation (11.6M of 300M), and SmolVLA's action-expert output projection (23{,}072
-of 450M). $\pi_0$ is the policy before retraining. A visual perturbation $\xi$ changes how the
-simulator renders a state $s$ and leaves the physics untouched: $o_\xi = R(s,\xi)$, with $o_0$ in
-distribution. The task variable $z(s)\in\mathbb R^2$ is the table position of what the gripper must
-grasp (the cube, the nut's handle, the tool).
+$\pi_\theta(o) = h_\theta(g)$ with features $g = \varphi(o)$, where $h_\theta$ is the last module
+through which observation features reach the action: ACT's linear action head (5{,}130 of 52M
+weights), Diffusion Policy's FiLM layers that condition the denoiser on the observation (11.6M of
+300M), and SmolVLA's action-expert output projection (23{,}072 of 450M). $\pi_0$ is the policy before
+retraining. A visual perturbation $\xi$ changes how the simulator renders a state $s$ and leaves the
+physics untouched: $o_\xi = R(s,\xi)$, with $o_0$ in distribution.
 
-\paragraph{Step 1: probe.} A ridge probe from $g$ to $z$, fit on features before the gripper touches
-the object and scored by $R^2$ cross-validated across episodes, tests whether $z$ is linearly
-decodable at the head's input. We fit it in distribution only (the baseline), on in-distribution and
-perturbed features jointly (is $z$ still there?), and in distribution then applied to perturbed
-features (did it stay where the head reads it?). For object position we also compare two gains per
-unit of object offset, by finite differences: the probe's, $S_\text{probe}$, and the action's,
-$S_\text{act}$ (1 means following the object). $S_\text{probe}\approx 1$ with $S_\text{act}\ll1$ means
-the head ignores information that reaches it; evaluating the head's response with features and
-offset directions taken from different states, a first-order interchange
-intervention~\citep{geiger2021causal}, tells a saturated head from feature directions it was never
-trained on.
-
-\paragraph{Step 2: retrain the head.} For a render-only perturbation the label is the policy's own
+\paragraph{Step 1: retrain the head.} For a render-only perturbation the label is the policy's own
 action without it,
 \begin{equation}
 \yl(s) = \pi_0\big(R(s,0)\big),
@@ -172,17 +156,11 @@ action without it,
 collected along rollouts of $\pi_0$ under $\xi$, with no person and no demonstration. For
 object position, where no unperturbed render exists, labels come from an expert retrained on shifted
 demonstrations, queried on the learner's states, or, with no demonstrations, from pseudo-labels that
-extend the policy's response linearly from the nearest in-range position. With perturbed labelled
-states $\mathcal D_\xi$ and in-distribution states $\mathcal D_0$ labelled by $\pi_0$ (to preserve its
-behaviour), only the head is trained,
-\begin{equation}
-\theta^\star = \arg\min_\theta\ \mathbb E_{\mathcal D_\xi}\, \mathcal L_\pi(\theta; g, \yl)
- + \beta\, \mathbb E_{\mathcal D_0}\, \mathcal L_\pi(\theta; g, \yl),
-\label{eq:refit}
-\end{equation}
-where $\mathcal L_\pi$ is the policy's training loss (denoising, flow matching; for ACT's linear head a
-squared loss, solved in closed form). Since $\varphi$ is frozen, features are cached once. One round
-of 30--60 perturbed and 20--30 in-distribution rollouts is the whole budget.
+extend the policy's response linearly from the nearest in-range position. Only $\theta$ is trained,
+with the policy's own training loss (denoising, flow matching; for ACT's linear head a squared loss,
+solved in closed form), on these perturbed states and on in-distribution states labelled by $\pi_0$,
+weighted by $\beta$, which preserve its behaviour. Since $\varphi$ is frozen, features are cached once.
+One round of 30--60 perturbed and 20--30 in-distribution rollouts is the whole budget.
 
 \emph{Negative control and decision rule.} With the object rendered invisible (opacity 0), the same
 retrain can at best learn a reach toward where the object usually is. With $[\ell, u]$ the Wilson 95\%
@@ -195,10 +173,17 @@ policy under $\xi$ (ret) and the retrained control (ctl),
 \end{equation}
 and a failure that is not head-limited is representation-limited.
 
-\paragraph{Step 3: fine-tune deeper.} If the head retrain fails, we fine-tune LoRA~\citep{hu2022lora}
+\paragraph{Step 2: fine-tune deeper.} If the head retrain fails, we fine-tune LoRA~\citep{hu2022lora}
 on every linear layer, then the full network, on the same labels~\eqref{eq:cf} collected over DAgger
 iterations~\citep{ross2011dagger}, each on the states of the latest fine-tuned policy. The depth and the number of iterations needed measure how far below the head the
 failure sits (Figure~\ref{fig:protocol}).
+
+\paragraph{Comparison: a linear probe.} The usual test of a representation is whether a probe
+decodes the variable the task needs; if it decided the regime, the retrain would be unnecessary. Our
+task variable $z(s)\in\mathbb R^2$ is the table position of what the gripper must grasp (the cube, the
+nut's handle, the tool). A ridge probe from $g$ to $z$, fit on features before the gripper touches the
+object and scored by $R^2$ cross-validated across episodes, is fit in distribution and, to ask whether
+$z$ survives $\xi$, on in-distribution and perturbed features jointly.
 
 \begin{figure}[t]
 \centering
@@ -209,15 +194,13 @@ failure sits (Figure~\ref{fig:protocol}).
   lbl/.style={font=\footnotesize},
 ]
 \node[blk, text width=15mm] (fail) {fails\\under $\xi$};
-\node[blk, right=of fail] (loc) {\textbf{1 Probe}\\is $z$ decodable?};
-\node[blk, right=of loc] (rep) {\textbf{2 Retrain head}\\on labels $\yl$};
+\node[blk, right=of fail] (rep) {\textbf{1 Retrain head}\\on labels $\yl$};
 \node[q, right=of rep] (q1) {beats\\control?};
 \node[blk, draw=ro, fill=ro!10, very thick, right=of q1, text width=40mm] (rgap) {\textbf{head-limited}\\the retrain is the fix};
-\node[blk, below=4mm of q1, text width=33mm] (esc) {\textbf{3 Fine-tune deeper}\\LoRA, full; DAgger};
+\node[blk, below=4mm of q1, text width=33mm] (esc) {\textbf{2 Fine-tune deeper}\\LoRA, full; DAgger};
 \node[blk, draw=rg, fill=rg!12, very thick, text width=38mm, right=4mm of esc] (pgap) {\textbf{representation-limited}\\features must change};
 \node[blk, draw=black!45, dashed, left=4mm of esc] (ctl) {\textbf{negative control}\\object invisible};
-\draw[->] (fail) -- (loc);
-\draw[->] (loc) -- (rep);
+\draw[->] (fail) -- (rep);
 \draw[->] (rep) -- (q1);
 \draw[->] (q1) -- node[lbl, above]{yes} (rgap);
 \draw[->] (q1) -- node[lbl, right]{no} (esc);
@@ -260,11 +243,12 @@ perturbed image has an exact unperturbed counterpart; the invisible object is th
 \section{Results}
 \label{sec:results}
 
-\paragraph{Object position: ACT on Lift is head-limited.} With the cube out of range, its offset
-stays decodable at the head's input ($S_\text{probe}=0.85$, $0.78$ in $x$, $y$) while the action
-barely follows ($S_\text{act}=0.28$, $0.09$), and the interchange intervention puts the collapse in the
-out-of-range feature directions rather than the head (gains 0.66/0.65 with in-range directions at
-out-of-range states). Retraining
+\paragraph{Object position: ACT on Lift is head-limited.} With the cube out of range, the probe's
+estimate at the head's input still follows the cube's offset (gain 0.85 and 0.78 per unit offset in
+$x$, $y$, by finite differences) while the action barely does (0.28, 0.09). Evaluating the head with
+feature directions from in-range states at out-of-range states, a first-order interchange
+intervention~\citep{geiger2021causal}, restores the action's gain (0.66, 0.65), so the collapse lies in
+feature directions the head was never trained to read, not in the head's state. Retraining
 the 5{,}130-weight head on pseudo-labels, with no demonstrations, recovers most of the gap
 (Table~\ref{tab:position}); with labels from the 400-demonstration retrain it nearly matches that
 retrain, partly by distillation. In-distribution labels at the same rank do nothing, so the gain
@@ -353,14 +337,14 @@ Lift, severity still matters, as ACT's turn + roll exception shows.
 
 
 
-\paragraph{The probe is consistent with the regimes but does not decide them.} In distribution the
+\paragraph{The probe does not predict the regime.} In distribution the
 grasp point is decodable at the head on Lift and Square ($R^2$ 0.78--0.93; ToolHang 0.25, where the
 tool varies by only 11\,mm). Under the perturbations ACT keeps it on Lift (0.39--0.90) and loses it on
 Square ($-0.22$, $-0.23$) and under the invisible cube ($-0.23$). But Diffusion Policy upside down on Lift
 ($R^2$ 0.20) is fixed to 99\%, while the partial Square failures (0.18--0.49) are not, and ACT's
 turn + roll exception keeps 0.85. The retrain, not the probe, is the decisive measurement.
 
-\paragraph{Square needs depth.} Following Step~3 for ACT on Square (turn + roll;
+\paragraph{Square needs depth.} Following Step~2 for ACT on Square (turn + roll;
 Figure~\ref{fig:depth}), one round of full fine-tuning still scores 0\% but brings the gripper from
 210\,mm to 53\,mm of the handle. Over DAgger iterations 1--5 success is 0, 1, 18, 43, 40\%. On the same
 four iterations of labels the head alone stays at 0\%, LoRA (rank 8, 457K weights) reaches 25\%, and
@@ -388,7 +372,7 @@ editing or human corrections approximate it.
 \emph{Limitations.} We have no real-robot results, and our position expert needed 400 shifted
 demonstrations. Where the head ends is a choice per architecture, and for Diffusion Policy it is
 large. All policies were trained at $84\times84$ on robomimic data, SmolVLA on Lift only; ToolHang was
-tested under one perturbation, and Step~3 on ACT only.
+tested under one perturbation, and Step~2 on ACT only.
 
 \bibliographystyle{unsrtnat}
 \bibliography{refs}
