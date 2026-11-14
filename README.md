@@ -1,5 +1,7 @@
 # EdgeVLA-HiL
 
+> **The interp paper ("Head or Representation?") moved to [readout-repair](https://github.com/HenryNVP/readout-repair) on 2026-11-14.** This branch is frozen; edit the paper there.
+
 **Benchmarking latency-robust action chunking over a real edge-network boundary.**
 
 A testbed that runs the policy on the deployment hardware and puts a real network inside the
