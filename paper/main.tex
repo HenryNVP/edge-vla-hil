@@ -61,7 +61,7 @@ it.
 
 We test this directly by freezing the backbone and retraining only the head
 (Figure~\ref{fig:overview}), the test image classification uses to separate the quality of the
-features from how the last layer weights them~\citep{izmailov2022feature,rosenfeld2022dare,kirichenko2023last}.
+features from how the last layer weights them~\citep{kirichenko2023last,izmailov2022feature}.
 A policy differs from a classifier in two ways we exploit. Its errors compound in closed loop, so we
 retrain on the states it visits, collected with DAgger~\citep{ross2011dagger}. And simulation gives
 exact labels for free: the same state can be rendered with and without the
@@ -69,14 +69,17 @@ perturbation~\citep{james2019rcan}, and the frozen policy's action on the unpert
 target, as a privileged teacher relabels a student~\citep{chen2019lbc}, with no demonstrations and no
 data from the perturbed domain. If the retrain restores success beyond what a blind policy achieves,
 the representation sufficed and the failure is \emph{head-limited}; if not, it is
-\emph{representation-limited}. Our contributions are (i) this diagnostic for closed-loop visuomotor
-policies, with counterfactual self-labels, an invisible-object negative control and an explicit
-decision rule, run unchanged on three architectures; and (ii) evidence on ACT, Diffusion Policy and
-SmolVLA~\citep{shukor2025smolvla} across Lift, Square and ToolHang that both regimes occur:
-head-limited failures are common on the simple task and absent on the precise ones, even where the
-precise task fails only partly, so the regime follows the task rather than the severity of the
-failure, and a linear probe does not predict it; and where the head is not enough,
-LoRA and full fine-tuning measure how much deeper the fix must go.
+\emph{representation-limited}. Our contributions are (i) a diagnostic that carries last-layer retraining from classifiers to
+closed-loop policies, with on-policy counterfactual labels from simulation, an invisible-object
+negative control and an explicit decision rule, applied with the same protocol to ACT, Diffusion
+Policy and SmolVLA~\citep{shukor2025smolvla}; (ii) evidence that head-limited failures are common
+and that the retrain is then the fix: 9 of 11 visual failures on Lift, and for an out-of-range object
+a head retrain that recovers over half the gap with no demonstrations, and matches a
+400-demonstration retrain given expert labels; and (iii) evidence that on the precise tasks, Square
+and ToolHang, no failure is head-limited, even where the policy fails only partly, so in our tasks
+the regime tracks the task rather than the severity of the failure. A linear probe of the grasp
+point does not predict the regime, and in the case we follow further only fine-tuning below the head
+recovers success.
 
 \begin{figure}[t]
 \centering
@@ -130,11 +133,8 @@ demonstration by adapting the vision side; we retrain the output side, on three 
 against a negative control, and find failures it cannot fix. CFNBC~\citep{durso2026cfnbc} uses how
 far paired counterfactual images move a policy's action to choose repair data, and encoders trained
 end to end carry decision information~\citep{wang2024feature}, so a frozen backbone need not suffice.
-In classifiers, last-layer retraining removes spurious correlations~\citep{kirichenko2023last} and
-shows that features learned by plain training are often already
-sufficient~\citep{izmailov2022feature,rosenfeld2022dare}, and the best layers to fine-tune depend on
-the kind of shift~\citep{lee2023surgical}; we ask which failures of one policy a head retrain can
-fix.
+In classifiers, the best layers to fine-tune depend on the kind of
+shift~\citep{lee2023surgical}; for our policies they depend on the task.
 
 \section{Method}
 \label{sec:method}
@@ -325,7 +325,7 @@ head-limited (100 test episodes each): at object opacity 0.3 ACT goes from 36\% 
 Policy from 24\% to 26\%, and with the wrist camera rolled Diffusion Policy goes from 28\% to 41\%, each
 retrained interval overlapping the base policy's (at opacity 0.5 ACT no longer fails: 77\% vs.\ 84\%). From the same
 36\% start Lift goes to 85\% (ACT, upside down). Even partial Square
-failures are representation-limited, so the split follows the task, not just the severity; within
+failures are representation-limited, so in our tasks the split tracks the task, not just the severity; within
 Lift, severity still matters, as ACT's turn + roll exception shows.
 
 
@@ -351,8 +351,8 @@ stays out of reach (0 of 30 after two iterations, and 0 of 30 in distribution).
 \label{sec:conclusion}
 Retraining only the head on free counterfactual labels, judged against an invisible-object control,
 sorts distribution-shift failures into head-limited and representation-limited in one round of
-rollouts; when the failure is head-limited, that retrain is already the fix. Which regime a failure
-falls in follows the task more than its severity: from the same 36\% start, the retrain fixes Lift and
+rollouts; when the failure is head-limited, that retrain is already the fix. In our tasks, which regime a
+failure falls in tracks the task more than its severity: from the same 36\% start, the retrain fixes Lift and
 barely moves Square.
 
 \emph{Use beyond simulation.} The simulator makes the test exact; what transfers is the diagnosis. Run
