@@ -89,28 +89,28 @@ LoRA and full fine-tuning measure how much deeper the fix must go.
   txt/.style={align=center, inner sep=1pt},
   lbl/.style={font=\footnotesize, above, midway},
 ]
-\node[txt] (s) {sim state\\$s$};
-\node[blk, right=of s] (rx) {render with\\perturbation $\xi$};
-\node[frz, right=6mm of rx] (enc) {backbone $\varphi$\\[-1pt]{\footnotesize\color{black!60} frozen}};
-\node[ed, right=11mm of enc] (h) {head $h_\theta$\\[-1pt]{\footnotesize\color{ro} retrained}};
-\node[txt, right=of h] (a) {action chunk\\$h_\theta(g)$};
-\node[blk, right=of a] (L) {loss\\$\ell\big(h_\theta(g),\,\yl\big)$};
+\node[txt] (s) {sim\\state};
+\node[blk, right=of s] (rx) {render with\\perturbation};
+\node[frz, right=6mm of rx] (enc) {backbone\\[-1pt]{\footnotesize\color{black!60} frozen}};
+\node[ed, right=15mm of enc] (h) {action head\\[-1pt]{\footnotesize\color{ro} retrained}};
+\node[txt, right=of h] (a) {action\\chunk};
+\node[blk, right=of a] (L) {loss against\\the label};
 \draw[->] (s) -- (rx);
-\draw[->] (rx) -- node[lbl]{$o_\xi$} (enc);
-\draw[->] (enc) -- node[lbl, below]{$g$} (h);
+\draw[->] (rx) -- (enc);
+\draw[->] (enc) -- node[lbl, below]{features} (h);
 \draw[->] (h) -- (a);
 \draw[->] (a) -- (L);
-\node[blk, below=7mm of rx] (r0) {render\\unperturbed};
+\node[blk, below=7mm of rx] (r0) {render\\unperturbed: $o_0$};
 \node[frz, anchor=west, minimum width=0pt] (pi0) at ($(enc.west |- r0)$)
-  {base policy $\pi_0 = h_{\theta_0}\circ\varphi$\\[-1pt]{\footnotesize\color{black!60} frozen}};
+  {base policy $\pi_0$\\[-1pt]{\footnotesize\color{black!60} frozen}};
 \node[txt] (y) at (a |- r0) {label\\$\yl = \pi_0(o_0)$};
 \draw[->] (s) |- (r0);
-\draw[->] (r0) -- node[lbl]{$o_0$} (pi0);
+\draw[->] (r0) -- (pi0);
 \draw[->] (pi0) -- (y);
 \draw[->] (y) -| (L);
-\draw[->, dashed, ro, thick] (L.north) -- ++(0,5mm) -| node[pos=0.25, above, font=\footnotesize]{update $\theta$ only} ([xshift=4mm]h.north);
+\draw[->, dashed, ro, thick] (L.north) -- ++(0,5mm) -| node[pos=0.25, above, font=\footnotesize]{update the head only} ([xshift=4mm]h.north);
 \coordinate (gm) at ($(enc.east)!0.5!(h.west)$);
-\node[txt, font=\footnotesize, anchor=south east] (P) at ($(gm)+(3mm,7mm)$) {linear probe: is the grasp point $z$ decodable from $g$?};
+\node[txt, font=\footnotesize, anchor=south east] (P) at ($(gm)+(3mm,7mm)$) {linear probe: is the grasp point\\decodable from the features?};
 \draw[->, densely dotted] (gm) -- (gm |- P.south);
 \end{tikzpicture}
 \caption{Last-layer retraining as a diagnostic. The same simulator state is rendered with and
@@ -139,33 +139,32 @@ fix.
 
 \section{Method}
 \label{sec:method}
-A policy maps an observation $o$ to an action chunk through a backbone and an action head,
-$\pi_\theta(o) = h_\theta(g)$ with features $g = \varphi(o)$, where $h_\theta$ is the last module
-through which observation features reach the action: ACT's linear action head (5{,}130 of 52M
+A policy maps an image observation to an action chunk through a backbone and an action head, the
+last module through which the backbone's features reach the action: ACT's linear action head (5{,}130 of 52M
 weights), Diffusion Policy's FiLM layers that condition the denoiser on the observation (11.6M of
 300M), and SmolVLA's action-expert output projection (23{,}072 of 450M). $\pi_0$ is the policy before
-retraining. A visual perturbation $\xi$ changes how the simulator renders a state $s$ and leaves the
-physics untouched: $o_\xi = R(s,\xi)$, with $o_0$ in distribution.
+retraining. A visual perturbation changes only how the simulator renders a state, never the physics.
 
 \paragraph{Step 1: retrain the head.} For a render-only perturbation the label is the policy's own
-action without it,
+action on the same state without it,
 \begin{equation}
-\yl(s) = \pi_0\big(R(s,0)\big),
+\yl = \pi_0(o_0),
 \label{eq:cf}
 \end{equation}
-collected along rollouts of $\pi_0$ under $\xi$, with no person and no demonstration. For
+where $o_0$ is that state rendered unperturbed. Labels are collected along rollouts of $\pi_0$ under
+the perturbation, with no person and no demonstration. For
 object position, where no unperturbed render exists, labels come from an expert retrained on shifted
 demonstrations, queried on the learner's states, or, with no demonstrations, from pseudo-labels that
-extend the policy's response linearly from the nearest in-range position. Only $\theta$ is trained,
+extend the policy's response linearly from the nearest in-range position. Only the head is trained,
 with the policy's own training loss (denoising, flow matching; for ACT's linear head a squared loss,
 solved in closed form), on these perturbed states and on in-distribution states labelled by $\pi_0$,
-weighted by $\beta$, which preserve its behaviour. Since $\varphi$ is frozen, features are cached once.
+which preserve its behaviour. Since the backbone is frozen, its features are cached once.
 One round of 30--60 perturbed and 20--30 in-distribution rollouts is the whole budget.
 
 \emph{Negative control and decision rule.} With the object rendered invisible (opacity 0), the same
 retrain can at best learn a reach toward where the object usually is. With $[\ell, u]$ the Wilson 95\%
-interval of a success rate, for the base policy in distribution (in), under $\xi$ (base), the retrained
-policy under $\xi$ (ret) and the retrained control (ctl),
+interval of a success rate, for the base policy in distribution (in) and perturbed (base), the
+retrained policy perturbed (ret) and the retrained control (ctl),
 \begin{equation}
 \text{failure:}\ u_\text{base} < \ell_\text{in}, \qquad
 \text{head-limited:}\ \ell_\text{ret} > \max(u_\text{base},\, u_\text{ctl}),
@@ -179,11 +178,11 @@ iterations~\citep{ross2011dagger}, each on the states of the latest fine-tuned p
 failure sits (Figure~\ref{fig:protocol}).
 
 \paragraph{Comparison: a linear probe.} The usual test of a representation is whether a probe
-decodes the variable the task needs; if it decided the regime, the retrain would be unnecessary. Our
-task variable $z(s)\in\mathbb R^2$ is the table position of what the gripper must grasp (the cube, the
-nut's handle, the tool). A ridge probe from $g$ to $z$, fit on features before the gripper touches the
+decodes the variable the task needs; if it decided the regime, the retrain would be unnecessary. Here
+that variable is the grasp point, the table position of what the gripper must grasp (the cube, the
+nut's handle, the tool). A ridge probe from the head's input features to the grasp point, fit on features before the gripper touches the
 object and scored by $R^2$ cross-validated across episodes, is fit in distribution and, to ask whether
-$z$ survives $\xi$, on in-distribution and perturbed features jointly.
+it survives the perturbation, on in-distribution and perturbed features jointly.
 
 \begin{figure}[t]
 \centering
@@ -193,8 +192,8 @@ $z$ survives $\xi$, on in-distribution and perturbed features jointly.
   q/.style={draw, diamond, aspect=1.6, align=center, inner sep=1.5pt, font=\footnotesize},
   lbl/.style={font=\footnotesize},
 ]
-\node[blk, text width=15mm] (fail) {fails\\under $\xi$};
-\node[blk, right=of fail] (rep) {\textbf{1 Retrain head}\\on labels $\yl$};
+\node[blk, text width=18mm] (fail) {fails under\\perturbation};
+\node[blk, right=of fail] (rep) {\textbf{1 Retrain head}\\on labels $\yl$ (Eq.~\ref{eq:cf})};
 \node[q, right=of rep] (q1) {beats\\control?};
 \node[blk, draw=ro, fill=ro!10, very thick, right=of q1, text width=40mm] (rgap) {\textbf{head-limited}\\the retrain is the fix};
 \node[blk, below=4mm of q1, text width=33mm] (esc) {\textbf{2 Fine-tune deeper}\\LoRA, full; DAgger};
