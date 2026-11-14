@@ -48,31 +48,29 @@ failures the head retrain can fix.
 \section{Introduction}
 \label{sec:intro}
 Visuomotor policies trained by behavior cloning, such as ACT~\citep{zhao2023act}, Diffusion
-Policy~\citep{chi2023diffusion} and fine-tuned vision-language-action (VLA) models, work well under the
-conditions they were trained on but often fail just outside them. For example, a policy can fail when
-the object is a few centimeters outside the demonstrated region or when the camera is
-turned~\citep{xie2024decomposing,xue2025demogen,zhou2025liberopro}. The representation may still encode what the task needs while the action head fails to use it,
-in which case a small change at the output could be enough. Otherwise the representation itself is
-broken, and the fix needs new data or retraining. Linear probes can check whether the information is
-still present~\citep{lu2025probing,zhang2026probeact}, but they do not tell whether the policy can act
-on it.
+Policy~\citep{chi2023diffusion} and fine-tuned vision-language-action (VLA) models, succeed in
+distribution but fail just outside it, for example when the object is a few centimeters outside its
+demonstrated region, when the cameras are at a different angle, or when the table has a different
+color~\citep{xie2024decomposing,xue2025demogen,zhou2025liberopro}. If the information is still encoded
+in the policy's representation and only the head fails to use it, a small change to the output head may
+fix the failure; otherwise, new data or retraining is needed. Linear probes can show that the
+information is present~\citep{lu2025probing,zhang2026probeact}, but not that the policy can act on it.
 
-In this work, we test this directly by freezing the backbone and retraining only the head
-(Figure~\ref{fig:overview}). Image classification uses the same test to separate the quality of the
-features from how the last layer weights them~\citep{kirichenko2023last,izmailov2022feature}. A policy, however,
-acts in closed loop, where its errors compound, so we retrain it on the
-states it actually visits, as in DAgger~\citep{ross2011dagger}. In addition, simulation can provide
-exact labels at no cost. We render the same state with and without the
-perturbation~\citep{james2019rcan} and use the frozen policy's action on the unperturbed image as the
-target, similar to how a privileged teacher relabels a student~\citep{chen2019lbc}. If the retrained
-policy does better than a policy that cannot see the object, the representation was good enough and we
-call the failure \emph{head-limited}. If not, we call it \emph{representation-limited}.
+We test this by freezing the backbone and retraining only the head (Figure~\ref{fig:overview}), adapting
+last-layer retraining from image classification~\citep{kirichenko2023last,izmailov2022feature}. Because
+the policy's errors compound in closed loop, we retrain on the states it visits, as in
+DAgger~\citep{ross2011dagger}. In addition, simulation gives exact labels for free: we render the same
+state with and without the perturbation~\citep{james2019rcan} and use the frozen policy's action on the
+unperturbed image as the target, similar to how a privileged teacher relabels a
+student~\citep{chen2019lbc}. If the retrained policy does better than a policy that cannot see the
+object, the representation suffices and the failure is \emph{head-limited}; otherwise, it is
+\emph{representation-limited}.
 
-Our contributions are (1) a diagnostic that adapts last-layer retraining to closed-loop policies,
-with on-policy counterfactual labels, an invisible-object control and an explicit decision rule;
-(2) results on ACT, Diffusion Policy and SmolVLA~\citep{shukor2025smolvla} showing that head-limited
-failures are common on Lift but absent on Square and ToolHang, even when Square fails only partly; and
-(3) evidence that a linear probe of the grasp point does not predict the regime.
+Our contributions are (i) this diagnostic for closed-loop visuomotor policies, with counterfactual
+self-labels, an invisible-object negative control and an explicit decision rule; (ii) results on ACT,
+Diffusion Policy and SmolVLA~\citep{shukor2025smolvla} showing that head-limited failures are common on
+Lift but absent on Square and ToolHang, even where Square fails only partly; and (iii) results showing
+that a linear probe of the grasp point does not predict the regime.
 
 \begin{figure}[t]
 \centering
