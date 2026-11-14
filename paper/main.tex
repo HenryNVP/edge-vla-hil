@@ -18,7 +18,6 @@
 % results still running: highlighted so none survives into the final version
 \newcommand{\pend}[1]{\par\noindent\colorbox{yellow!45}{\parbox{\dimexpr\linewidth-2\fboxsep}{\footnotesize\textbf{PENDING:} #1}}\par}
 \newcommand{\tbd}{\colorbox{yellow!45}{\strut ??}}
-\newcommand{\yl}{\tilde y}
 \newcommand{\hl}[1]{\textbf{#1}}   % head-limited cell
 
 \title{Head or Representation? Diagnosing Distribution-Shift Failures\\of Visuomotor Policies with Last-Layer Retraining}
@@ -100,10 +99,10 @@ LoRA and full fine-tuning measure how much deeper the fix must go.
 \draw[->] (enc) -- node[lbl, below]{features} (h);
 \draw[->] (h) -- (a);
 \draw[->] (a) -- (L);
-\node[blk, below=7mm of rx] (r0) {render\\unperturbed: $o_0$};
+\node[blk, below=7mm of rx] (r0) {render\\unperturbed};
 \node[frz, anchor=west, minimum width=0pt] (pi0) at ($(enc.west |- r0)$)
-  {base policy $\pi_0$\\[-1pt]{\footnotesize\color{black!60} frozen}};
-\node[txt] (y) at (a |- r0) {label\\$\yl = \pi_0(o_0)$};
+  {base policy\\[-1pt]{\footnotesize\color{black!60} frozen}};
+\node[txt] (y) at (a |- r0) {counterfactual\\label};
 \draw[->] (s) |- (r0);
 \draw[->] (r0) -- (pi0);
 \draw[->] (pi0) -- (y);
@@ -115,7 +114,7 @@ LoRA and full fine-tuning measure how much deeper the fix must go.
 \end{tikzpicture}
 \caption{Last-layer retraining as a diagnostic. The same simulator state is rendered with and
 without the perturbation; the frozen base policy's action on the unperturbed render is an exact
-counterfactual label $\yl$ for the head, the only part retrained. For comparison, a linear probe asks whether the
+counterfactual label for the head, the only part retrained. For comparison, a linear probe asks whether the
 task variable is decodable at the head's input.}
 \label{fig:overview}
 \end{figure}
@@ -142,22 +141,17 @@ fix.
 A policy maps an image observation to an action chunk through a backbone and an action head, the
 last module through which the backbone's features reach the action: ACT's linear action head (5{,}130 of 52M
 weights), Diffusion Policy's FiLM layers that condition the denoiser on the observation (11.6M of
-300M), and SmolVLA's action-expert output projection (23{,}072 of 450M). $\pi_0$ is the policy before
+300M), and SmolVLA's action-expert output projection (23{,}072 of 450M). The base policy is the policy before
 retraining. A visual perturbation changes only how the simulator renders a state, never the physics.
 
-\paragraph{Step 1: retrain the head.} For a render-only perturbation the label is the policy's own
-action on the same state without it,
-\begin{equation}
-\yl = \pi_0(o_0),
-\label{eq:cf}
-\end{equation}
-where $o_0$ is that state rendered unperturbed. Labels are collected along rollouts of $\pi_0$ under
-the perturbation, with no person and no demonstration. For
+\paragraph{Step 1: retrain the head.} For a render-only perturbation the label is the
+\emph{counterfactual label}: the base policy's own action on the same state rendered without the
+perturbation. Labels are collected along the base policy's rollouts under the perturbation, with no person and no demonstration. For
 object position, where no unperturbed render exists, labels come from an expert retrained on shifted
 demonstrations, queried on the learner's states, or, with no demonstrations, from pseudo-labels that
 extend the policy's response linearly from the nearest in-range position. Only the head is trained,
 with the policy's own training loss (denoising, flow matching; for ACT's linear head a squared loss,
-solved in closed form), on these perturbed states and on in-distribution states labelled by $\pi_0$,
+solved in closed form), on these perturbed states and on in-distribution states labelled by the base policy,
 which preserve its behaviour. Since the backbone is frozen, its features are cached once.
 One round of 30--60 perturbed and 20--30 in-distribution rollouts is the whole budget.
 
@@ -173,7 +167,7 @@ retrained policy perturbed (ret) and the retrained control (ctl),
 and a failure that is not head-limited is representation-limited.
 
 \paragraph{Step 2: fine-tune deeper.} If the head retrain fails, we fine-tune LoRA~\citep{hu2022lora}
-on every linear layer, then the full network, on the same labels~\eqref{eq:cf} collected over DAgger
+on every linear layer, then the full network, on the same counterfactual labels collected over DAgger
 iterations~\citep{ross2011dagger}, each on the states of the latest fine-tuned policy. The depth and the number of iterations needed measure how far below the head the
 failure sits (Figure~\ref{fig:protocol}).
 
@@ -193,7 +187,7 @@ it survives the perturbation, on in-distribution and perturbed features jointly.
   lbl/.style={font=\footnotesize},
 ]
 \node[blk, text width=18mm] (fail) {fails under\\perturbation};
-\node[blk, right=of fail] (rep) {\textbf{1 Retrain head}\\on labels $\yl$ (Eq.~\ref{eq:cf})};
+\node[blk, right=of fail] (rep) {\textbf{1 Retrain head}\\on counterfactual labels};
 \node[q, right=of rep] (q1) {beats\\control?};
 \node[blk, draw=ro, fill=ro!10, very thick, right=of q1, text width=40mm] (rgap) {\textbf{head-limited}\\the retrain is the fix};
 \node[blk, below=4mm of q1, text width=33mm] (esc) {\textbf{2 Fine-tune deeper}\\LoRA, full; DAgger};
