@@ -29,21 +29,20 @@
 \maketitle
 
 \begin{abstract}
-Visuomotor policies trained by imitation often fail when test conditions differ from the
-demonstrations. A drop in success rate, however, does not show whether the problem lies in the learned
-representation or in the action head that reads it, and the two cases call for very different fixes. We
-adapt last-layer retraining, a known test from image classification, to closed-loop
-policies. We freeze the backbone and retrain only the action head on the states the policy visits,
-labeling each state with the frozen policy's own action on the same state rendered without the
-perturbation. A failure is \emph{head-limited} when the retrained policy does better than both the base
-policy and a negative control in which the object is invisible. For ACT, Diffusion Policy and SmolVLA,
-9 of 11 visual failures on robomimic Lift are head-limited, and for an object
-placed out of range, retraining ACT's head (5{,}130 weights) closes over half of the gap without any
-demonstrations. On Square and ToolHang, none of the 10 failures is head-limited, even when Square fails
-only partly, so in our tasks the regime depends more on the task than on how severe the failure is. On
-Square, success returns only when we fine-tune below the head (25\% with LoRA, 43\% with full
-fine-tuning). We also find that a linear probe of the grasp point does not predict which failures the
-head retrain can fix.
+Visuomotor policies trained by imitation learning often fail under distribution shift. However, the
+success rate alone does not tell whether the problem lies in the learned representation or in the action
+head that reads it, and the cost of fixing these two cases differs greatly. In this paper, we adapt
+last-layer retraining to closed-loop policies by freezing the backbone and training only the action head.
+In simulation, we collect the states the policy visits and label each one with the frozen policy's action
+on the same state rendered without the perturbation. If the retrained policy performs better than both
+the base policy and a negative control in which the object is invisible, the failure is
+\emph{head-limited}. For ACT, Diffusion Policy and SmolVLA, 9 of 11 visual failures on robomimic Lift are
+head-limited, and for an object placed out of range, retraining ACT's action head closes over half of the
+gap without new demonstrations. On Square and ToolHang, even when Square fails only partly, none of the
+10 failures is head-limited. Therefore, in our tasks, the regime depends more on the task than on the
+severity of the failure. On Square, deeper fine-tuning is needed to recover success (25\% with LoRA, 43\%
+with full fine-tuning). We also find that a linear probe of the grasp point does not predict which
+failures the head retrain can fix.
 \end{abstract}
 
 \section{Introduction}
