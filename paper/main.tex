@@ -247,34 +247,38 @@ by less than 1.5 points (Diffusion Policy and SmolVLA under turn + roll). On Squ
 the 10 failures is head-limited. After the retrain, all three policies are still at 0--2\%, and in-distribution
 success drops by up to 20 points.
 
-\paragraph{Task or severity.} Table~\ref{tab:grid} mixes the task with the severity of the failure, because the same perturbations bring Square down to 0--2\%. To separate the two,
-we made the perturbations weaker on Square until the policies failed only partly. A less faint object
-(opacity 0.3) did this for both policies and a wrist roll alone did it for Diffusion Policy, while camera
+\paragraph{Task or severity.} In Table~\ref{tab:grid}, the task is combined with the severity of the failure,
+and the same perturbations bring Square down to 0--2\%. To separate the two,
+we apply weaker perturbations on Square until the policies fail only partly. A less faint object
+with opacity 0.3 did this for both policies and a wrist roll alone did it for Diffusion Policy, while camera
 changes still gave ACT 0\% even with a $10^\circ$ turn. None of these partial
 failures turned out to be head-limited. With the object at opacity 0.3, ACT goes from 36\% to 51\% and
 Diffusion Policy from 24\% to 26\%. With the wrist camera rolled, Diffusion Policy goes from 28\% to 41\%.
-In all three cases, the retrained interval overlaps the base interval. The clearest comparison is
-Diffusion Policy with a faint object, since the policy and the type of perturbation are the same on both
-tasks. It goes from 62\% to 94\% on Lift, but only from 24\% to 26\% on Square, even though the object on
+In all three cases, the retrained interval overlaps the base interval. In the case of
+Diffusion Policy with a faint object, where the policy and the type of perturbation are the same on both
+tasks, success goes from 62\% to 94\% on Lift, but only from 24\% to 26\% on Square, even though the object on
 Square is less faint (opacity 0.3 instead of 0.1). Severity still plays a role within Lift, as the ACT
 turn + roll case shows.
 
 \paragraph{Object position.} When the cube is placed out of range, a probe on ACT's head input still
-tracks the cube's offset, with gains of 0.85 in $x$ and 0.78 in $y$ per unit of offset. The action, on the other hand, barely moves (0.28 and 0.09). A first-order
+tracks the cube's offset, with gains of 0.85 in $x$ and 0.78 in $y$ per unit of offset,
+while the action barely moves (0.28 and 0.09). A first-order
 interchange intervention~\citep{geiger2021causal} that uses in-range feature directions at out-of-range
 states brings the gain back to 0.66 and 0.65, so the offset moves the features in directions the head
 was never trained to read. Retraining the 5{,}130-weight head on
-pseudo-labels, without any demonstrations, closes over half of the gap (Table~\ref{tab:position}). With
-labels from the expert retrained on 400 demonstrations, the head retrain gets close to that expert,
-partly because it learns to copy it. Retraining on in-distribution labels only, which we use as the
-control here, does not help, so the failure is head-limited and the improvement comes from the labels.
+pseudo-labels, without any demonstrations, closes over half of the gap (Table~\ref{tab:position}).
+With labels from the expert retrained on 400 demonstrations, the head retrain gets close to that expert,
+partly because it learns to copy it.
+Retraining on in-distribution labels only, used as the
+control here, does not help, so the failure is head-limited and the improvement is from the labels.
 SmolVLA can be fixed in the same way with labels from the same ACT expert, but its $y$ retrain lowers its
 $x$ success from 67\% to 55\%.
 
-\paragraph{Linear probe.} We fit a ridge probe from the head's input features to the grasp point, which
+\paragraph{Linear probe.} We use a probe with ridge regression to predict the grasp point from the head's input features. The grasp point
 is the table position of the cube, the nut handle or the tool. The probe uses frames before contact and
 is scored by $R^2$ with cross-validation across episodes. In distribution, it decodes the grasp point
-on Lift and Square ($R^2$ 0.78--0.93) but not on ToolHang (0.25). When fit on in-distribution and perturbed features together, ACT's probe still finds the grasp
+on Lift and Square ($R^2$ 0.78--0.93) but not on ToolHang (0.25).
+When fit on in-distribution and perturbed features together, ACT's probe still finds the grasp
 point on Lift (0.39--0.90) but loses it on Square ($-0.22$ and $-0.23$ for the two perturbations we
 probed). Still, the probe does not predict the regime: Diffusion
 Policy upside down on Lift is fixed at $R^2$ 0.20, while ACT under turn + roll (0.85) and the partial
@@ -283,21 +287,21 @@ Square failures (0.18--0.49) are not.
 \paragraph{Fine-tuning deeper on Square.} For ACT on Square under turn + roll, full fine-tuning (Step~2)
 reaches 0, 1, 18, 43 and 40\% success over DAgger iterations 1--5. With the same four iterations of labels, the head alone stays at 0\%, LoRA
 (rank 8, 457K weights) reaches 25\% and full fine-tuning reaches 43\%. Note that the iterations were
-collected with the fully fine-tuned policy, which favors it. Fine-tuning also hurts success in
-distribution, which falls from 84\% to 73\% after four iterations and to 48\% after five. On ToolHang,
+collected with the fully fine-tuned policy, which favors it. In-distribution success is hurt by fine-tuning
+and falls from 84\% to 73\% after four iterations and to 48\% after five. On ToolHang,
 full fine-tuning gives 0 of 30 successes after two iterations, and also 0 of 30 in distribution.
 
 \section{Conclusion and limitations}
 \label{sec:conclusion}
-A head retrain on counterfactual labels, checked against an invisible-object control, separates the
-two kinds of failure in one round of rollouts and fixes the head-limited ones. The labels are exact only in simulation,
-but the test can be run in simulation or a digital twin before deployment to find out whether a failure
-needs only a head retrain or new data and deeper training. On a real robot, a fixed reference camera would give exact labels for camera changes, and
-image editing or human corrections could approximate them otherwise.
+An action head that is retrained on counterfactual labels, checked against an invisible-object control, can separate the
+two kinds of failure in one round of rollouts and fix the head-limited ones. Only in simulation are the labels exact,
+but the test can be run in simulation or a digital twin before deployment. It can help determine whether a failure can be fixed
+with a head retrain or needs new data and deeper training. On a real robot, a fixed reference camera would give exact labels for camera changes,
+and image editing or human corrections could be used to approximate them for other perturbations.
 
-\emph{Limitations.} We do not have real-robot results, and the position expert needed 400 shifted
+\emph{Limitations.} The results are purely in simulation, and the position expert needed 400 shifted
 demonstrations. We train one seed for each of the six policy--task pairs and score each result on 50--300 episodes. The precise tasks
-also have lower in-distribution success, which limits what the labels can teach. We choose where the
+also have lower in-distribution success, limiting what the labels can teach. We decide where the
 head ends for each architecture, and for Diffusion Policy it is large. We tested ToolHang under one
 perturbation and ran Step~2 on ACT only. To complete Tables~\ref{tab:grid} and~\ref{tab:position}, we
 will run the missing cells (zoomed for Diffusion Policy on both tasks and for SmolVLA, and the other four
