@@ -115,7 +115,7 @@ imitation policies~\citep{xie2024decomposing,xue2025demogen}, and show that fine
 memorized trajectories~\citep{zhou2025liberopro}. ProbeAct uses a probe that estimates object position to
 correct a VLA's actions at run time~\citep{zhang2026probeact}. VLA failures under visual perturbations
 are traced to visual embedding drift and fixed by adapting the vision side with a new human
-demonstration~\citep{li2025vlagen}. Our work is closest to this approach, but retrains the output side.
+demonstration~\citep{li2025vlagen}. Our work instead retrains the output side.
 We test three architectures against a negative control and report failures not fixed by this retraining.
 CFNBC~\citep{durso2026cfnbc} selects repair data using paired counterfactual images. A frozen backbone
 may not always be sufficient, as other research demonstrates that encoders trained end to end contain
@@ -124,12 +124,13 @@ on the type of shift~\citep{lee2023surgical}, while for our policies, they depen
 
 \section{Method}
 \label{sec:method}
-A policy maps image observations to a chunk of actions through a backbone and an action head. We take
-the head to be the last module through which the backbone's features reach the action. For ACT this is
+A policy processes visual observations through a backbone and uses the action head to predict an action
+chunk. In this paper, we take the action head as the last module that the backbone's features reach the
+action through. For ACT this is
 the linear action head (5{,}130 of 52M weights), for Diffusion Policy it is the
 FiLM layers that condition the denoiser on the observation (11.6M of 300M), and for SmolVLA it
-is the output projection of the action expert (23{,}072 of 450M). The visual perturbations we use change
-only how the simulator renders a state, so the physics stays the same.
+is the output projection of the action expert (23{,}072 of 450M). The visual perturbations only change
+how the simulator renders a state, and the physics stays unchanged.
 
 \paragraph{Step 1: retrain the head.} We run the base policy under the perturbation and label each state
 it visits with the action the same policy takes when the state is rendered without the perturbation. This
