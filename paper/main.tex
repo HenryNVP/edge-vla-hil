@@ -132,16 +132,15 @@ FiLM layers that condition the denoiser on the observation (11.6M of 300M), and 
 is the output projection of the action expert (23{,}072 of 450M). The visual perturbations only change
 how the simulator renders a state, and the physics stays unchanged.
 
-\paragraph{Step 1: retrain the head.} We run the base policy under the perturbation and label each state
-it visits with the action the same policy takes when the state is rendered without the perturbation. This
-\emph{counterfactual label} needs no human and no demonstration. For object position
-there is no unperturbed image, so we use two other kinds of labels. One is an expert retrained on
-shifted demonstrations, queried on the learner's states over two DAgger iterations. The other is
-pseudo-labels that extend the policy's response from the nearest in-range position so that the action
-fully follows the object. We then train only the head with the policy's own training
-loss (for ACT's linear head, a squared loss with a closed-form solution), and we add in-distribution
-states labeled by the base policy to keep its normal behavior. For a visual perturbation, one round of
-30--60 perturbed and 20--30 in-distribution rollouts is all the data we use.
+\paragraph{Step 1: retrain the head.} The base policy runs under the perturbation, and each state it
+visits is labeled with the action that the same policy takes at that state without the perturbation.
+This \emph{counterfactual label} requires no human and no demonstration. There are no unperturbed images
+for object position cases, so we use two different types of labels. One is an expert retrained on
+out-of-distribution demonstrations, queried on the learner's states over two DAgger iterations. The other
+is pseudo-labels that extrapolate the policy's action from the nearest in-range position, so that the
+action always follows the object. We train only the head with the policy's own training loss, and add
+labeled in-distribution states to keep its normal behaviors. For a visual perturbation, we use one round
+of 30--60 perturbed and 20--30 in-distribution rollouts.
 
 \emph{Negative control and decision rule.} If the object is rendered invisible (opacity 0), the same
 retrain can at most learn to reach toward where the object usually is. Its success rate is therefore a
