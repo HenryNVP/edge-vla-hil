@@ -110,17 +110,17 @@ part we retrain. A linear probe serves as a comparison.}
 \label{fig:overview}
 \end{figure}
 
-\paragraph{Related work.} Earlier studies measure how visual factors and object placement affect
+\paragraph{Related work.} There are studies that measure how visual factors and object placement affect
 imitation policies~\citep{xie2024decomposing,xue2025demogen}, and show that fine-tuned VLAs often replay
-memorized trajectories~\citep{zhou2025liberopro}. ProbeAct uses a probe to correct a VLA's actions at run
-time~\citep{zhang2026probeact}. The work closest to ours is \citet{li2025vlagen}, who trace VLA failures
-under visual perturbations to drift in the visual embedding and fix them by adapting the vision side
-with one demonstration. We instead retrain the output side, test three architectures against a negative
-control, and report failures that this retrain does not fix. CFNBC~\citep{durso2026cfnbc} uses paired
-counterfactual images to choose repair data. Other work shows that encoders trained
-end to end carry decision information~\citep{wang2024feature}, so a frozen backbone may not always be
-enough, and that in classifiers the best layers to fine-tune depend on the type of
-shift~\citep{lee2023surgical}, while for our policies they depend more on the task.
+memorized trajectories~\citep{zhou2025liberopro}. ProbeAct uses a probe that estimates object position to
+correct a VLA's actions at run time~\citep{zhang2026probeact}. VLA failures under visual perturbations
+are traced to visual embedding drift and fixed by adapting the vision side with a new human
+demonstration~\citep{li2025vlagen}. Our work is closest to this approach, but retrains the output side.
+We test three architectures against a negative control and report failures not fixed by this retraining.
+CFNBC~\citep{durso2026cfnbc} selects repair data using paired counterfactual images. A frozen backbone
+may not always be sufficient, as other research demonstrates that encoders trained end to end contain
+decision information~\citep{wang2024feature}, and that in classifiers the best layers to fine-tune depend
+on the type of shift~\citep{lee2023surgical}, while for our policies, they depend more on the task.
 
 \section{Method}
 \label{sec:method}
