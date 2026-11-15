@@ -22,7 +22,7 @@
 \setlength{\textfloatsep}{12pt plus 2pt minus 4pt}
 
 \title{Head or Representation? Diagnosing Distribution-Shift Failures\\of Visuomotor Policies with Last-Layer Retraining}
-\author{\todo{author}}
+\author{Henry Nguyen}
 \date{}
 
 \begin{document}
@@ -114,7 +114,7 @@ part we retrain. A linear probe serves as a comparison.}
 imitation policies~\citep{xie2024decomposing,xue2025demogen}, and show that fine-tuned VLAs often replay
 memorized trajectories~\citep{zhou2025liberopro}. ProbeAct uses a probe that estimates object position to
 correct a VLA's actions at run time~\citep{zhang2026probeact}. VLA failures under visual perturbations
-are traced to visual embedding drift and fixed by adapting the vision side with a new human
+are traced to misaligned visual representations and fixed by adapting the vision side with a single
 demonstration~\citep{li2025vlagen}. Our work instead retrains the output side.
 We test three architectures against a negative control and report failures not fixed by this retraining.
 CFNBC~\citep{durso2026cfnbc} selects repair data using paired counterfactual images. A frozen backbone
@@ -190,7 +190,7 @@ labels on training seeds, and report closed-loop success on held-out test seeds.
 \begin{table}[t]
 \centering
 \caption{Success (\%), base $\to$ head retrained (100 test episodes; 50 for SmolVLA and ToolHang;
-$^\dagger$300). \hl{Bold}: head-limited; $^\circ$: not a failure; --: not yet run. In distribution after the retrain:
+$^\dagger$300). \hl{Bold}: head-limited; $^\circ$: not a failure; --: not run (Diffusion Policy zoomed on Lift was not a failure on development seeds). In distribution after the retrain:
 98--100 on Lift, 70--90 (ACT) and 77--87 (Diffusion) on Square, 26--40 on ToolHang (base 46).}
 \label{tab:grid}
 \footnotesize
@@ -302,11 +302,10 @@ and image editing or human corrections could be used to approximate them for oth
 \emph{Limitations.} The results are purely in simulation, and the position expert needed 400 shifted
 demonstrations. We train one seed for each of the six policy--task pairs and score each result on 50--300 episodes. The precise tasks
 also have lower in-distribution success, limiting what the labels can teach. We decide where the
-head ends for each architecture, and for Diffusion Policy it is large. We tested ToolHang under one
-perturbation and ran Step~2 on ACT only. To complete Tables~\ref{tab:grid} and~\ref{tab:position}, we
-will run the missing cells (zoomed for Diffusion Policy on both tasks and for SmolVLA, and the other four
-perturbations on ToolHang) and SmolVLA's pseudo-label and control retrains, train more seeds per pair,
-and run Step~2 on Diffusion Policy.
+head ends for each architecture, and for Diffusion Policy it is large. We tested ToolHang with ACT under one
+perturbation and ran Step~2 on ACT only. Still to run are SmolVLA on Square and ToolHang, Diffusion Policy on ToolHang, the
+missing cells of Table~\ref{tab:grid}, SmolVLA's pseudo-label and control retrains, Diffusion Policy at
+$\pm7$\,cm (it follows most 5\,cm shifts), more seeds, and Step~2 on Diffusion Policy.
 
 \bibliographystyle{unsrtnat}
 \bibliography{refs}
