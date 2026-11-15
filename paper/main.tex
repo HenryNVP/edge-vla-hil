@@ -190,7 +190,7 @@ labels on training seeds, and report closed-loop success on held-out test seeds.
 \begin{table}[t]
 \centering
 \caption{Success (\%), base $\to$ head retrained (100 test episodes; 50 for SmolVLA and ToolHang;
-$^\dagger$300). \hl{Bold}: head-limited; $^\circ$: not a failure. In distribution after the retrain:
+$^\dagger$300). \hl{Bold}: head-limited; $^\circ$: not a failure; --: not yet run. In distribution after the retrain:
 98--100 on Lift, 70--90 (ACT) and 77--87 (Diffusion) on Square, 26--40 on ToolHang (base 46).}
 \label{tab:grid}
 \footnotesize
@@ -236,15 +236,15 @@ SmolVLA & base & 67 & 46 & 100 & --\\
 \end{tabular}
 \end{table}
 
-\paragraph{Visual perturbations.} On Lift, 11 perturbations cause a failure, and 9 of them are
-head-limited (Table~\ref{tab:grid}). This holds for all three policies, and
+\paragraph{Visual perturbations.} On Lift, 11 perturbations cause a failure, 9 of which are
+head-limited (Table~\ref{tab:grid}). This applies to all three policies, and
 success in distribution stays at 98--100\% after the retrain. In the other two cases, the retrained
 policy does no better than the blind control. ACT under turn + roll goes from 4\% to 63\% while its
 control reaches 55\%, and SmolVLA upside down goes from 56\% to 72\% while its control reaches 60\%. The
 control behaves like a reach that ignores the cube: for ACT, it succeeds on 69\% of placements near the
-center but on only 40\% of those farther away. Two of the head-limited cases pass the rule
+center but on only 40\% of those farther away. There are two cases of head-limited failure passing the rule
 by less than 1.5 points (Diffusion Policy and SmolVLA under turn + roll). On Square and ToolHang, none of
-the 10 failures is head-limited. After the retrain every policy is still at 0--2\%, and in-distribution
+the 10 failures is head-limited. After the retrain, all three policies are still at 0--2\%, and in-distribution
 success drops by up to 20 points.
 
 \paragraph{Task or severity.} Table~\ref{tab:grid} mixes the task with the severity of the failure, because the same perturbations bring Square down to 0--2\%. To separate the two,
@@ -296,10 +296,13 @@ needs only a head retrain or new data and deeper training. On a real robot, a fi
 image editing or human corrections could approximate them otherwise.
 
 \emph{Limitations.} We do not have real-robot results, and the position expert needed 400 shifted
-demonstrations. Each configuration is one trained policy, scored on 50--300 episodes. The precise tasks
+demonstrations. We train one seed for each of the six policy--task pairs and score each result on 50--300 episodes. The precise tasks
 also have lower in-distribution success, which limits what the labels can teach. We choose where the
 head ends for each architecture, and for Diffusion Policy it is large. We tested ToolHang under one
-perturbation and ran Step~2 on ACT only.
+perturbation and ran Step~2 on ACT only. To complete Tables~\ref{tab:grid} and~\ref{tab:position}, we
+will run the missing cells (zoomed for Diffusion Policy on both tasks and for SmolVLA, and the other four
+perturbations on ToolHang) and SmolVLA's pseudo-label and control retrains, train more seeds per pair,
+and run Step~2 on Diffusion Policy.
 
 \bibliographystyle{unsrtnat}
 \bibliography{refs}
