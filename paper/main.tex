@@ -142,9 +142,9 @@ action always follows the object. We train only the head with the policy's own t
 labeled in-distribution states to keep its normal behaviors. For a visual perturbation, we use one round
 of 30--60 perturbed and 20--30 in-distribution rollouts.
 
-\emph{Negative control and decision rule.} If the object is rendered invisible (opacity 0), the same
-retrain can at most learn to reach toward where the object usually is. Its success rate is therefore a
-bound on what a retrain can gain without using the object. We write $[\ell, u]$ for the Wilson 95\%
+\emph{Negative control and decision rule.} If the object is made invisible (opacity 0), the same
+retrain can at most learn how to extend toward the position where the object usually is. Its success
+rate sets a bound on what the retrain can gain without using the object. We write $[\ell, u]$ for the Wilson 95\%
 interval of a success rate and compute it for the base policy in distribution (in) and under the
 perturbation (base), for the retrained policy under the perturbation (ret), and for the retrained
 control (ctl). We then use the rule
@@ -169,12 +169,12 @@ for each task and one Diffusion Policy each for Lift and Square, and we fine-tun
 distribution, the success rate is 100\% on Lift, 84\% for ACT and 95\% for Diffusion Policy on Square,
 and 46\% on ToolHang.
 
-The perturbations (Figure~\ref{fig:shifts}) are applied to both cameras, since on Lift these policies
-handle a change to one camera well. They are the agentview camera turned by $30^\circ$ with the wrist
+Visual perturbations (Figure~\ref{fig:shifts}) are applied to both cameras, since on Lift, these
+policies are robust to single-camera changes. They are the agentview camera turned by $30^\circ$ with the wrist
 camera rolled by $90^\circ$, a red table in dim light with the same wrist roll, both cameras upside down,
 both cameras zoomed in, a faint object (opacity 0.1), and the invisible-object control. For object
 position, we move the Lift cube by $\pm5$ or $\pm7$\,cm along $x$ or $y$, on top of the $\pm3$\,cm
-random placement used in the demonstrations. We picked perturbation strengths on development seeds, collected
+random placement used in the demonstrations. We choose perturbation strengths on development seeds, collect
 labels on training seeds, and report closed-loop success on held-out test seeds.
 
 \begin{figure}[t]
