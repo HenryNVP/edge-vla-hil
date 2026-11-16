@@ -22,8 +22,8 @@
 \setlength{\textfloatsep}{12pt plus 2pt minus 4pt}
 
 \title{Head or Representation? Diagnosing Distribution-Shift Failures\\of Visuomotor Policies with Last-Layer Retraining}
-\author{Henry Nguyen}
-\date{}
+\author{Henry Nguyen\\[2pt]{\small\itshape Working draft, November 2026. Some experiments are incomplete; see the limitations.}}
+\date{\vspace{-6ex}}
 
 \begin{document}
 \maketitle
@@ -125,12 +125,12 @@ on the type of shift~\citep{lee2023surgical}, while for our policies, they depen
 \section{Method}
 \label{sec:method}
 A policy processes visual observations through a backbone and uses the action head to predict an action
-chunk. In this paper, we take the action head as the last module that the backbone's features reach the
+chunk, and in this paper, we take the action head as the last module that the backbone's features reach the
 action through. For ACT this is
 the linear action head (5{,}130 of 52M weights), for Diffusion Policy it is the
 FiLM layers that condition the denoiser on the observation (11.6M of 300M), and for SmolVLA it
 is the output projection of the action expert (23{,}072 of 450M). The visual perturbations only change
-how the simulator renders a state, and the physics stays unchanged.
+how the simulator renders a state, and the simulation physics stays unchanged.
 
 \paragraph{Step 1: retrain the head.} The base policy runs under the perturbation, and each state it
 visits is labeled with the action that the same policy takes at that state without the perturbation.
