@@ -38,7 +38,7 @@ without perturbation. If the retrained policy performs better than both the base
 control in which the object is invisible, the failure is \emph{head-limited}. For ACT, Diffusion Policy
 and SmolVLA, 9 of 11 visual failures on robomimic Lift are head-limited, and for out-of-range objects,
 retraining ACT's action head closes over half the gap without new demonstrations. On Square and ToolHang,
-even when Square fails only partly, none of the 10 failures is head-limited. Therefore, in our tasks, the
+even when Square fails only partly, none of the 15 failures is head-limited. Therefore, in our tasks, the
 regime depends more on the task than on the severity of the failure. On Square, deeper fine-tuning is
 needed to recover success rate (25\% with LoRA, 43\% with full fine-tuning). In addition, we find that a
 linear probe of the grasp point does not predict which failures the head retrain can fix.
@@ -167,7 +167,7 @@ images from its recorded states. All policies take two $84\times84$ views
 (agentview and wrist) and output absolute end-effector actions in chunks of 16. We train one ACT policy
 for each task and one Diffusion Policy each for Lift and Square, and we fine-tune SmolVLA on Lift. In
 distribution, the success rate is 100\% on Lift, 84\% for ACT and 95\% for Diffusion Policy on Square,
-and 46\% on ToolHang.
+and 40\% on ToolHang.
 
 Visual perturbations (Figure~\ref{fig:shifts}) are applied to both cameras, since on Lift, these
 policies are robust to single-camera changes. They are the agentview camera turned by $30^\circ$ with the wrist
@@ -190,8 +190,8 @@ labels on training seeds, and report closed-loop success on held-out test seeds.
 \begin{table}[t]
 \centering
 \caption{Success (\%), base $\to$ head retrained (100 test episodes; 50 for SmolVLA and ToolHang;
-$^\dagger$300). \hl{Bold}: head-limited; $^\circ$: not a failure; --: not run, except zoomed on Lift for Diffusion Policy and SmolVLA, which did not fail on development seeds. In distribution after the retrain:
-98--100 on Lift, 70--90 (ACT) and 77--87 (Diffusion) on Square, 26--40 on ToolHang (base 46).}
+$^\dagger$300). \hl{Bold}: head-limited; $^\circ$: not a failure; --: did not fail on development seeds. In distribution after the retrain:
+98--100 on Lift, 70--90 (ACT) and 71--87 (Diffusion) on Square, 12--42 on ToolHang (base 40).}
 \label{tab:grid}
 \footnotesize
 \setlength{\tabcolsep}{4pt}
@@ -201,15 +201,15 @@ $^\dagger$300). \hl{Bold}: head-limited; $^\circ$: not a failure; --: not run, e
 \cmidrule(lr){2-4}\cmidrule(lr){5-6}\cmidrule(lr){7-7}
 Perturbation & ACT & Diffusion & SmolVLA & ACT & Diffusion & ACT\\
 \midrule
-turn + roll      & 4 $\to$ 63$^\dagger$ & \hl{91 $\to$ 100} & \hl{64 $\to$ 88} & 0 $\to$ 0 & 1 $\to$ 2 & --\\
-red, dim + roll  & \hl{49 $\to$ 78} & \hl{66 $\to$ 98}  & $90 \to 100^\circ$ & 2 $\to$ 0 & 0 $\to$ 1 & --\\
+turn + roll      & 4 $\to$ 63$^\dagger$ & \hl{91 $\to$ 100} & \hl{64 $\to$ 88} & 0 $\to$ 0 & 1 $\to$ 2 & 0 $\to$ 0\\
+red, dim + roll  & \hl{49 $\to$ 78} & \hl{66 $\to$ 98}  & $90 \to 100^\circ$ & 2 $\to$ 0 & 0 $\to$ 1 & 0 $\to$ 0\\
 upside down      & \hl{36 $\to$ 85} & \hl{54 $\to$ 99}  & 56 $\to$ 72  & 0 $\to$ 1 & 0 $\to$ 1 & 0 $\to$ 0\\
-zoomed           & \hl{37 $\to$ 83} & --           & --           & 0 $\to$ 0 & -- & --\\
-faint            & \hl{82 $\to$ 100}& \hl{62 $\to$ 94}  & $90 \to 98^\circ$ & 2 $\to$ 1 & 0 $\to$ 0 & --\\
+zoomed           & \hl{37 $\to$ 83} & --           & --           & 0 $\to$ 0 & 0 $\to$ 1 & 0 $\to$ 0\\
+faint            & \hl{82 $\to$ 100}& \hl{62 $\to$ 94}  & $90 \to 98^\circ$ & 2 $\to$ 1 & 0 $\to$ 0 & 2 $\to$ 8\\
 \midrule
 invisible (control) & 28 $\to$ 55$^\dagger$ & 58 $\to$ 78 & 26 $\to$ 60 & 0 $\to$ 0 & 0 $\to$ 0 & 0 $\to$ 0\\
 \midrule
-head-limited / failures & 4/5 & 4/4 & 1/2 & 0/5 & 0/4 & 0/1\\
+head-limited / failures & 4/5 & 4/4 & 1/2 & 0/5 & 0/5 & 0/5\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -244,8 +244,8 @@ control reaches 55\%, and SmolVLA upside down goes from 56\% to 72\% while its c
 control behaves like a reach that ignores the cube: for ACT, it succeeds on 69\% of placements near the
 center but on only 40\% of those farther away. There are two cases of head-limited failure passing the rule
 by less than 1.5 points (Diffusion Policy and SmolVLA under turn + roll). On Square and ToolHang, none of
-the 10 failures is head-limited. After the retrain, all three policies are still at 0--2\%, and in-distribution
-success drops by up to 20 points.
+the 15 failures is head-limited. After the retrain, all three policies are still at 0--8\%, and in-distribution
+success drops by up to 28 points.
 
 \paragraph{Task or severity.} In Table~\ref{tab:grid}, the task is combined with the severity of the failure,
 and the same perturbations bring Square down to 0--2\%. To separate the two,
@@ -302,9 +302,7 @@ and image editing or human corrections could be used to approximate them for oth
 \emph{Limitations.} The results are purely in simulation, and the position expert needed 400 shifted
 demonstrations. We train one seed for each of the six policy--task pairs and score each result on 50--300 episodes. The precise tasks
 also have lower in-distribution success, limiting what the labels can teach. We decide where the
-head ends for each architecture, and for Diffusion Policy it is large. We tested ToolHang with ACT under one
-perturbation and ran Step~2 on ACT only. Still to run are SmolVLA on Square and ToolHang, Diffusion Policy on ToolHang, the
-missing cells of Table~\ref{tab:grid}, SmolVLA's pseudo-label and control retrains, Diffusion Policy at
+head ends for each architecture, and for Diffusion Policy it is large. We tested ToolHang with ACT only and ran Step~2 on ACT only. Still to run are SmolVLA on Square and ToolHang, Diffusion Policy on ToolHang, SmolVLA's pseudo-label and control retrains, Diffusion Policy at
 $\pm7$\,cm (it follows most 5\,cm shifts), more seeds, and Step~2 on Diffusion Policy.
 
 \bibliographystyle{unsrtnat}
