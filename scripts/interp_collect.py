@@ -88,36 +88,60 @@ def place(env, obs, shift, task=TASKS['square']):
     return observe(env)
 
 
-def self_label(env, policy, obs, batch, task, delta: float = 0.01, full: bool = False) -> np.ndarray:
+def dp_pred(policy, stacked: dict, seed: int = 0) -> np.ndarray:
+    """DP's full-horizon action_pred (abs10) with fixed sampling noise, so counterfactual chunks
+    differ only by their input (common random numbers); the rollout's RNG state is untouched."""
+    import torch
+    with torch.random.fork_rng(devices=[torch.cuda.current_device()] if torch.cuda.is_available() else []):
+        torch.manual_seed(seed)
+        with torch.no_grad():
+            return policy._policy.predict_action(policy._to_policy_obs(stacked))['action_pred'][0].cpu().numpy()
+
+
+def align_to_dp(chunk: np.ndarray, n_obs_steps: int) -> np.ndarray:
+    """An ACT chunk (row 0 = now) as a DP horizon (row n_obs_steps - 1 = now): shift down by
+    n_obs_steps - 1 rows, repeating row 0 for the past steps."""
+    pad = n_obs_steps - 1
+    return np.concatenate([np.repeat(chunk[:1], pad, 0), chunk[:len(chunk) - pad]]) if pad else chunk
+
+
+def self_label(env, policy, obs, batch, task, delta: float = 0.01, full: bool = False,
+               backend: str = 'act') -> np.ndarray:
     """Label-free target chunk (abs10) for the current state, from the policy itself: with the
     object outside the demos' box, the policy's chunk with the object moved to the nearest point
     of the box (delta inside), its xy extended to the real object by the policy's own local slope
     there (central differences, ±delta per axis); inside the box, the policy's own chunk. The
     sim is restored bitwise after each counterfactual (as interp_gainmap.probe). full: rescale
-    each axis's slope so the chunk's last row follows that axis fully (gain 1)."""
+    each axis's slope so the chunk's last row follows that axis fully (gain 1). backend 'dp':
+    chunks are DP's full horizon on the current frame repeated n_obs_steps times (as cf_label),
+    with fixed noise (dp_pred); batch is unused."""
     import torch
     from dp_anchor_probe import observe, set_object
     from fuzzy_gate import _data_arrays
     from interp_act_sites import forward
-    act = policy._model
+
+    def predict(stacked=None):
+        if backend == 'dp':
+            return dp_pred(policy, stacked or sil_step.stack(
+                [sil_step.frames(observe(env))] * policy.n_obs_steps, True))
+        with torch.no_grad():
+            return forward(policy._model, policy._obs_to_batch(stacked) if stacked else batch)[0].cpu().numpy()
     xy = np.asarray(obs[task['pos']][:2], float)
     lo, hi = np.asarray(task['lo']), np.asarray(task['hi'])
     if np.all((xy >= lo) & (xy <= hi)):
-        with torch.no_grad():
-            return forward(act, batch)[0].cpu().numpy()
+        return predict()
     c = np.clip(xy, lo + delta, hi - delta)
     d = env.sim.data
     saved = _data_arrays(d)
 
     def chunk_at(p):
         set_object(env, task['joint'], p)
-        b = policy._obs_to_batch(sil_step.stack([sil_step.frames(observe(env))], True))
+        stacked = sil_step.stack([sil_step.frames(observe(env))] * (policy.n_obs_steps if backend == 'dp' else 1), True)
         for k, v in saved.items():
             cur = getattr(d, k)
             if cur.shape == v.shape:
                 cur[...] = v
-        with torch.no_grad():
-            return forward(act, b)[0].cpu().numpy()
+        return predict(stacked)
     label = chunk_at(c)
     for k in (0, 1):
         e = np.eye(2)[k] * delta
@@ -167,10 +191,12 @@ def main() -> None:
     p.add_argument('--corrector', default='',
                    help='interp_corrector label files: run the corrected policy')
     p.add_argument('--teacher', default='',
-                   help="ACT only: also save the policy's head inputs and this ACT's chunk at every "
+                   help="ACT: also save the policy's head inputs and this ACT's chunk at every "
+                        "prediction; SmolVLA / DP: this ACT labels the policy's own states (every "
+                        "--label-every ticks; DP: shifted onto its horizon). "
                         'prediction (labels for interp_edit --onpolicy)')
     p.add_argument('--selflabel', nargs='?', const='slope', default='', choices=('slope', 'full', 'cf'),
-                   help='ACT only: like --teacher, labels from self_label (no demos, no teacher); '
+                   help='ACT or DP (DP: every --label-every ticks): like --teacher, labels from self_label (no demos, no teacher); '
                         'full = slopes rescaled to gain 1; cf = cf_label (the --nuisance-free render)')
     p.add_argument('--nuisance', default='', help='interp_nuisance spec: appearance shift at every reset')
     p.add_argument('--label-weights', default='',
@@ -214,7 +240,11 @@ def main() -> None:
     labeller = (make_policy(args.backend, args.label_weights, denoise_steps=args.denoise_steps)
                 if args.label_weights else policy)
     # SmolVLA with --teacher: an ACT expert labels the VLA's own states (same abs10 action space)
-    teacher_pol = make_policy('act', args.teacher) if args.teacher and args.backend == 'smolvla' else None
+    # DP too: the ACT chunk is shifted onto DP's horizon (align_to_dp)
+    teacher_pol = (make_policy('act', args.teacher) if args.teacher and args.backend in ('smolvla', 'dp')
+                   else None)
+    if teacher_pol is not None or (args.selflabel and args.backend == 'dp'):
+        import torch
 
     def fresh(o):
         """Reset observation with the nuisance applied (the model is rebuilt each reset)."""
@@ -254,10 +284,17 @@ def main() -> None:
                         with torch.no_grad():
                             labels.append(teacher_pol._model.predict_action_chunk(
                                 teacher_pol._obs_to_batch(stacked))[0].cpu().numpy())
+                        if args.backend == 'dp':
+                            labels[-1] = align_to_dp(labels[-1], policy.n_obs_steps)
                 elif args.selflabel == 'cf' and args.backend == 'dp':   # its head input: feats
                     if (len(feats) - 1) % args.label_every == 0:          # DP labels are costly
                         label_ticks.append(len(feats) - 1)
                         labels.append(cf_label(env, labeller, nuis, 'dp'))
+                elif args.selflabel and args.backend == 'dp':           # pseudo-labels (slope / full)
+                    if (len(feats) - 1) % args.label_every == 0:
+                        label_ticks.append(len(feats) - 1)
+                        labels.append(self_label(env, labeller, rec.obs, None, task,
+                                                 full=args.selflabel == 'full', backend='dp'))
                 elif args.teacher or args.selflabel:
                     if args.save_images:
                         seen.append((stacked['agentview'][-1], stacked['wrist'][-1], stacked['proprio'][-1]))
