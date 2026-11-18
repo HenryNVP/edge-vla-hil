@@ -88,14 +88,17 @@ def place(env, obs, shift, task=TASKS['square']):
     return observe(env)
 
 
-def dp_pred(policy, stacked: dict, seed: int = 0) -> np.ndarray:
-    """DP's full-horizon action_pred (abs10) with fixed sampling noise, so counterfactual chunks
-    differ only by their input (common random numbers); the rollout's RNG state is untouched."""
+def fixed_noise_pred(policy, stacked: dict, backend: str, seed: int = 0) -> np.ndarray:
+    """A sampling policy's chunk (abs10; DP: its full-horizon action_pred, SmolVLA: its chunk)
+    with fixed sampling noise, so counterfactual chunks differ only by their input (common random
+    numbers); the rollout's RNG state is untouched."""
     import torch
     with torch.random.fork_rng(devices=[torch.cuda.current_device()] if torch.cuda.is_available() else []):
         torch.manual_seed(seed)
         with torch.no_grad():
-            return policy._policy.predict_action(policy._to_policy_obs(stacked))['action_pred'][0].cpu().numpy()
+            if backend == 'dp':
+                return policy._policy.predict_action(policy._to_policy_obs(stacked))['action_pred'][0].cpu().numpy()
+            return policy._model.predict_action_chunk(policy._obs_to_batch(stacked))[0].cpu().numpy()
 
 
 def align_to_dp(chunk: np.ndarray, n_obs_steps: int) -> np.ndarray:
@@ -112,18 +115,18 @@ def self_label(env, policy, obs, batch, task, delta: float = 0.01, full: bool = 
     of the box (delta inside), its xy extended to the real object by the policy's own local slope
     there (central differences, ±delta per axis); inside the box, the policy's own chunk. The
     sim is restored bitwise after each counterfactual (as interp_gainmap.probe). full: rescale
-    each axis's slope so the chunk's last row follows that axis fully (gain 1). backend 'dp':
-    chunks are DP's full horizon on the current frame repeated n_obs_steps times (as cf_label),
-    with fixed noise (dp_pred); batch is unused."""
+    each axis's slope so the chunk's last row follows that axis fully (gain 1). backend 'dp' /
+    'smolvla': chunks from the current frame (DP: repeated n_obs_steps times, its full horizon,
+    as cf_label) with fixed noise (fixed_noise_pred); batch is unused."""
     import torch
     from dp_anchor_probe import observe, set_object
     from fuzzy_gate import _data_arrays
     from interp_act_sites import forward
 
     def predict(stacked=None):
-        if backend == 'dp':
-            return dp_pred(policy, stacked or sil_step.stack(
-                [sil_step.frames(observe(env))] * policy.n_obs_steps, True))
+        if backend in ('dp', 'smolvla'):
+            return fixed_noise_pred(policy, stacked or sil_step.stack(
+                [sil_step.frames(observe(env))] * policy.n_obs_steps, True), backend)
         with torch.no_grad():
             return forward(policy._model, policy._obs_to_batch(stacked) if stacked else batch)[0].cpu().numpy()
     xy = np.asarray(obs[task['pos']][:2], float)
@@ -196,7 +199,7 @@ def main() -> None:
                         "--label-every ticks; DP: shifted onto its horizon). "
                         'prediction (labels for interp_edit --onpolicy)')
     p.add_argument('--selflabel', nargs='?', const='slope', default='', choices=('slope', 'full', 'cf'),
-                   help='ACT or DP (DP: every --label-every ticks): like --teacher, labels from self_label (no demos, no teacher); '
+                   help='ACT, DP or SmolVLA (DP / SmolVLA: every --label-every ticks): like --teacher, labels from self_label (no demos, no teacher); '
                         'full = slopes rescaled to gain 1; cf = cf_label (the --nuisance-free render)')
     p.add_argument('--nuisance', default='', help='interp_nuisance spec: appearance shift at every reset')
     p.add_argument('--label-weights', default='',
@@ -243,7 +246,7 @@ def main() -> None:
     # DP too: the ACT chunk is shifted onto DP's horizon (align_to_dp)
     teacher_pol = (make_policy('act', args.teacher) if args.teacher and args.backend in ('smolvla', 'dp')
                    else None)
-    if teacher_pol is not None or (args.selflabel and args.backend == 'dp'):
+    if teacher_pol is not None or (args.selflabel and args.backend in ('dp', 'smolvla')):
         import torch
 
     def fresh(o):
@@ -295,6 +298,15 @@ def main() -> None:
                         label_ticks.append(len(feats) - 1)
                         labels.append(self_label(env, labeller, rec.obs, None, task,
                                                  full=args.selflabel == 'full', backend='dp'))
+                elif args.selflabel and args.backend == 'smolvla':      # pseudo-labels (slope / full)
+                    t = len(states)
+                    if t % args.label_every == 0:
+                        label_ticks.append(t)
+                        if args.save_images:
+                            seen.append((stacked['agentview'][-1], stacked['wrist'][-1],
+                                         stacked['proprio'][-1]))
+                        labels.append(self_label(env, labeller, rec.obs, None, task,
+                                                 full=args.selflabel == 'full', backend='smolvla'))
                 elif args.teacher or args.selflabel:
                     if args.save_images:
                         seen.append((stacked['agentview'][-1], stacked['wrist'][-1], stacked['proprio'][-1]))
