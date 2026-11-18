@@ -39,8 +39,8 @@ the states the policy visits and label them with the frozen policy's actions on 
 without perturbation. If the retrained policy performs better than both the base policy and a negative
 control in which the object is invisible, the failure is \emph{head-limited}. For ACT, Diffusion Policy
 and SmolVLA, 9 of 11 visual failures on robomimic Lift are head-limited, and for out-of-range objects,
-retraining ACT's action head closes over half the gap without new demonstrations. On Square and ToolHang,
-even when Square fails only partly, none of the 15 failures is head-limited. Therefore, in our tasks, the
+retraining the action head on pseudo-labels closes over half the gap without new demonstrations. On Square and ToolHang,
+even when Square fails only partly, none of the 20 failures is head-limited. Therefore, in our tasks, the
 regime depends more on the task than on the severity of the failure. On Square, deeper fine-tuning is
 needed to recover success rate (25\% with LoRA, 43\% with full fine-tuning). In addition, we find that a
 linear probe of the grasp point does not predict which failures the head retrain can fix.
@@ -70,8 +70,8 @@ representation suffices, and the failure is \emph{head-limited}; otherwise, it i
 Our contributions are (i) this diagnostic for closed-loop visuomotor policies, with counterfactual
 self-labels, an invisible-object negative control and an explicit decision rule; (ii) results on ACT,
 Diffusion Policy and SmolVLA~\citep{shukor2025smolvla} showing that head-limited failures are common in
-Lift while not existing in Square and ToolHang despite partial failure in Square; and (iii) results
-indicating that the linear probe of the grasp point is not indicative of the regime.
+Lift while not existing in Square and ToolHang despite partial failure in Square; and (iii) evidence
+that a linear probe of the grasp point does not predict the regime.
 
 \begin{figure}[t]
 \centering
@@ -167,9 +167,8 @@ We use three robomimic~\citep{mandlekar2021robomimic} tasks, Lift, Square and To
 proficient-human demonstrations, in robosuite 1.4.1~\citep{zhu2020robosuite}. We render ToolHang
 images from its recorded states. All policies take two $84\times84$ views
 (agentview and wrist) and output absolute end-effector actions in chunks of 16. We train one ACT policy
-for each task and one Diffusion Policy each for Lift and Square, and we fine-tune SmolVLA on Lift. In
-distribution, the success rate is 100\% on Lift, 84\% for ACT and 95\% for Diffusion Policy on Square,
-and 40\% on ToolHang.
+for each task and one Diffusion Policy each for Lift and Square, and we fine-tune SmolVLA on Lift and Square. In
+distribution, success is 100\% on Lift, 84\% (ACT), 95\% (Diffusion) and 26\% (SmolVLA) on Square, and 40\% on ToolHang.
 
 Visual perturbations (Figure~\ref{fig:shifts}) are applied to both cameras, since on Lift, these
 policies are robust to single-camera changes. They are the agentview camera turned by $30^\circ$ with the wrist
@@ -177,7 +176,7 @@ camera rolled by $90^\circ$, a red table in dim light with the same wrist roll, 
 both cameras zoomed in, a faint object (opacity 0.1), and the invisible-object control. For object
 position, we move the Lift cube by $\pm5$ or $\pm7$\,cm along $x$ or $y$, on top of the $\pm3$\,cm
 random placement used in the demonstrations. We choose perturbation strengths on development seeds, collect
-labels on training seeds, and report closed-loop success on held-out test seeds.
+labels on training seeds, and test on held-out seeds.
 
 \begin{figure}[t]
 \centering
@@ -192,34 +191,33 @@ labels on training seeds, and report closed-loop success on held-out test seeds.
 \begin{table}[t]
 \centering
 \caption{Success (\%), base $\to$ head retrained (100 test episodes; 50 for SmolVLA and ToolHang;
-$^\dagger$300). \hl{Bold}: head-limited; $^\circ$: not a failure; --: did not fail on development seeds. In distribution after the retrain:
-98--100 on Lift, 70--90 (ACT) and 71--87 (Diffusion) on Square, 12--42 on ToolHang (base 40).}
+$^\dagger$300). \hl{Bold}: head-limited; $^\circ$: not a failure; --: no failure on dev seeds. In distribution after the retrain:
+Lift 98--100; Square 70--90 (ACT), 71--87 (Diffusion), 8--24 (SmolVLA); ToolHang 12--42.}
 \label{tab:grid}
 \footnotesize
 \setlength{\tabcolsep}{4pt}
-\begin{tabular}{lcccccc}
+\begin{tabular}{lccccccc}
 \toprule
- & \multicolumn{3}{c}{Lift} & \multicolumn{2}{c}{Square} & ToolHang\\
-\cmidrule(lr){2-4}\cmidrule(lr){5-6}\cmidrule(lr){7-7}
-Perturbation & ACT & Diffusion & SmolVLA & ACT & Diffusion & ACT\\
+ & \multicolumn{3}{c}{Lift} & \multicolumn{3}{c}{Square} & ToolHang\\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-8}
+Perturbation & ACT & Diffusion & SmolVLA & ACT & Diffusion & SmolVLA & ACT\\
 \midrule
-turn + roll      & 4 $\to$ 63$^\dagger$ & \hl{91 $\to$ 100} & \hl{64 $\to$ 88} & 0 $\to$ 0 & 1 $\to$ 2 & 0 $\to$ 0\\
-red, dim + roll  & \hl{49 $\to$ 78} & \hl{66 $\to$ 98}  & $90 \to 100^\circ$ & 2 $\to$ 0 & 0 $\to$ 1 & 0 $\to$ 0\\
-upside down      & \hl{36 $\to$ 85} & \hl{54 $\to$ 99}  & 56 $\to$ 72  & 0 $\to$ 1 & 0 $\to$ 1 & 0 $\to$ 0\\
-zoomed           & \hl{37 $\to$ 83} & --           & --           & 0 $\to$ 0 & 0 $\to$ 1 & 0 $\to$ 0\\
-faint            & \hl{82 $\to$ 100}& \hl{62 $\to$ 94}  & $90 \to 98^\circ$ & 2 $\to$ 1 & 0 $\to$ 0 & 2 $\to$ 8\\
+turn + roll      & 4 $\to$ 63$^\dagger$ & \hl{91 $\to$ 100} & \hl{64 $\to$ 88} & 0 $\to$ 0 & 1 $\to$ 2 & 0 $\to$ 0 & 0 $\to$ 0\\
+red, dim + roll  & \hl{49 $\to$ 78} & \hl{66 $\to$ 98}  & $90 \to 100^\circ$ & 2 $\to$ 0 & 0 $\to$ 1 & 2 $\to$ 2 & 0 $\to$ 0\\
+upside down      & \hl{36 $\to$ 85} & \hl{54 $\to$ 99}  & 56 $\to$ 72  & 0 $\to$ 1 & 0 $\to$ 1 & 2 $\to$ 0 & 0 $\to$ 0\\
+zoomed           & \hl{37 $\to$ 83} & --           & --           & 0 $\to$ 0 & 0 $\to$ 1 & 0 $\to$ 2 & 0 $\to$ 0\\
+faint            & \hl{82 $\to$ 100}& \hl{62 $\to$ 94}  & $90 \to 98^\circ$ & 2 $\to$ 1 & 0 $\to$ 0 & 2 $\to$ 10 & 2 $\to$ 8\\
 \midrule
-invisible (control) & 28 $\to$ 55$^\dagger$ & 58 $\to$ 78 & 26 $\to$ 60 & 0 $\to$ 0 & 0 $\to$ 0 & 0 $\to$ 0\\
+invisible (control) & 28 $\to$ 55$^\dagger$ & 58 $\to$ 78 & 26 $\to$ 60 & 0 $\to$ 0 & 0 $\to$ 0 & 0 $\to$ 2 & 0 $\to$ 0\\
 \midrule
-head-limited / failures & 4/5 & 4/4 & 1/2 & 0/5 & 0/5 & 0/5\\
+head-limited / failures & 4/5 & 4/4 & 1/2 & 0/5 & 0/5 & 0/5 & 0/5\\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[t]
 \centering
-\caption{Object position on Lift: success (\%), cube shifted $\pm5$/$\pm7$\,cm per axis (ACT and Diffusion Policy 160 episodes
-per axis, SmolVLA 120). ``Per axis'': one retrain per axis, scored on that axis.}
+\caption{Object position on Lift: success (\%), cube shifted $\pm5$/$\pm7$\,cm (160 episodes per axis, SmolVLA 120).}
 \label{tab:position}
 \footnotesize
 \begin{tabular}{llrrrr}
@@ -234,6 +232,8 @@ ACT & base & 55 & 47 & 100 & --\\
 \midrule
 SmolVLA & base & 67 & 46 & 100 & --\\
  & head retrain, DAgger expert labels (per axis) & 91 & 86 & 100 & 23{,}072\\
+ & head retrain, pseudo-labels, no demos & 88 & 88 & 92 & 23{,}072\\
+ & head retrain, in-distribution labels (control) & 67 & 50 & 100 & 23{,}072\\
 \midrule
 Diffusion & base & 66 & 79 & 100 & --\\
  & head retrain, DAgger expert labels (per axis) & 98 & 87 & 100 & 11.6M\\
@@ -250,8 +250,7 @@ control reaches 55\%, and SmolVLA upside down goes from 56\% to 72\% while its c
 control behaves like a reach that ignores the cube: for ACT, it succeeds on 69\% of placements near the
 center but on only 40\% of those farther away. There are two cases of head-limited failure passing the rule
 by less than 1.5 points (Diffusion Policy and SmolVLA under turn + roll). On Square and ToolHang, none of
-the 15 failures is head-limited. After the retrain, all three policies are still at 0--8\%, and in-distribution
-success drops by up to 28 points.
+the 20 failures is head-limited. Retrained, all three policies stay at 0--10\% and lose up to 28 points in distribution.
 
 \paragraph{Task or severity.} In Table~\ref{tab:grid}, the task is combined with the severity of the failure,
 and the same perturbations bring Square down to 0--2\%. To separate the two,
@@ -261,8 +260,7 @@ changes still gave ACT 0\% even with a $10^\circ$ turn. None of these partial
 failures turned out to be head-limited. With the object at opacity 0.3, ACT goes from 36\% to 51\% and
 Diffusion Policy from 24\% to 26\%. With the wrist camera rolled, Diffusion Policy goes from 28\% to 41\%.
 In all three cases, the retrained interval overlaps the base interval. In the case of
-Diffusion Policy with a faint object, where the policy and the type of perturbation are the same on both
-tasks, success goes from 62\% to 94\% on Lift, but only from 24\% to 26\% on Square, even though the object on
+Diffusion Policy with a faint object, success goes from 62\% to 94\% on Lift, but only from 24\% to 26\% on Square, even though the object on
 Square is less faint (opacity 0.3 instead of 0.1). Severity still plays a role within Lift, as the ACT
 turn + roll case shows.
 
@@ -278,9 +276,9 @@ partly because it learns to copy it.
 Retraining on in-distribution labels only, used as the
 control here, does not help, so the failure is head-limited and the improvement is from the labels.
 SmolVLA can be fixed in the same way with labels from the same ACT expert, but its $y$ retrain lowers its
-$x$ success from 67\% to 55\%. Diffusion Policy fails less (66\% and 79\%); expert labels lift it to 98\% on $x$
+$x$ success from 67\% to 55\%. Its pseudo-labels reach 88\% on both axes (control 67\% and 50\%; in distribution 92\%). Diffusion Policy fails less (66\% and 79\%); expert labels lift it to 98\% on $x$
 (control 64\%), head-limited, but only to 87\% on $y$ (control 74\%). Its pseudo-labels miss by
-up to 24\,cm (ACT: 1--3\,cm).
+up to 24\,cm (ACT and SmolVLA: 1--3\,cm).
 
 \paragraph{Linear probe.} We use a ridge-regression probe to predict the grasp point (the table position of the cube, the nut handle
 or the tool) from the head's input features. The probe uses frames before contact and
@@ -293,9 +291,9 @@ Square failures (0.18--0.49) are not.
 
 \paragraph{Fine-tuning deeper on Square.} For ACT on Square under turn + roll, full fine-tuning (Step~2)
 reaches 0, 1, 18, 43 and 40\% success over DAgger iterations 1--5. With the same four iterations of labels, the head alone stays at 0\%, LoRA
-(rank 8, 457K weights) reaches 25\% and full fine-tuning reaches 43\%. Note that the iterations were
-collected with the fully fine-tuned policy, which favors it. In-distribution success is hurt by fine-tuning
-and falls from 84\% to 73\% after four iterations and to 48\% after five. On ToolHang,
+(rank 8, 457K weights) reaches 25\% and full fine-tuning reaches 43\%. The iterations were
+collected with the fully fine-tuned policy, which favors it. In distribution, success
+falls from 84\% to 73\% after four iterations and to 48\% after five. On ToolHang,
 full fine-tuning gives 0 of 30 successes after two iterations, and also 0 of 30 in distribution.
 
 \section{Conclusion and limitations}
@@ -307,9 +305,9 @@ with a head retrain or needs new data and deeper training. On a real robot, a fi
 and image editing or human corrections could be used to approximate them for other perturbations.
 
 \emph{Limitations.} The results are purely in simulation, and the position expert needed 400 shifted
-demonstrations. We train one seed for each of the six policy--task pairs and score each result on 50--300 episodes. The precise tasks
-also have lower in-distribution success, limiting what the labels can teach. We decide where the
-head ends for each architecture, and for Diffusion Policy it is large. Still to run are SmolVLA on Square, the other two policies on ToolHang, SmolVLA's position controls, Step~2 on Diffusion Policy, and more seeds.
+demonstrations. We train one seed for each of the seven policy--task pairs and score each result on 50--300 episodes. Square and ToolHang
+have lower in-distribution success, which limits what the labels can teach. We choose where each
+head ends; for Diffusion Policy it is large. Still to run: Diffusion Policy and SmolVLA on ToolHang, Step~2 on Diffusion Policy, and more seeds.
 
 \bibliographystyle{unsrtnat}
 \bibliography{refs}
