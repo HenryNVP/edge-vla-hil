@@ -19,7 +19,9 @@
 \newcommand{\pend}[1]{\par\noindent\colorbox{yellow!45}{\parbox{\dimexpr\linewidth-2\fboxsep}{\footnotesize\textbf{PENDING:} #1}}\par}
 \newcommand{\tbd}{\colorbox{yellow!45}{\strut ??}}
 \newcommand{\hl}[1]{\textbf{#1}}   % head-limited cell
-\setlength{\textfloatsep}{12pt plus 2pt minus 4pt}
+\setlength{\textfloatsep}{10pt plus 2pt minus 4pt}
+\setlength{\floatsep}{8pt plus 2pt minus 2pt}
+\setlength{\abovecaptionskip}{4pt}
 
 \title{Head or Representation? Diagnosing Distribution-Shift Failures\\of Visuomotor Policies with Last-Layer Retraining}
 \author{Henry Nguyen\\[2pt]{\small\itshape Working draft, November 2026. Some experiments are incomplete; see the limitations.}}
@@ -216,7 +218,7 @@ head-limited / failures & 4/5 & 4/4 & 1/2 & 0/5 & 0/5 & 0/5\\
 
 \begin{table}[t]
 \centering
-\caption{Object position on Lift: success (\%), cube shifted $\pm5$/$\pm7$\,cm per axis (ACT 160 episodes
+\caption{Object position on Lift: success (\%), cube shifted $\pm5$/$\pm7$\,cm per axis (ACT and Diffusion Policy 160 episodes
 per axis, SmolVLA 120). ``Per axis'': one retrain per axis, scored on that axis.}
 \label{tab:position}
 \footnotesize
@@ -232,6 +234,10 @@ ACT & base & 55 & 47 & 100 & --\\
 \midrule
 SmolVLA & base & 67 & 46 & 100 & --\\
  & head retrain, DAgger expert labels (per axis) & 91 & 86 & 100 & 23{,}072\\
+\midrule
+Diffusion & base & 66 & 79 & 100 & --\\
+ & head retrain, DAgger expert labels (per axis) & 98 & 87 & 100 & 11.6M\\
+ & head retrain, in-distribution labels (control) & 64 & 74 & 100 & 11.6M\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -272,15 +278,16 @@ partly because it learns to copy it.
 Retraining on in-distribution labels only, used as the
 control here, does not help, so the failure is head-limited and the improvement is from the labels.
 SmolVLA can be fixed in the same way with labels from the same ACT expert, but its $y$ retrain lowers its
-$x$ success from 67\% to 55\%.
+$x$ success from 67\% to 55\%. Diffusion Policy fails less (66\% and 79\%); expert labels lift it to 98\% on $x$
+(control 64\%), head-limited, but only to 87\% on $y$ (control 74\%). Its pseudo-labels miss by
+up to 24\,cm (ACT: 1--3\,cm).
 
-\paragraph{Linear probe.} We use a probe with ridge regression to predict the grasp point from the head's input features. The grasp point
-is the table position of the cube, the nut handle or the tool. The probe uses frames before contact and
-is scored by $R^2$ with cross-validation across episodes. In distribution, it decodes the grasp point
+\paragraph{Linear probe.} We use a ridge-regression probe to predict the grasp point (the table position of the cube, the nut handle
+or the tool) from the head's input features. The probe uses frames before contact and
+is scored by $R^2$, cross-validated across episodes. In distribution, it decodes the grasp point
 on Lift and Square ($R^2$ 0.78--0.93) but not on ToolHang (0.25).
 When fit on in-distribution and perturbed features together, ACT's probe still finds the grasp
-point on Lift (0.39--0.90) but loses it on Square ($-0.22$ and $-0.23$ for the two perturbations we
-probed). Still, the probe does not predict the regime: Diffusion
+point on Lift (0.39--0.90) but loses it on Square ($-0.22$ and $-0.23$ under two perturbations). Still, the probe does not predict the regime: Diffusion
 Policy upside down on Lift is fixed at $R^2$ 0.20, while ACT under turn + roll (0.85) and the partial
 Square failures (0.18--0.49) are not.
 
@@ -302,8 +309,7 @@ and image editing or human corrections could be used to approximate them for oth
 \emph{Limitations.} The results are purely in simulation, and the position expert needed 400 shifted
 demonstrations. We train one seed for each of the six policy--task pairs and score each result on 50--300 episodes. The precise tasks
 also have lower in-distribution success, limiting what the labels can teach. We decide where the
-head ends for each architecture, and for Diffusion Policy it is large. We tested ToolHang with ACT only and ran Step~2 on ACT only. Still to run are SmolVLA on Square and ToolHang, Diffusion Policy on ToolHang, SmolVLA's pseudo-label and control retrains, Diffusion Policy at
-$\pm7$\,cm (it follows most 5\,cm shifts), more seeds, and Step~2 on Diffusion Policy.
+head ends for each architecture, and for Diffusion Policy it is large. Still to run are SmolVLA on Square, the other two policies on ToolHang, SmolVLA's position controls, Step~2 on Diffusion Policy, and more seeds.
 
 \bibliographystyle{unsrtnat}
 \bibliography{refs}
