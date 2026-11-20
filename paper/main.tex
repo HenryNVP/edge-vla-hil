@@ -39,8 +39,8 @@ the states the policy visits and label them with the frozen policy's actions on 
 without perturbation. If the retrained policy performs better than both the base policy and a negative
 control in which the object is invisible, the failure is \emph{head-limited}. For ACT, Diffusion Policy
 and SmolVLA, 9 of 11 visual failures on robomimic Lift are head-limited, and for out-of-range objects,
-retraining the action head on pseudo-labels closes over half the gap without new demonstrations. On Square and ToolHang,
-even when Square fails only partly, none of the 25 failures is head-limited. Therefore, in our tasks, the
+retraining the action head on pseudo-labels closes over half the gap to expert labels without new demonstrations. On Square and ToolHang,
+none of the 25 failures, nor the 3 partial ones on Square, is head-limited. Therefore, in our tasks, the
 regime depends more on the task than on the severity of the failure. On Square, deeper fine-tuning is
 needed to recover success rate (25\% with LoRA, 43\% with full fine-tuning). In addition, we find that a
 linear probe of the grasp point does not predict which failures the head retrain can fix.
@@ -167,7 +167,7 @@ We use three robomimic~\citep{mandlekar2021robomimic} tasks, Lift, Square and To
 proficient-human demonstrations, in robosuite 1.4.1~\citep{zhu2020robosuite}. We render ToolHang
 images from its recorded states. All policies take two $84\times84$ views
 (agentview and wrist) and output absolute end-effector actions in chunks of 16. We train one ACT policy
-and one Diffusion Policy for each task, and we fine-tune SmolVLA on Lift and Square. In
+for each task and one Diffusion Policy for ToolHang, use the released Diffusion Policy checkpoints~\citep{chi2023diffusion} for Lift and Square, and fine-tune SmolVLA on Lift and Square. In
 distribution, success is 100\% on Lift, 84\% (ACT), 95\% (Diffusion) and 26\% (SmolVLA) on Square, and 40\% (ACT) and 72\% (Diffusion) on ToolHang.
 
 Visual perturbations (Figure~\ref{fig:shifts}) are applied to both cameras, since on Lift, these
@@ -270,7 +270,7 @@ while the action barely moves (0.28 and 0.09). A first-order
 interchange intervention~\citep{geiger2021causal} that uses in-range feature directions at out-of-range
 states brings the gain back to 0.66 and 0.65, so the offset moves the features in directions the head
 was never trained to read. Retraining the 5{,}130-weight head on
-pseudo-labels, without any demonstrations, closes over half of the gap (Table~\ref{tab:position}).
+pseudo-labels, without any demonstrations, closes over half of the gap to expert labels (Table~\ref{tab:position}).
 With labels from the expert retrained on 400 demonstrations, the head retrain gets close to that expert,
 partly because it learns to copy it.
 Retraining on in-distribution labels only, used as the
@@ -292,7 +292,7 @@ Square failures (0.18--0.49) are not.
 reaches 0, 1, 18, 43 and 40\% success over DAgger iterations 1--5. With the same four iterations of labels, the head alone stays at 0\%, LoRA
 (rank 8, 457K weights) reaches 25\% and full fine-tuning reaches 43\%. The iterations were
 collected with the fully fine-tuned policy, which favors it. In distribution, success
-falls from 84\% to 73\% after four iterations and to 48\% after five. On ToolHang,
+falls from 84\% to 73\% after four iterations and to 48\% after five. For ACT on ToolHang,
 full fine-tuning gives 0 of 30 successes after two iterations, and also 0 of 30 in distribution.
 
 \section{Conclusion and limitations}
