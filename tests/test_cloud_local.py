@@ -71,3 +71,13 @@ def test_drop_after_plans_with_no_memory_once_it_is_too_old():
     for t in range(10):
         ex.step({}, t)
     assert [m for m, _ in p.calls] == [0, 0, 0] + [None] * 4      # ages 3, 4, 5, then 6..9
+
+
+def test_refresh_every_asks_only_once_the_held_memory_is_that_old():
+    p = Policy()
+    ex = CloudLocalExecutor(Worker(1), p, replan=1, refresh_every=5)
+    for t in range(12):
+        ex.step({}, t)
+    # memory from t=0 held through age 5, re-requested at t=5, arrives at t=6
+    assert p.calls[:6] == [(0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (5, 1)]
+    assert {m for m, _ in p.calls} == {0, 5, 10}

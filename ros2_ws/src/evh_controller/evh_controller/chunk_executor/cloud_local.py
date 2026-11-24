@@ -10,7 +10,10 @@ memory and runs the local half on its own fresh observation:
 and plays `replan` entries of that chunk before planning again. A late memory still drives
 fresh actions: the local half sees the current images and proprio and knows how old its context
 is, so staleness becomes an input instead of a splice (HiRT, CloudEdgeVLA). Requests go out
-whenever the single slot is free, so the memory is as fresh as the link allows.
+whenever the single slot is free and the held memory is at least `refresh_every` ticks old. The
+default 0 keeps the memory as fresh as the link allows, which is not the best default: on
+nut_goal a map re-requested every tick at delay 1 scored 5/10 after a goal switch against 10/10
+when held until 20 ticks old (docs/query-planner-plan.md, diagnosis). At delay >= N it is a no-op.
 
 A policy with a `reset()` (a local half that keeps state between plans, such as the BEV planner's
 previous map) is reset with each episode. `refresh=False` (strategy `cloud_local_once`) keeps the
@@ -32,8 +35,10 @@ class CloudLocalExecutor(ChunkExecutor):
     name = 'cloud_local'
 
     def __init__(self, worker, policy, *, replan: int = 4, max_age: int | None = None,
-                 refresh: bool = True, drop_after: int | None = None) -> None:
+                 refresh: bool = True, drop_after: int | None = None,
+                 refresh_every: int = 0) -> None:
         self.replan, self.refresh, self.drop_after = replan, refresh, drop_after
+        self.refresh_every = refresh_every
         self.max_age = max_age                # ages beyond the trained range are clamped
         self.ages: list[int] = []             # age of the memory behind each local plan
         super().__init__(worker, policy)
@@ -50,7 +55,8 @@ class CloudLocalExecutor(ChunkExecutor):
         arrival = self._poll(t)
         if arrival is not None:
             self._memory, self._t_memory = arrival.chunk, arrival.t_issue
-        if self._pending_t is None and (self.refresh or self._memory is None):
+        if self._pending_t is None and (self._memory is None or (
+                self.refresh and t - self._t_memory >= self.refresh_every)):
             self._issue(obs, t)
         if self._memory is None:
             return None

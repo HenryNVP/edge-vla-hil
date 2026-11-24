@@ -7,6 +7,8 @@ cheap map of its own and plans a chunk from it.
                         exact sim camera matrix and bilinearly sampled; the samples are averaged
                         over the points that land in an image (no learned offsets yet)
                         -> 2 self-attention layers over the cells -> BEV_c [256, D]
+                        with `vlm_dim`: frozen SmolVLM maps (instruction + image, scripts/
+                        vlm_cloud.py, 8x8 per view) replace the ResNet; same projection after
     local  (frame t)    MobileNetV3-Small (or TinyCNN) on agentview + top -> the same projection
                         -> fresh BEV_l [256, D] (a grid_sample, no attention); wrist -> 36 tokens
                         per cell: x = Linear([BEV_l ; BEV_c]) + cell position
@@ -35,6 +37,9 @@ cheap map of its own and plans a chunk from it.
                         attention: x reads BEV_c (+ age embedding) and, when given, the robot's
                         own previous map (`prev`, BEVFormer's history), so a cell can pull the
                         nut's features from the cell it occupied when the cloud saw it
+                        `cloud_pool` (baseline, CloudEdgeVLA's fusion): the cloud cells are
+                        mean-pooled to one vector, concatenated to every fresh cell and read as
+                        one token; `use_age` off: the age embedding is fixed at age 0
     head                H learnable action queries cross-attend to the local tokens (ACT)
 
 The projections are fixed (cameras do not move), so they are buffers set from the data's
@@ -53,7 +58,8 @@ X_RANGE = (-0.32, 0.32)       # table frame, metres; pegs at x = 0.23, the nut s
 Y_RANGE = (-0.32, 0.32)
 Z_LEVELS = (0.82, 0.86, 0.90, 0.94)   # table top and three heights above it (the nut is lifted)
 GRID = 16
-LOCAL_VIEWS = {'both': [0, 1], 'agent': [0], 'top': [1]}   # the robot map's views (P rows)
+LOCAL_VIEWS = {'both': [0, 1], 'agent': [0], 'top': [1],   # the robot map's views (P rows);
+               'none': []}       # none: a wrist-camera-only robot; its grid is the cloud's
 IMAGE = 84
 
 
@@ -99,13 +105,15 @@ def bev_sample(maps: list[torch.Tensor], coords: torch.Tensor, valid: torch.Tens
 
 class CloudBEV(nn.Module):
     def __init__(self, d: int, state_dim: int, layers: int = 2, heads: int = 8,
-                 upsample: int = 2, heights: int = 0, goals: int = 0) -> None:
+                 upsample: int = 2, heights: int = 0, goals: int = 0, vlm_dim: int = 0) -> None:
         super().__init__()
-        from torchvision.ops.misc import FrozenBatchNorm2d
-        r = torchvision.models.resnet18(weights='IMAGENET1K_V1', norm_layer=FrozenBatchNorm2d)
-        self.backbone = nn.Sequential(r.conv1, r.bn1, r.relu, r.maxpool, r.layer1, r.layer2,
-                                      r.layer3)
-        self.proj = nn.Conv2d(256, d, 1)
+        self.vlm = bool(vlm_dim)      # views are frozen VLM maps [B, vlm_dim, 8, 8] (vlm_cloud)
+        if not self.vlm:
+            from torchvision.ops.misc import FrozenBatchNorm2d
+            r = torchvision.models.resnet18(weights='IMAGENET1K_V1', norm_layer=FrozenBatchNorm2d)
+            self.backbone = nn.Sequential(r.conv1, r.bn1, r.relu, r.maxpool, r.layer1, r.layer2,
+                                          r.layer3)
+        self.proj = nn.Conv2d(vlm_dim or 256, d, 1)
         self.upsample = upsample
         self.zproj = nn.Linear(heights * d, d) if heights else None      # height channels -> D
         self.state = nn.Linear(state_dim, d)
@@ -115,6 +123,8 @@ class CloudBEV(nn.Module):
             layers, norm=nn.LayerNorm(d))
 
     def fmap(self, img: torch.Tensor) -> torch.Tensor:
+        if self.vlm:
+            return self.proj(img.to(self.proj.weight.dtype))
         x = _images(img)
         if self.upsample > 1:
             x = F.interpolate(x, scale_factor=self.upsample, mode='bilinear', align_corners=False)
@@ -165,17 +175,25 @@ class BEVPlanner(nn.Module):
                  local_enc: str = 'mobile', use_prev: bool = False, use_local: bool = True,
                  use_ta: bool = True, local_views: str = 'both', gate: bool = False,
                  corr: bool = False, corr_radius: int = 4, use_cloud: bool = True,
-                 height_channels: bool = False, goals: int = 0, grid: int = GRID) -> None:
+                 height_channels: bool = False, goals: int = 0, grid: int = GRID,
+                 vlm_dim: int = 0, use_age: bool = True, cloud_pool: bool = False,
+                 local_goal: bool = False) -> None:
         super().__init__()
+        if local_goal and not goals:
+            raise ValueError('local_goal needs goals')
         if gate and corr:
             raise ValueError('gate and corr are alternatives')
         if corr and not use_local:
             raise ValueError('corr needs the local encoder')
+        if vlm_dim and (corr or goals or height_channels):
+            raise ValueError('a VLM cloud carries the goal in its maps; no corr / goals / heights')
         if not (use_cloud or use_local):
             raise ValueError('needs the cloud map, the robot images or both')
         if local_views not in LOCAL_VIEWS:
             raise ValueError(f'local_views {local_views!r} not in {tuple(LOCAL_VIEWS)}')
         self.chunk, self.max_age, self.grid = chunk, max_age, grid
+        self.use_age = use_age          # off: the ablation that is never told the map's age
+        self.cloud_pool = cloud_pool    # CloudEdgeVLA-style baseline: the cloud map mean-pooled
         self.use_prev, self.use_local = use_prev, use_local
         self.local_views = LOCAL_VIEWS[local_views]
         n = grid * grid
@@ -183,7 +201,8 @@ class BEVPlanner(nn.Module):
         self.register_buffer('pts', pillar_points(grid))
         hz = len(Z_LEVELS) if height_channels else 0
         self.d = d
-        self.cloud = CloudBEV(d, state_dim, heights=hz, goals=goals) if use_cloud else None
+        self.cloud = (CloudBEV(d, state_dim, heights=hz, goals=goals, vlm_dim=vlm_dim)
+                      if use_cloud else None)
         self.pos = nn.Parameter(torch.randn(1, n, d) * 0.02)
         self.local_cnn = ({'tiny': TinyCNN, 'mobile': MobileLocal}[local_enc](d)
                           if use_local else None)
@@ -210,6 +229,8 @@ class BEVPlanner(nn.Module):
             idx = (off[..., 0] + corr_radius) * w + off[..., 1] + corr_radius
             self.register_buffer('corr_idx', torch.where(inside, idx, -1), persistent=False)
         self.state = nn.Linear(state_dim, d)
+        # the robot told the current goal itself (the H0 control: robot-only, goal not from the cloud)
+        self.local_goal = nn.Embedding(goals, d) if local_goal else None
         self.age = nn.Embedding(max_age + 1, d)
         self.wrist_pos = nn.Parameter(torch.randn(1, 36, d) * 0.02)
         self.src_emb = nn.Parameter(torch.randn(2, 1, 1, d) * 0.02)   # cloud map / previous map
@@ -227,7 +248,8 @@ class BEVPlanner(nn.Module):
 
     def memory(self, agent0, top0, state0, goal0=None) -> torch.Tensor:
         """The cloud half: [B, 257, D] (256 cells + a proprio token); zeros without the cloud
-        (`use_cloud` off: the robot-only control)."""
+        (`use_cloud` off: the robot-only control). With `vlm_dim`, agent0/top0 are the VLM's
+        maps of those frames, not images."""
         if self.cloud is None:
             return self.pos.new_zeros(state0.shape[0], self.grid ** 2 + 1, self.d)
         coords, valid = self._coords()
@@ -237,6 +259,8 @@ class BEVPlanner(nn.Module):
         """The robot encoder's fresh map [B, 256, D] (with `corr`, also run on the t0 frame)."""
         coords, valid = self._coords()
         v = self.local_views
+        if not v:
+            return self.pos.new_zeros(agent.shape[0], self.grid ** 2, self.d)
         imgs = [agent, top]
         z = self.local_zproj
         bev = bev_sample([self._fmap(imgs[i]) for i in v], coords[v], valid[v], z is not None)
@@ -279,15 +303,18 @@ class BEVPlanner(nn.Module):
         return self.corr_o(out), attn.mean(1)
 
     def plan(self, mem, agent, top, wrist, state, age, prev=None, return_bev=False,
-             return_gate=False, local0=None, return_attn=False):
+             return_gate=False, local0=None, return_attn=False, goal=None):
         """The local half. `prev`: the robot's own BEV from its previous plan [B, 256, D] or
         None. `local0`: with `corr`, the robot's own map of the t0 frame (local_map). Returns
         actions [B, H, action_dim] (and this plan's BEV when return_bev; the gate / staleness
         [B, 256] when return_gate, ones with neither; the corr attention [B, 256, 256] when
-        return_attn)."""
+        return_attn). `goal` [B]: the current goal, with `local_goal`."""
         b, n = state.shape[0], self.grid * self.grid
-        a = self.age(age.clamp(0, self.max_age))[:, None]
-        bev_c = mem[:, :n]
+        a = self.age(age.clamp(0, self.max_age) * self.use_age)[:, None]
+        bev_c, tail = mem[:, :n], mem[:, n:]
+        if self.cloud_pool:     # one vector, no cell alignment: fused into every cell, one token
+            pooled = bev_c.mean(1, keepdim=True)
+            bev_c, mem = pooled.expand(-1, n, -1), torch.cat([pooled, tail], 1)
         if self.local_cnn is not None:
             fresh = self.local_map(agent, top)
             wrist_tok = self.local_cnn(wrist) + self.wrist_pos
@@ -308,7 +335,12 @@ class BEVPlanner(nn.Module):
         else:
             x = self.fuse(torch.cat([fresh, bev_c], -1)) + self.pos
             gate = torch.ones(b, n, device=x.device, dtype=x.dtype)
-        x = torch.cat([x, wrist_tok, self.state(state)[:, None], a, mem[:, n:]], 1)
+        s = self.state(state)
+        if self.local_goal is not None:
+            if goal is None:
+                raise ValueError('this planner is told the goal locally: pass goal')
+            s = s + self.local_goal(goal)
+        x = torch.cat([x, wrist_tok, s[:, None], a, tail], 1)
         stale = [mem + a + self.src_emb[0]]
         if self.use_prev:
             p = (prev + self.pos) if prev is not None else self.no_prev.expand(b, n, -1)

@@ -56,6 +56,14 @@ def train(args) -> None:
     import torch.nn.functional as F
     from bev_model import BEVPlanner
     eps, P = load_npz(args.data)
+    if args.vlm_cache:          # frozen VLM cloud: maps precomputed per frame (memory-mapped)
+        if ',' in args.data:
+            raise ValueError('--vlm-cache takes one --data directory')
+        for e, f in zip(eps, sorted(glob.glob(os.path.join(args.data, '*.npz')))):
+            name = os.path.basename(f).replace('.npz', '.npy')
+            e['vlm'] = np.load(os.path.join(args.vlm_cache, name), mmap_mode='r')
+            if len(e['vlm']) != len(e['action']):
+                raise ValueError(f'{f}: VLM cache length differs from the episode')
     st = stats(eps)
     lens = np.array([len(e['action']) for e in eps])
     print(f'{len(eps)} episodes, {lens.sum()} frames', flush=True)
@@ -64,10 +72,13 @@ def train(args) -> None:
     torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = True
     amp = torch.autocast('cuda', dtype=torch.bfloat16, enabled=args.amp and dev == 'cuda')
     cfg = {'local_enc': args.local_enc, 'use_prev': args.prev, 'use_local': not args.no_local,
-           'use_ta': not args.no_ta, 'local_views': args.local_views, 'gate': args.gate,
+           'use_ta': not args.no_ta, 'use_age': not args.no_age, 'cloud_pool': args.cloud_pool,
+           'local_views': args.local_views, 'gate': args.gate,
            'max_age': args.max_age, 'use_cloud': not args.no_cloud,
+           'local_goal': args.local_goal,
            'height_channels': args.height_channels,
-           'goals': GOALS if 'goal' in eps[0] else 0}
+           'goals': GOALS if 'goal' in eps[0] and not args.vlm_cache else 0,
+           'vlm_dim': eps[0]['vlm'].shape[2] if args.vlm_cache else 0}
     if args.corr:
         cfg.update(corr=True, corr_radius=args.corr_radius)
     model = BEVPlanner(torch.from_numpy(P), **cfg).to(dev)
@@ -81,14 +92,29 @@ def train(args) -> None:
     rng = np.random.default_rng(args.seed)
     sm, ss = (torch.tensor(st[k], device=dev) for k in ('state_mean', 'state_std'))
     am, as_ = (torch.tensor(st[k], device=dev) for k in ('action_mean', 'action_std'))
-    t_start = time.time()
-    for step in range(1, args.steps + 1):
+    t_start, start, state_path = time.time(), 1, args.out + '.resume'
+    if args.resume and os.path.exists(state_path):
+        r = torch.load(state_path, map_location=dev, weights_only=False)
+        model.load_state_dict(r['model'])
+        opt.load_state_dict(r['opt'])
+        sched.load_state_dict(r['sched'])
+        rng.bit_generator.state = r['rng']
+        torch.set_rng_state(r['torch_rng'])
+        if dev == 'cuda':
+            torch.cuda.set_rng_state_all(r['cuda_rng'])
+        start = r['step'] + 1
+        print(f'resumed at step {r["step"]}', flush=True)
+    for step in range(start, args.steps + 1):
         e, t, t0 = sample_index(lens, args.batch, args.max_age, rng)
         goal0 = None
-        if cfg['goals']:
+        if 'goal' in eps[0]:
             t0 = np.array([goal_consistent_t0(eps[i]['goal'], j, j0) for i, j, j0 in zip(e, t, t0)])
+        if cfg['goals']:
             goal0 = torch.from_numpy(np.array([eps[i]['goal'][j] for i, j in zip(e, t0)])).long().to(dev)
         acts, masks = zip(*(chunk_targets(eps[i]['action'], j) for i, j in zip(e, t)))
+        goal_at = lambda idx: (torch.from_numpy(np.array([eps[i]['goal'][j] for i, j in
+                                                          zip(e, idx)])).long().to(dev)
+                               if args.local_goal else None)
 
         offsets = {}
 
@@ -107,7 +133,11 @@ def train(args) -> None:
         age = torch.from_numpy(t - t0).long().to(dev)
         with amp:
             a0, top0 = grab('agentview', t0), grab('top', t0)
-            mem = model.memory(a0, top0, grab('state', t0), goal0)
+            if args.vlm_cache:      # cached under the instruction in force at the memory frame
+                m0 = torch.from_numpy(np.stack([eps[i]['vlm'][j] for i, j in zip(e, t0)])).to(dev)
+                mem = model.memory(m0[:, 0], m0[:, 1], grab('state', t0))
+            else:
+                mem = model.memory(a0, top0, grab('state', t0), goal0)
             if args.cloud_dropout:     # some samples plan with no cloud map: a fallback to rely on
                 keep = torch.rand(len(e), 1, 1, device=dev) >= args.cloud_dropout
                 mem = mem * keep.to(mem.dtype)
@@ -119,10 +149,10 @@ def train(args) -> None:
                     _, prev = model.plan(mem, grab('agentview', tp), grab('top', tp),
                                          grab('wrist', tp), grab('state', tp),
                                          torch.from_numpy(tp - t0).long().to(dev),
-                                         return_bev=True, local0=local0)
+                                         return_bev=True, local0=local0, goal=goal_at(tp))
             a_t, top_t = grab('agentview', t), grab('top', t)
             out = model.plan(mem, a_t, top_t, grab('wrist', t), grab('state', t), age, prev,
-                             local0=local0, return_attn=args.corr_aux > 0)
+                             local0=local0, return_attn=args.corr_aux > 0, goal=goal_at(t))
             pred, attn = out if args.corr_aux > 0 else (out, None)
         loss = (F.l1_loss(pred.float(), target, reduction='none') * ~mask[..., None]).mean()
         recon = model.corr_recon_loss(attn, a0, top0, a_t, top_t) if attn is not None else None
@@ -143,6 +173,15 @@ def train(args) -> None:
                         'replan': args.replan, 'corr_aux': args.corr_aux,
                         'cloud_dropout': args.cloud_dropout,
                         'paired_shift': args.paired_shift}, args.out)
+            if step < args.steps:      # optimizer + RNG state for --resume; gone once finished
+                torch.save({'model': model.state_dict(), 'opt': opt.state_dict(),
+                            'sched': sched.state_dict(), 'step': step,
+                            'rng': rng.bit_generator.state, 'torch_rng': torch.get_rng_state(),
+                            'cuda_rng': torch.cuda.get_rng_state_all() if dev == 'cuda' else []},
+                           state_path + '.tmp')
+                os.replace(state_path + '.tmp', state_path)
+            elif os.path.exists(state_path):
+                os.remove(state_path)
 
 
 class BEVPolicy:
@@ -170,6 +209,10 @@ class BEVPolicy:
         self.model.load_state_dict(ck['model'])
         self.model.to(self.dev).eval()
         self.max_age = ck['cfg']['max_age']
+        self.vlm = None
+        if ck['cfg'].get('vlm_dim'):     # the cloud half runs the frozen VLM live
+            from vlm_cloud import VLMEncoder
+            self.vlm = VLMEncoder(device=self.dev)
         self.st = {k: torch.tensor(v, device=self.dev) for k, v in ck['stats'].items()}
         self._prev = None
 
@@ -188,7 +231,12 @@ class BEVPolicy:
         goal = (torch.tensor([int(obs['goal'])], device=self.dev)
                 if self.model.cloud is not None and self.model.cloud.goal is not None else None)
         with torch.no_grad():
-            mem = self.model.memory(agent, top, state, goal)
+            if self.vlm is not None:
+                m = self.vlm.maps([np.asarray(obs['agentview'])[-1:], np.asarray(obs['top'])[-1:]],
+                                  [int(obs['goal'])])
+                mem = self.model.memory(m[:, 0], m[:, 1], state)
+            else:
+                mem = self.model.memory(agent, top, state, goal)
             if self.model.use_corr:
                 mem = torch.cat([mem, self.model.local_map(agent, top)], 1)
             return mem[0].cpu().numpy()
@@ -212,12 +260,25 @@ class BEVPolicy:
             if self.model.use_corr:
                 n = self.model.grid ** 2
                 mem, local0 = mem[:, :n + 1], mem[:, n + 1:]
+            goal = (torch.tensor([int(obs['goal'])], device=self.dev)
+                    if self.model.local_goal is not None else None)
             out, bev = self.model.plan(mem, agent, top, wrist, state, a, self._prev,
-                                       return_bev=True, local0=local0)
+                                       return_bev=True, local0=local0, goal=goal)
             if self.model.use_prev:
                 self._prev = bev
             out = out[0] * self.st['action_std'] + self.st['action_mean']
         return abs10_to_abs7(out.cpu().numpy())
+
+
+class BEVChunkPolicy(BEVPolicy):
+    """The same checkpoint as an ordinary remote chunk policy: the cloud runs both halves on the
+    request frame (age 0) and ships the 7-dim chunk, played stale by any chunk executor. The
+    same-model baseline for cloud_local (TwoStreamChunkPolicy for the BEV planner): identical
+    weights and cloud features, only actions instead of the map cross the link."""
+
+    def predict(self, obs) -> np.ndarray:
+        self.reset()
+        return self.local(obs, super().predict(obs), 0)
 
 
 def main() -> None:
@@ -229,19 +290,28 @@ def main() -> None:
     ap.add_argument('--lr', type=float, default=3e-4)
     ap.add_argument('--max-age', type=int, default=MAX_AGE)
     ap.add_argument('--save-every', type=int, default=10000)
+    ap.add_argument('--resume', action='store_true',
+                    help='continue from <out>.resume (written every --save-every) if it exists')
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--local-enc', default='mobile', choices=['tiny', 'mobile'])
     ap.add_argument('--prev', action='store_true', help="feed the robot's previous map")
     ap.add_argument('--no-local', action='store_true', help='ablation: no fresh local images')
     ap.add_argument('--no-cloud', action='store_true',
                     help='control: no cloud map (zeros); the robot plans from its own images')
+    ap.add_argument('--local-goal', action='store_true',
+                    help="nut_goal: the robot is told the current goal (on its proprio token); "
+                         "with --no-cloud, the control for a planner that is weak at switches")
     ap.add_argument('--cloud-dropout', type=float, default=0.0,
                     help='probability a training sample gets a zero cloud map (as --no-cloud)')
     ap.add_argument('--height-channels', action='store_true',
                     help='keep the pillar heights as channels instead of averaging them')
     ap.add_argument('--no-ta', action='store_true',
                     help='ablation: no temporal attention (cloud map only through the fusion)')
-    ap.add_argument('--local-views', default='both', choices=['both', 'agent', 'top'],
+    ap.add_argument('--no-age', action='store_true',
+                    help='ablation: never tell the planner the cloud map age (still trained stale)')
+    ap.add_argument('--cloud-pool', action='store_true',
+                    help='baseline: mean-pool the cloud map to one vector (no cell alignment)')
+    ap.add_argument('--local-views', default='both', choices=['both', 'agent', 'top', 'none'],
                     help="ablation: the views in the robot's fresh map")
     ap.add_argument('--gate', action='store_true', help='per-cell staleness gate in the fusion')
     ap.add_argument('--corr', action='store_true',
@@ -254,6 +324,8 @@ def main() -> None:
     ap.add_argument('--replan', type=int, default=4, help='ticks between plans (for --prev)')
     ap.add_argument('--shift', type=int, default=4)
     ap.add_argument('--no-amp', dest='amp', action='store_false', help='train in fp32')
+    ap.add_argument('--vlm-cache', default='',
+                    help='frozen VLM cloud: per-frame maps from vlm_cloud.py cache (nut_goal)')
     train(ap.parse_args())
 
 

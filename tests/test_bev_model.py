@@ -70,6 +70,7 @@ def test_pillar_points_cover_the_grid():
 @pytest.mark.parametrize('kw', [{'use_ta': False}, {'local_views': 'agent'},
                                 {'local_views': 'top'}, {'use_local': False},
                                 {'use_cloud': False}, {'height_channels': True},
+                                {'use_age': False}, {'local_views': 'none'},
                                 {'height_channels': True, 'corr': True, 'local_views': 'agent'}])
 def test_ablations_plan(kw):
     P = torch.tensor(np.stack([_P(), _P()]), dtype=torch.float32)
@@ -81,6 +82,9 @@ def test_ablations_plan(kw):
     assert out.shape == (1, 16, 10)
     if kw.get('use_ta') is False:
         assert not any('.ta.' in n for n, _ in m.named_parameters())
+    if kw.get('use_age') is False:
+        with torch.no_grad():
+            assert torch.equal(out, m(img, img, st, img, img, img, st, torch.tensor([40])))
 
 
 def test_gate_is_per_cell_in_unit_interval_and_absent_by_default():
@@ -142,3 +146,50 @@ def test_goal_conditioned_memory_depends_on_the_goal_and_requires_it():
         assert not torch.allclose(a, b)
         with pytest.raises(ValueError):
             m.memory(img, img, st)
+
+
+def test_vlm_cloud_projects_precomputed_maps_and_has_no_backbone():
+    P = torch.tensor(np.stack([_P(), _P()]), dtype=torch.float32)
+    m = bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny', vlm_dim=8).eval()
+    assert not any('.backbone.' in n for n, _ in m.named_parameters())
+    a, b = torch.randn(2, 1, 8, 8, 8)
+    img = torch.zeros(1, 84, 84, 3, dtype=torch.uint8)
+    st = torch.zeros(1, 9)
+    with torch.no_grad():
+        mem = m.memory(a, a, st)
+        assert mem.shape == (1, 257, 32) and not torch.allclose(mem, m.memory(b, b, st))
+        assert m.plan(mem, img, img, img, st, torch.tensor([3])).shape == (1, 16, 10)
+    with pytest.raises(ValueError):
+        bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny', vlm_dim=8, goals=2)
+
+
+def test_pooled_cloud_ignores_where_the_cloud_put_things():
+    P = torch.tensor(np.stack([_P(), _P()]), dtype=torch.float32)
+    m = bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny', cloud_pool=True).eval()
+    img = torch.zeros(1, 84, 84, 3, dtype=torch.uint8)
+    st = torch.zeros(1, 9)
+    mem = torch.randn(1, 257, 32)
+    shuffled = torch.cat([mem[:, torch.randperm(256)], mem[:, 256:]], 1)
+    with torch.no_grad():
+        a, b = (m.plan(x, img, img, img, st, torch.tensor([3])) for x in (mem, shuffled))
+        plain = bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny').eval()
+        plain.load_state_dict(m.state_dict())
+        c, e = (plain.plan(x, img, img, img, st, torch.tensor([3])) for x in (mem, shuffled))
+    assert torch.allclose(a, b, atol=1e-5) and not torch.allclose(c, e, atol=1e-5)
+
+
+def test_local_goal_conditions_the_robot_plan_without_a_cloud_and_is_required():
+    P = torch.tensor(np.stack([_P(), _P()]), dtype=torch.float32)
+    m = bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny', use_cloud=False, goals=2,
+                      local_goal=True).eval()
+    img = torch.zeros(1, 84, 84, 3, dtype=torch.uint8)
+    st = torch.zeros(1, 9)
+    mem = m.memory(img, img, st)
+    with torch.no_grad():
+        a, b = (m.plan(mem, img, img, img, st, torch.tensor([3]), goal=torch.tensor([g]))
+                for g in (0, 1))
+        assert not torch.allclose(a, b)
+        with pytest.raises(ValueError):
+            m.plan(mem, img, img, img, st, torch.tensor([3]))
+    with pytest.raises(ValueError):
+        bm.BEVPlanner(P, d=32, heads=4, local_enc='tiny', local_goal=True)

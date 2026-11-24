@@ -245,7 +245,9 @@ def main() -> None:
                                             'continuation_inpaint')
     ap.add_argument('--deadline-s', type=float, default=20.0)
     ap.add_argument('--denoise-steps', type=int, default=4, help='paper-1 cells used 4')
-    ap.add_argument('--backend', default='dp', help='dp | act | two_stream | two_stream_chunk | bev | any make_policy backend')
+    ap.add_argument('--backend', default='dp',
+                    help='dp | act | two_stream | two_stream_chunk | bev | bev_chunk | '
+                         'any make_policy backend')
     ap.add_argument('--weights', default='', help='default: the task\'s DP checkpoint')
     ap.add_argument('--gate-k', type=float, default=2.0,
                     help='close gate position slack in tracker sigmas (Square)')
@@ -266,6 +268,9 @@ def main() -> None:
     ap.add_argument('--drop-after', type=int, default=None,
                     help='cloud_local: plan with no cloud memory once it is older than this many '
                          'ticks (for policies trained with --cloud-dropout)')
+    ap.add_argument('--refresh-every', type=int, default=0,
+                    help='cloud_local: request a new cloud memory only once the held one is this '
+                         'many ticks old (0: whenever the link is free)')
     ap.add_argument('--goal-switch', type=int, default=None,
                     help='nut_goal: flip the goal once at that tick (cancelled if the goal nut '
                          'is already lifted; default: no switch)')
@@ -292,9 +297,13 @@ def main() -> None:
         policy = bev_planner.BEVPolicy(args.weights)
         ol.CLOUD_LOCAL_REPLAN = args.replan
         ol.CLOUD_LOCAL_DROP_AFTER = args.drop_after
+        ol.CLOUD_LOCAL_REFRESH_EVERY = args.refresh_every
     elif args.backend == 'two_stream_chunk':
         import two_stream
         policy = two_stream.TwoStreamChunkPolicy(args.weights)
+    elif args.backend == 'bev_chunk':
+        import bev_planner
+        policy = bev_planner.BEVChunkPolicy(args.weights)
     else:
         policy = make_policy(args.backend,
                              args.weights or os.path.join(_REPO, 'checkpoints', ckpt),
