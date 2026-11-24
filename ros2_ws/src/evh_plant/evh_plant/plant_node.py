@@ -117,6 +117,9 @@ class PlantNode(Node):
         # abort instead of running on if the policy's mode disagrees with ours (see
         # _on_policy_mode); false only to deliberately run a mismatched config for debugging
         self.declare_parameter('strict_mode_check', True)
+        # false = keep obeying a silent /cmd/action (the pre-watchdog behaviour); only for the
+        # measured A/B in scripts/measure_kill_drift.py. The deadline QoS stays on either way.
+        self.declare_parameter('action_watchdog', True)
         self.declare_parameter('video_path', '')       # headless mp4; empty disables recording
         self.declare_parameter('video_duration', 0.0)  # seconds; 0 = record until shutdown
 
@@ -130,6 +133,7 @@ class PlantNode(Node):
         self.camera = self.cameras[0]
         self.absolute_actions = bool(self.get_parameter('absolute_actions').value)
         self.strict_mode_check = bool(self.get_parameter('strict_mode_check').value)
+        self.action_watchdog = bool(self.get_parameter('action_watchdog').value)
         self.mode_mismatch = False
 
         self.recorder = VideoRecorder.from_duration(
@@ -239,6 +243,8 @@ class PlantNode(Node):
         DDS re-raises this every deadline period while the stream is silent, so the log is gated on
         there being something to drop; the assignment itself is idempotent.
         """
+        if not self.action_watchdog:
+            return
         if self._last_action is not None:
             self.get_logger().warn(
                 f'no /cmd/action for {ACTION_DEADLINE_S * 1e3:.0f}ms — holding position '
