@@ -46,7 +46,7 @@ def test_chunk_policy_plans_at_age_zero_from_its_own_memory(monkeypatch):
 
 
 def test_random_shift_with_shared_offsets_moves_two_frames_alike():
-    import torch
+    torch = __import__('pytest').importorskip('torch')
     x = torch.randint(0, 255, (3, 12, 12, 3), dtype=torch.uint8)
     off = (torch.tensor([0, 2, 4]), torch.tensor([4, 0, 1]))
     assert torch.equal(ts.random_shift(x, 2, off), ts.random_shift(x.clone(), 2, off))
