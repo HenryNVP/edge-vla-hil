@@ -48,6 +48,7 @@ def _stub_plant(**overrides):
         _accept_actions_after_ns=0,
         _obs={'robot0_eef_pos': np.zeros(3), 'robot0_eef_quat': np.array([0.0, 0.0, 0.0, 1.0])},
         absolute_actions=False,
+        action_watchdog=True,
         action_hz=250.0,
         pub_success=types.SimpleNamespace(publish=lambda m: published.append(bool(m.data))),
         pub_episode_s=types.SimpleNamespace(
@@ -292,6 +293,18 @@ def test_a_missed_action_deadline_drops_the_cached_command():
 
     assert stub._last_action is None
     assert stub.warns, 'a dead reactive layer must be visible in the log, not just handled'
+
+
+@requires_ros2
+def test_with_the_watchdog_off_a_missed_deadline_keeps_the_cached_command():
+    """The ablation arm of scripts/measure_kill_drift.py: the pre-watchdog behaviour, kept on
+    purpose and off by default."""
+    from evh_plant.plant_node import PlantNode
+
+    stub = _stub_plant(_last_action=np.ones(7, np.float32), action_watchdog=False)
+    PlantNode._on_action_deadline(stub, None)
+
+    assert stub._last_action is not None and not stub.warns
 
 
 @requires_ros2
