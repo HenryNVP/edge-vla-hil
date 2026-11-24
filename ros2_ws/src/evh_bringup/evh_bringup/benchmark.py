@@ -563,6 +563,7 @@ def run_sweep(args) -> None:
                f'loss_model:={args.loss_model}', f'burst_ms:={args.burst_ms}',
                f'delay_obs:={delay_obs}', f'delay_act:={delay_act}',
                f'executor:={args.executor}', f'denoise_steps:={args.denoise_steps}',
+               f'tick_phase_ms:={args.tick_phase_ms}',
                f'backend:={args.backend}', f'weights:={args.weights}',
                f'strategy:={strategy}', f'passthrough:={"false" if reactive else "true"}',
                f'absolute:={absolute}', f'env_name:={args.env}',
@@ -721,6 +722,9 @@ def main(argv=None) -> None:
                         'frozen paper-1 cells were recorded at 0 and pass it explicitly.')
     p.add_argument('--denoise_steps', type=int, default=16,
                    help='dp backend DDIM steps; inference time is held fixed across a sweep')
+    p.add_argument('--tick_phase_ms', type=float, default=10.0,
+                   help='controller tick offset after the plant publishes = observation age at '
+                        'zero injected delay (invariant 11); held fixed across a sweep')
     p.add_argument('--backend', default='pytorch')
     p.add_argument('--weights', default='')
     p.add_argument('--absolute', choices=['auto', 'true', 'false'], default='auto',
