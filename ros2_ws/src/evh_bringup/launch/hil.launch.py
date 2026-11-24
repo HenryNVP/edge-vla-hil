@@ -29,6 +29,8 @@ Launch args:
   weights     : checkpoint path (e.g. /ws/checkpoints/dp_lift_ph_image_cnn.ckpt) or .onnx
   strategy    : synchronous | naive_async | temporal_ensemble | bid | rtc | network_aware
   denoise_steps : dp backend DDIM steps (0 = checkpoint default DDPM-100)
+  tick_phase_ms : controller/executor tick offset after the plant's observation (phase.py);
+                default 10. Raising it ages every observation by the same amount (invariant 11)
   absolute    : true -> abs-action policy: plant OSC control_delta=False, reactive latches
                 the waypoint as the target directly (default; matches the DP Lift checkpoint)
   strict_mode_check : true (default) -> the plant aborts if `absolute` disagrees with the mode
@@ -65,6 +67,7 @@ def generate_launch_description() -> LaunchDescription:
     weights = LaunchConfiguration('weights')
     strategy = LaunchConfiguration('strategy')
     denoise_steps = typed('denoise_steps', int)
+    tick_phase_ms = typed('tick_phase_ms', float)
     max_chunk_actions = typed('max_chunk_actions', int)
     absolute = typed('absolute', bool)
     strict_mode_check = typed('strict_mode_check', bool)
@@ -93,6 +96,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument('weights', default_value=''),
         DeclareLaunchArgument('strategy', default_value='synchronous'),
         DeclareLaunchArgument('denoise_steps', default_value='16'),
+        DeclareLaunchArgument('tick_phase_ms', default_value='10.0'),
         DeclareLaunchArgument('max_chunk_actions', default_value='0'),
         DeclareLaunchArgument('absolute', default_value='true'),
         DeclareLaunchArgument('strict_mode_check', default_value='true'),
@@ -146,7 +150,7 @@ def generate_launch_description() -> LaunchDescription:
     executor_node = Node(
         package='evh_controller', executable='executor_node', name='evh_executor',
         output='screen', condition=robot_side,
-        parameters=[{'strategy': strategy}],
+        parameters=[{'strategy': strategy, 'tick_phase_ms': tick_phase_ms}],
         remappings=[('/cmd/chunk', '/cmd/chunk/delayed')])
 
     # controller consumes the DELAYED observations
@@ -156,6 +160,7 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{
             'backend': backend, 'weights_path': weights, 'strategy': strategy,
             'denoise_steps': denoise_steps, 'executor': executor,
+            'tick_phase_ms': tick_phase_ms,
             'image_quality': image_quality, 'max_chunk_actions': max_chunk_actions,
         }],
         remappings=[
