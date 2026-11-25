@@ -4,12 +4,15 @@
 
 A testbed that runs the policy on the deployment hardware and puts a real network inside the
 control loop: a robosuite/MuJoCo physics simulation (Plant, x86 host) is decoupled from a small
-diffusion/flow policy inference engine (Controller, NVIDIA Jetson Orin Nano) across a real ROS2 /
+policy inference engine (Controller: ACT via ONNX Runtime on an NVIDIA Jetson Orin Nano; diffusion
+policies on a desktop GPU, too slow for the Jetson at 20 Hz) across a real ROS2 /
 Gigabit Ethernet boundary. We reproduce SOTA
 latency-robust chunk-execution strategies (synchronous, naive-async, Temporal Ensembling, BID,
 **RTC**) and measure how each holds up under *physically-injected* latency, jitter, and packet
-loss — the stochastic regime that inference-time methods like RTC explicitly do not model — then
-show a high-rate local reactive layer recovers task success they lose. See `proposal.md`.
+loss — the stochastic regime that inference-time methods like RTC explicitly do not model — and
+test whether a high-rate local reactive layer recovers the success they lose. It does not (see
+[Key results](#key-results)); where the chunk is executed matters far more. `proposal.md` is the
+original pitch and predates these results.
 
 **What is real here, and what is not.** The controller is real target hardware running the real
 deployment artifact, and the observation/action path crosses a real wire. In the usual V-model
@@ -21,6 +24,26 @@ simulator once per ROS wall-clock timer fire, with no catch-up and no deadline a
 simulated time is *defined* by when the timer happens to fire. That is only acceptable because the
 timing floor is small next to the effect under study — see [Timing floor](#timing-floor), where it
 is measured rather than assumed.
+
+## Key results
+
+All in simulation (robosuite Square unless noted), on paired scenes: scene *k* is identical across
+the arms of a comparison. Results files are local (`outputs/` is not committed); the commands that
+produce them are in the scripts named.
+
+| finding | numbers | n |
+|---|---|---|
+| **Where the chunk runs matters.** 200 ms on the action path: buffering the chunk on the robot (`executor:=robot`) vs streaming one waypoint per tick | synchronous 0.87 vs 0.30; RTC 0.83 vs 0.10 | 30 per cell, DP |
+| **The reactive layer does not recover success.** Same 200 ms action-path cell, layer off vs on | synchronous 0.73 off vs 0.30 on; RTC 0.10 either way | 30 per cell, DP |
+| **Free-running plant/controller timers cost success.** One shared wall-clock grid (`phase.py`) | 53% → 83% at zero injected delay | 30 per arm, DP |
+| ...and the cause is frame repetition, not staleness. Observation age pinned by `tick_phase_ms` | age 7 / 24 / 45 ms → 80 / 88 / 88% success | 50 paired per arm |
+| **Deadline watchdog.** Reactive node SIGKILLed mid-motion (~52 mm/s), delta mode, `scripts/measure_kill_drift.py` | EE drift in 4 s: 6.2 mm [5.7, 6.4] with, 230 mm [168, 233] without | 10 paired kills per arm, Lift |
+| **Timing floor**, live Jetson link | timer jitter p99 ≤ 0.34 ms; relay cost p50 0.97 ms | one 60 s window |
+
+The silent failures behind several of these (frames rendered off the env's EGL thread: Square
+0/10 in the loop vs 85% co-located; a 200 Hz control rate that ran simulated time at 80% of wall
+time) are each refused at startup or pinned by a test. Robot-side corrections for stale remote
+plans (paper 2) live on branch `paper2-query-planner`.
 
 ## Repository layout
 
@@ -97,9 +120,11 @@ The plant only conditionally trusts `/cmd/action`, because it re-applies whichev
 until another arrives. It drops the cached command when the deadline above is missed, and ignores
 the stream for 20 ms after an `/episode/reset` (the reactive layer learns about a reset up to one
 of its own ticks late, and what it sends in that window was computed for the episode that just
-ended). Both fall through to a mode-aware hold. Killing `evh_reactive` mid-episode in delta mode
-moved the arm 189 mm in 4 s without the deadline and 8 mm with it — a cached delta is a *velocity*
-command, since OSC re-derives `goal = eef + delta * output_max` every step.
+ended). Both fall through to a mode-aware hold. Killing `evh_reactive` mid-motion in delta mode
+moves the arm a median 230 mm in 4 s without the deadline and 6 mm with it (10 paired kills,
+`scripts/measure_kill_drift.py`; the plant's `action_watchdog:=false` is the ablation switch) — a
+cached delta is a *velocity* command, since OSC re-derives `goal = eef + delta * output_max` every
+step.
 
 ## Quick start (PC host, simulation only)
 
@@ -427,4 +452,7 @@ guided inpainting for RTC on the DP backend, ONNX Runtime backends for ACT and D
 placement: the action path is relayed too (`delay_obs` / `delay_act`), with observation,
 inference and action delay each measured where it happens; executor placement (`executor:=policy`
 streams waypoints, `executor:=robot` buffers whole chunks next to the robot); and Gilbert–Elliott
-bursty loss. BID is still a stub. See per-package docstrings.
+bursty loss. BID is still a stub. The reactive layer is a rate-limited setpoint interpolator
+(absolute) / proportional tracker (delta) on top of robosuite's OSC, which supplies the impedance;
+it is kept as an ablation arm, not as a fix (see [Key results](#key-results)). See per-package
+docstrings.
