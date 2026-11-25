@@ -41,7 +41,6 @@ jobs:
             python3-numpy \
             python3-yaml \
             python3-rosdep
-          rm -rf /var/lib/apt/lists/*
 
       - name: Resolve ROS dependencies
         shell: bash
